@@ -237,9 +237,7 @@ mod tests {
 
     #[test]
     fn parses_reference_silicon_pseudo_when_available() {
-        let path = Path::new(
-            "../dft studies/checkouts/q-e-7.6/EPW/examples/sic/pp/Si.pz-vbc.UPF",
-        );
+        let path = Path::new("../dft studies/checkouts/q-e-7.6/EPW/examples/sic/pp/Si.pz-vbc.UPF");
         if !path.exists() {
             return;
         }
