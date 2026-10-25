@@ -1,8 +1,8 @@
 use anyhow::{Context, Result, bail, ensure};
 use clap::{Parser, Subcommand, ValueEnum};
 use rust_pw_dft::backend::BackendKind;
-use rust_pw_dft::result::ScfResult;
-use rust_pw_dft::scf::preflight;
+use rust_pw_dft::result::{Provenance, ScfResult};
+use rust_pw_dft::scf::run;
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -64,11 +64,15 @@ struct Comparison {
 #[derive(Serialize)]
 struct Benchmark {
     accepted_for_performance_claim: bool,
-    backend: BackendKind,
+    requested_backend: BackendKind,
+    actual_backend: BackendKind,
+    converged: bool,
+    iterations: usize,
     repetitions: usize,
     min_seconds: f64,
     median_seconds: f64,
     max_seconds: f64,
+    provenance: Provenance,
     stop_reason: Option<String>,
 }
 
@@ -96,6 +100,10 @@ fn compare(result_path: &Path, reference_path: &Path) -> Result<Comparison> {
         result.eigenvalues_ry.len() == reference.eigenvalues_ry.len(),
         "eigenvalue counts differ"
     );
+    ensure!(
+        result.atom_count > 0 && result.atom_count == reference.atom_count,
+        "comparison requires matching nonzero atom counts"
+    );
     let max_eigen_ry = result
         .eigenvalues_ry
         .iter()
@@ -110,7 +118,8 @@ fn compare(result_path: &Path, reference_path: &Path) -> Result<Comparison> {
             .context("reference has no electron count")?)
     .abs();
     // 1 Ry = 13.605693122994 eV.
-    let energy_mev = (energy - reference_energy).abs() * 13_605.693_122_994;
+    let energy_mev =
+        (energy - reference_energy).abs() * 13_605.693_122_994 / result.atom_count as f64;
     let eigen_mev = max_eigen_ry * 13_605.693_122_994;
     Ok(Comparison {
         accepted: energy_mev <= 2.0 && eigen_mev <= 5.0 && electron_error <= 1.0e-8,
@@ -127,7 +136,7 @@ fn main() -> Result<()> {
             backend,
             output,
         } => {
-            let result = preflight(&input, backend.into())?;
+            let result = run(&input, backend.into())?;
             if let Some(parent) = output.parent() {
                 fs::create_dir_all(parent)?;
             }
@@ -155,23 +164,27 @@ fn main() -> Result<()> {
         } => {
             ensure!(repetitions >= 3, "at least three repetitions are required");
             let kind = BackendKind::from(backend);
-            let _cold = preflight(&input, kind)?;
+            let _cold = run(&input, kind)?;
             let mut timings = Vec::with_capacity(repetitions);
             let mut last = None;
             for _ in 0..repetitions {
                 let started = Instant::now();
-                last = Some(preflight(&input, kind)?);
+                last = Some(run(&input, kind)?);
                 timings.push(started.elapsed().as_secs_f64());
             }
             timings.sort_by(f64::total_cmp);
             let last = last.unwrap();
             let report = Benchmark {
                 accepted_for_performance_claim: last.converged,
-                backend: kind,
+                requested_backend: kind,
+                actual_backend: last.provenance.actual_backend,
+                converged: last.converged,
+                iterations: last.iterations,
                 repetitions,
                 min_seconds: timings[0],
                 median_seconds: timings[timings.len() / 2],
                 max_seconds: *timings.last().unwrap(),
+                provenance: last.provenance,
                 stop_reason: last.stop_reason,
             };
             let rendered = serde_json::to_string_pretty(&report)?;

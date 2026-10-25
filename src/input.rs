@@ -175,4 +175,34 @@ lattice_bohr = [[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]]
 "#;
         assert!(toml::from_str::<SimulationInput>(bad).is_err());
     }
+
+    #[test]
+    fn rejects_out_of_scope_physics() {
+        let mut input: SimulationInput = toml::from_str(
+            r#"
+cutoff_ry = 12.0
+xc = "lda-pz"
+pseudopotentials = { Si = "Si.UPF" }
+atoms = [{ element = "Si", fractional = [0.0, 0.0, 0.0] }]
+[cell]
+lattice_bohr = [[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]]
+"#,
+        )
+        .unwrap();
+
+        input.k_points = "2x2x2".into();
+        assert!(input.validate().is_err());
+        input.k_points = "gamma".into();
+        input.spin_components = 2;
+        assert!(input.validate().is_err());
+        input.spin_components = 1;
+        input.xc = "pbe".into();
+        assert!(input.validate().is_err());
+        input.xc = "lda-pz".into();
+        input.cell.fixed = false;
+        assert!(input.validate().is_err());
+        input.cell.fixed = true;
+        input.atoms[0].element = "Al".into();
+        assert!(input.validate().is_err());
+    }
 }

@@ -6,6 +6,8 @@ use std::collections::BTreeMap;
 pub struct ScfResult {
     pub converged: bool,
     pub iterations: usize,
+    #[serde(default)]
+    pub atom_count: usize,
     pub total_energy_ry: Option<f64>,
     pub energy_terms: BTreeMap<String, f64>,
     pub eigenvalues_ry: Vec<f64>,

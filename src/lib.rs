@@ -10,6 +10,7 @@ pub mod fft;
 pub mod input;
 pub mod lattice;
 pub mod metal;
+pub mod operator;
 pub mod provenance;
 pub mod pseudo;
 pub mod result;
