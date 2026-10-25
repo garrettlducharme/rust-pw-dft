@@ -1,11 +1,21 @@
 {
   "schema_version": 1,
   "cpu": {
-    "tests_passed": 9,
+    "tests_passed": 14,
     "tests_failed": 0,
     "fft_roundtrip_relative_l2_gate": 1e-12,
     "parseval_relative_gate": 1e-12,
-    "clippy_all_targets_metal_feature": "passed"
+    "clippy_all_targets_metal_feature": "passed",
+    "scf": {
+      "accepted": true,
+      "iterations": 49,
+      "total_energy_ry": -14.529468342292569,
+      "qe_total_energy_ry": -14.52946835446514,
+      "energy_error_mev_atom": 0.00008280814150321396,
+      "maximum_occupied_eigenvalue_error_mev": 0.0002529139939519718,
+      "electron_count_error": 4.263256414560601e-14,
+      "maximum_orbital_residual_ry": 1.1803057763067715e-14
+    }
   },
   "metal": {
     "device": "Apple M5 Pro",
@@ -14,12 +24,24 @@
     "gate_passed": true
   },
   "scientific_scf": {
-    "implemented": false,
-    "accepted": false,
-    "behavior": "fail-closed"
+    "cpu_implemented": true,
+    "cpu_accepted": true,
+    "metal_implemented": false,
+    "metal_accepted": false,
+    "metal_behavior": "fail-closed"
   },
   "performance": {
-    "accepted": false,
-    "reason": "complete identical-physics CPU and Metal SCF paths do not yet exist"
+    "cpu_warmed_seconds": {
+      "min": 0.428332875,
+      "median": 0.4309215,
+      "max": 0.4318765,
+      "repetitions": 5
+    },
+    "metal_accepted": false,
+    "reason": "a complete identical-physics Metal SCF path does not yet exist"
+  },
+  "known_scaling_limit": {
+    "current_eigensolver": "dense faer reference solve",
+    "planned_eigensolver": "block Davidson with kinetic preconditioning"
   }
 }

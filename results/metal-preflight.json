@@ -1,0 +1,30 @@
+{
+  "converged": false,
+  "iterations": 0,
+  "atom_count": 2,
+  "total_energy_ry": null,
+  "energy_terms": {},
+  "eigenvalues_ry": [],
+  "electron_count": 8.0,
+  "residuals": [],
+  "timings": {
+    "preflight_seconds": 0.027563667
+  },
+  "provenance": {
+    "requested_backend": "metal-mixed",
+    "actual_backend": "metal-mixed",
+    "actual_device": "Apple M5 Pro",
+    "precision_policy": {
+      "storage": "complex-f32-gpu",
+      "reductions": "f32-partials+f64-final",
+      "eigensolve": "f64-cpu",
+      "energy": "f64-cpu"
+    },
+    "input_sha256": "7a6f32c22973bd1212173b6bcdc0e28bdfee250989eab88baef119ccbc670292",
+    "pseudopotential_sha256": {
+      "Si": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d"
+    },
+    "git_revision": "47d8c0b467a2671939df4940c12a2d1ff6f42b16"
+  },
+  "stop_reason": "Metal scientific SCF is fail-closed: only the native MPSGraph complex-FP32 FFT has passed; the resident Hamiltonian, mixed-precision reductions, and SCF orchestration are not yet integrated (169 plane waves, grid 15x15x15)"
+}

@@ -1,0 +1,54 @@
+{
+  "converged": true,
+  "iterations": 49,
+  "atom_count": 2,
+  "total_energy_ry": -14.529468342292569,
+  "energy_terms": {
+    "band_energy_ry": 2.4008872413537157,
+    "density_residual": 9.991912269926126e-9,
+    "energy_change_ry": 1.5987211554602254e-14,
+    "ewald_ry": -16.81732072317454,
+    "hartree_ry": 1.6451447206206355,
+    "highest_occupied_eigenvalue_ev": 7.127294198274419,
+    "integral_rho_vxc_ry": -6.564949669593508,
+    "maximum_orbital_residual_ry": 1.1803057763067715e-14,
+    "xc_ry": -5.032839809444618
+  },
+  "eigenvalues_ry": [
+    -0.3710957637214561,
+    0.5238464614660648,
+    0.5238464614661225,
+    0.5238464614661266
+  ],
+  "electron_count": 8.000000000000043,
+  "residuals": [
+    1.1803057763067715e-14,
+    9.42652934692293e-15,
+    1.0128354204134552e-14,
+    7.885573125085974e-15
+  ],
+  "timings": {
+    "density_seconds": 0.002298293,
+    "eigensolve_seconds": 0.13785366199999996,
+    "hamiltonian_seconds": 0.190385205,
+    "potential_seconds": 0.0020035430000000004,
+    "setup_seconds": 0.103082292,
+    "total_seconds": 0.442586625
+  },
+  "provenance": {
+    "requested_backend": "cpu-f64",
+    "actual_backend": "cpu-f64",
+    "actual_device": "Apple CPU (rustfft/f64 + faer dense-reference eigensolve)",
+    "precision_policy": {
+      "storage": "complex-f64",
+      "reductions": "f64",
+      "eigensolve": "f64",
+      "energy": "f64"
+    },
+    "input_sha256": "7a6f32c22973bd1212173b6bcdc0e28bdfee250989eab88baef119ccbc670292",
+    "pseudopotential_sha256": {
+      "Si": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d"
+    },
+    "git_revision": "47d8c0b467a2671939df4940c12a2d1ff6f42b16"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "accepted_for_performance_claim": true,
+  "requested_backend": "cpu-f64",
+  "actual_backend": "cpu-f64",
+  "converged": true,
+  "iterations": 49,
+  "repetitions": 5,
+  "min_seconds": 0.428332875,
+  "median_seconds": 0.4309215,
+  "max_seconds": 0.4318765,
+  "provenance": {
+    "requested_backend": "cpu-f64",
+    "actual_backend": "cpu-f64",
+    "actual_device": "Apple CPU (rustfft/f64 + faer dense-reference eigensolve)",
+    "precision_policy": {
+      "storage": "complex-f64",
+      "reductions": "f64",
+      "eigensolve": "f64",
+      "energy": "f64"
+    },
+    "input_sha256": "7a6f32c22973bd1212173b6bcdc0e28bdfee250989eab88baef119ccbc670292",
+    "pseudopotential_sha256": {
+      "Si": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d"
+    },
+    "git_revision": "47d8c0b467a2671939df4940c12a2d1ff6f42b16"
+  },
+  "stop_reason": null
+}
