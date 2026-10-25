@@ -1,0 +1,29 @@
+{
+  "converged": false,
+  "iterations": 0,
+  "total_energy_ry": null,
+  "energy_terms": {},
+  "eigenvalues_ry": [],
+  "electron_count": 8.0,
+  "residuals": [],
+  "timings": {
+    "preflight_seconds": 0.012221208
+  },
+  "provenance": {
+    "requested_backend": "cpu-f64",
+    "actual_backend": "cpu-f64",
+    "actual_device": "Apple CPU (rustfft/f64)",
+    "precision_policy": {
+      "storage": "complex-f64",
+      "reductions": "f64",
+      "eigensolve": "f64",
+      "energy": "f64"
+    },
+    "input_sha256": "314e1ab353b83460393d4f6c998d4cb6def41969297c7a3f046bb2b2f6f74b04",
+    "pseudopotential_sha256": {
+      "Si": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d"
+    },
+    "git_revision": "unavailable"
+  },
+  "stop_reason": "scientific SCF is fail-closed: Hamiltonian, nonlocal projector application, Davidson, Hartree/Ewald, and density mixing are not yet integrated (169 plane waves, grid 15x15x15)"
+}
