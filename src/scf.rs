@@ -18,6 +18,12 @@ use std::time::Instant;
 
 const RY_TO_EV: f64 = 13.605_693_122_994;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScfRunProfile {
+    Scientific,
+    MatchedBenchmark,
+}
+
 struct MetalResidentDavidson<'a> {
     hamiltonian: &'a CpuHamiltonian,
     context: &'a mut crate::metal::HamiltonianContext,
@@ -105,6 +111,28 @@ fn relative_density_residual(input: &[f64], output: &[f64]) -> f64 {
 }
 
 pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResult> {
+    run_with_profile(input_path, requested_backend, ScfRunProfile::Scientific)
+}
+
+/// Run either backend with the same mixed-precision-compatible convergence
+/// policy. This is intentionally separate from the stricter CPU scientific
+/// path so benchmark reports cannot accidentally compare different gates.
+pub fn run_matched_benchmark(
+    input_path: &Path,
+    requested_backend: BackendKind,
+) -> Result<ScfResult> {
+    run_with_profile(
+        input_path,
+        requested_backend,
+        ScfRunProfile::MatchedBenchmark,
+    )
+}
+
+fn run_with_profile(
+    input_path: &Path,
+    requested_backend: BackendKind,
+    profile: ScfRunProfile,
+) -> Result<ScfResult> {
     let total_started = Instant::now();
     let input = SimulationInput::from_path(input_path)?;
     let lattice = Lattice::new(input.cell.lattice_bohr)?;
@@ -141,10 +169,10 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
     let (
         actual_device,
         precision_policy,
-        eigensolver_tolerance,
-        scf_orbital_tolerance,
-        scf_energy_tolerance,
-        scf_density_tolerance,
+        mut eigensolver_tolerance,
+        mut scf_orbital_tolerance,
+        mut scf_energy_tolerance,
+        mut scf_density_tolerance,
     ) = match requested_backend {
         BackendKind::CpuF64 => (
             "Apple CPU (rustfft/f64 + block-Davidson/faer-f64)".into(),
@@ -169,6 +197,12 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
             )
         }
     };
+    if profile == ScfRunProfile::MatchedBenchmark {
+        eigensolver_tolerance = 1.0e-5;
+        scf_orbital_tolerance = 1.0e-5;
+        scf_energy_tolerance = input.scf_options.energy_tolerance_ry.max(5.0e-7);
+        scf_density_tolerance = input.scf_options.density_tolerance.max(5.0e-8);
+    }
     let mut metal_context = match requested_backend {
         BackendKind::CpuF64 => None,
         BackendKind::MetalMixed => Some(
@@ -314,6 +348,7 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
             ("density_tolerance".into(), scf_density_tolerance),
             ("energy_change_ry".into(), final_energy_change),
             ("energy_tolerance_ry".into(), scf_energy_tolerance),
+            ("eigensolver_tolerance_ry".into(), eigensolver_tolerance),
             (
                 "orbital_residual_tolerance_ry".into(),
                 scf_orbital_tolerance,

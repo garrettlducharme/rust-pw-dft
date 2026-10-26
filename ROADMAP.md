@@ -131,7 +131,8 @@ Every research release must provide:
 - invariant tests for Hermiticity, orthonormality, Parseval, charge, and
   deterministic initialization;
 - min/median/max end-to-end benchmarks with identical physics and convergence
-  gates;
+  gates, produced by `bench-compare` rather than inferred from independent
+  single-backend reports;
 - documented known limitations and unsupported input behavior;
 - license and provenance records for code, dependencies, and fixtures;
 - no silent numerical, backend, or physics fallback.

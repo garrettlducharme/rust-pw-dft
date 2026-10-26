@@ -159,6 +159,11 @@ resident path must preserve scientific acceptance and at least `1.20x` median
 end-to-end speedup over CPU FP64. Results must report min/median/max and may not
 reuse timings from an earlier source revision.
 
+The `bench-compare` command enforces this as a single operation. Both backends
+use the recorded `matched-metal-compatible-v1` convergence profile; the report
+fails closed if source/input/pseudopotential provenance or effective
+tolerances differ, or if either scientific accuracy or speed misses its gate.
+
 ## Delivery sequence
 
 1. Add resident Ritz/residual construction and fixed-density tests. **Done.**

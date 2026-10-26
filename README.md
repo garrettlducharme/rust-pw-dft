@@ -62,7 +62,10 @@ machine-readable evidence rather than feature presence alone.
   per iteration, while projected solves, density construction, convergence,
   and energy assembly remain CPU FP64;
 - `run`, `compare`, and `bench` command surfaces that refuse scientific or
-  performance claims for incomplete/non-converged results.
+  performance claims for incomplete/non-converged results, plus
+  `bench-compare`, which applies one recorded convergence policy to CPU and
+  Metal and accepts a speed claim only when provenance, accuracy, and the
+  end-to-end threshold all pass together.
 
 ## Accepted CPU result
 
@@ -110,7 +113,7 @@ cargo test --features metal
 cargo run -- run examples/si2.toml --backend cpu --output result.json
 cargo run --release -- compare results/cpu-scf.json results/qe-reference.json
 cargo run --release --features metal -- run examples/si2.toml --backend metal --output result-metal.json
-cargo run --release --features metal -- bench examples/si16.toml --backend metal --repetitions 5 --output benchmark-metal.json
+cargo run --release --features metal -- bench-compare examples/si16.toml --repetitions 5 --output benchmark-comparison.json
 ```
 
 The CPU scientific milestone and resident Metal Si2 accuracy and transfer
