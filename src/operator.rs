@@ -1299,10 +1299,16 @@ mod tests {
                 2 * wavefunctions.len() * wavefunctions.len() + 2 * wavefunctions.len() + 4
             );
             let metal_norms = persistent_context.residual_norms(&wavefunctions).unwrap();
+            let mut maximum_norm_relative_error = 0.0_f64;
             for (vector, &metal_norm) in wavefunctions.iter().zip(&metal_norms) {
                 let cpu_norm = vector.iter().map(Complex64::norm_sqr).sum::<f64>().sqrt();
-                assert!((metal_norm - cpu_norm).abs() < 1.0e-5);
+                maximum_norm_relative_error = maximum_norm_relative_error
+                    .max((metal_norm - cpu_norm).abs() / cpu_norm.max(1.0e-30));
             }
+            eprintln!(
+                "silicon Metal direct-norm maximum relative error: {maximum_norm_relative_error:e}"
+            );
+            assert!(maximum_norm_relative_error < 1.0e-5);
             assert_eq!(persistent_context.norm_reduction_calls(), 1);
             assert_eq!(
                 persistent_context.norm_reduction_vectors(),

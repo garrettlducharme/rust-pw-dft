@@ -4,6 +4,10 @@ An educational, fail-closed plane-wave DFT prototype aimed at Apple Silicon.
 It is dual-licensed under MIT or Apache-2.0 and contains no code copied from
 GPL DFT implementations.
 
+The path from the validated silicon prototype to a research-ready Mac package
+is tracked in [`ROADMAP.md`](ROADMAP.md). Claims are tied to committed,
+machine-readable evidence rather than feature presence alone.
+
 ## Implemented
 
 - strict fixed-cell, spinless, Gamma-only LDA-PZ silicon input contract;
@@ -93,4 +97,6 @@ integrated Rayleigh-Ritz reduction milestone, and larger-workload numeric speed
 threshold are accepted. The next bounded milestone is a GPU-resident Davidson
 basis with GPU orthogonalization, residual/norm evaluation, and correction
 updates; only that path may turn the observed speedup into a production
-performance acceptance claim.
+performance acceptance claim. Its buffer contract, dataflow, transfer
+accounting, and fail-closed gates are specified in
+[`docs/resident-davidson.md`](docs/resident-davidson.md).
