@@ -1,12 +1,16 @@
 use anyhow::{Context, Result, bail, ensure};
 use clap::{Parser, Subcommand, ValueEnum};
 use rust_pw_dft::backend::BackendKind;
-use rust_pw_dft::result::{Provenance, ScfResult};
-use rust_pw_dft::scf::{run, run_matched_benchmark};
+use rust_pw_dft::checkpoint;
+use rust_pw_dft::result::{Provenance, RESULT_SCHEMA_VERSION, ScfResult};
+use rust_pw_dft::scf::{ScfRunControl, run_matched_benchmark, run_with_control};
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+
+const COMPARISON_SCHEMA_VERSION: u32 = 1;
+const BENCHMARK_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -23,6 +27,29 @@ enum Command {
         backend: BackendArg,
         #[arg(long)]
         output: PathBuf,
+        #[arg(long)]
+        checkpoint: Option<PathBuf>,
+        #[arg(long, default_value_t = 1)]
+        checkpoint_every: usize,
+        #[arg(long)]
+        stop_after: Option<usize>,
+    },
+    Resume {
+        input: PathBuf,
+        checkpoint: PathBuf,
+        #[arg(long, value_enum)]
+        backend: BackendArg,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        checkpoint_output: Option<PathBuf>,
+        #[arg(long, default_value_t = 1)]
+        checkpoint_every: usize,
+        #[arg(long)]
+        stop_after: Option<usize>,
+    },
+    InspectCheckpoint {
+        checkpoint: PathBuf,
     },
     Compare {
         result: PathBuf,
@@ -62,6 +89,7 @@ impl From<BackendArg> for BackendKind {
 
 #[derive(Serialize)]
 struct Comparison {
+    schema_version: u32,
     accepted: bool,
     total_energy_error_mev_atom: f64,
     maximum_occupied_eigenvalue_error_mev: f64,
@@ -70,6 +98,7 @@ struct Comparison {
 
 #[derive(Serialize)]
 struct Benchmark {
+    schema_version: u32,
     accepted_for_performance_claim: bool,
     requested_backend: BackendKind,
     actual_backend: BackendKind,
@@ -85,6 +114,7 @@ struct Benchmark {
 
 #[derive(Serialize)]
 struct MatchedBenchmarkComparison {
+    schema_version: u32,
     accepted_for_performance_claim: bool,
     convergence_profile: &'static str,
     repetitions: usize,
@@ -95,11 +125,55 @@ struct MatchedBenchmarkComparison {
     stop_reason: Option<String>,
 }
 
+#[derive(Serialize)]
+struct CheckpointSummary {
+    schema_version: u32,
+    file_sha256: String,
+    writer_git_revision: String,
+    input_sha256: String,
+    pseudopotential_sha256: std::collections::BTreeMap<String, String>,
+    requested_backend: BackendKind,
+    precision_policy: rust_pw_dft::PrecisionPolicy,
+    run_profile: String,
+    iteration_completed: usize,
+    fft_shape: [usize; 3],
+    g_vector_count: usize,
+    occupied_states: usize,
+    density_values: usize,
+    orbital_count: usize,
+    elapsed_seconds: f64,
+}
+
 fn read_result(path: &Path) -> Result<ScfResult> {
-    serde_json::from_slice(
+    let result: ScfResult = serde_json::from_slice(
         &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
     )
-    .with_context(|| format!("invalid result {}", path.display()))
+    .with_context(|| format!("invalid result {}", path.display()))?;
+    ensure!(
+        result.schema_version == RESULT_SCHEMA_VERSION,
+        "unsupported result schema_version {}; expected {}",
+        result.schema_version,
+        RESULT_SCHEMA_VERSION
+    );
+    Ok(result)
+}
+
+fn write_result(path: &Path, result: &ScfResult) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, serde_json::to_vec_pretty(result)?)?;
+    println!(
+        "actual backend: {:?}; device: {}",
+        result.provenance.actual_backend, result.provenance.actual_device
+    );
+    if !result.converged {
+        bail!(
+            "SCF did not converge: {}",
+            result.stop_reason.as_deref().unwrap_or("unknown reason")
+        );
+    }
+    Ok(())
 }
 
 fn compare(result_path: &Path, reference_path: &Path) -> Result<Comparison> {
@@ -151,6 +225,7 @@ fn compare_results(result: &ScfResult, reference: &ScfResult) -> Result<Comparis
             (2.0, 1.0e-8)
         };
     Ok(Comparison {
+        schema_version: COMPARISON_SCHEMA_VERSION,
         accepted: energy_mev <= energy_tolerance_mev_atom
             && eigen_mev <= 5.0
             && electron_error <= electron_tolerance,
@@ -177,6 +252,7 @@ fn benchmark(
     timings.sort_by(f64::total_cmp);
     let last = last.unwrap();
     let report = Benchmark {
+        schema_version: BENCHMARK_SCHEMA_VERSION,
         accepted_for_performance_claim: false,
         requested_backend: kind,
         actual_backend: last.provenance.actual_backend,
@@ -216,22 +292,58 @@ fn main() -> Result<()> {
             input,
             backend,
             output,
+            checkpoint,
+            checkpoint_every,
+            stop_after,
         } => {
-            let result = run(&input, backend.into())?;
-            if let Some(parent) = output.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::write(&output, serde_json::to_vec_pretty(&result)?)?;
-            println!(
-                "actual backend: {:?}; device: {}",
-                result.provenance.actual_backend, result.provenance.actual_device
-            );
-            if !result.converged {
-                bail!(
-                    "SCF did not run: {}",
-                    result.stop_reason.as_deref().unwrap_or("unknown reason")
-                );
-            }
+            let control = ScfRunControl {
+                checkpoint_output: checkpoint,
+                checkpoint_every,
+                stop_after_scf_iterations: stop_after,
+                ..ScfRunControl::default()
+            };
+            let result = run_with_control(&input, backend.into(), &control)?;
+            write_result(&output, &result)?;
+        }
+        Command::Resume {
+            input,
+            checkpoint,
+            backend,
+            output,
+            checkpoint_output,
+            checkpoint_every,
+            stop_after,
+        } => {
+            let control = ScfRunControl {
+                resume_from: Some(checkpoint.clone()),
+                checkpoint_output: Some(checkpoint_output.unwrap_or(checkpoint)),
+                checkpoint_every,
+                stop_after_scf_iterations: stop_after,
+            };
+            let result = run_with_control(&input, backend.into(), &control)?;
+            write_result(&output, &result)?;
+        }
+        Command::InspectCheckpoint { checkpoint: path } => {
+            let loaded = checkpoint::read(&path)?;
+            let value = loaded.checkpoint;
+            let summary = CheckpointSummary {
+                schema_version: value.schema_version,
+                file_sha256: loaded.file_sha256,
+                writer_git_revision: value.writer_git_revision,
+                input_sha256: value.input_sha256,
+                pseudopotential_sha256: value.pseudopotential_sha256,
+                requested_backend: value.requested_backend,
+                precision_policy: value.precision_policy,
+                run_profile: value.run_profile,
+                iteration_completed: value.iteration_completed,
+                fft_shape: value.fft_shape,
+                g_vector_count: value.g_vector_count,
+                occupied_states: value.occupied_states,
+                density_values: value.density.len(),
+                orbital_count: value.orbitals.len(),
+                elapsed_seconds: value.elapsed_seconds,
+            };
+            println!("{}", serde_json::to_string_pretty(&summary)?);
         }
         Command::Compare { result, reference } => println!(
             "{}",
@@ -287,6 +399,7 @@ fn main() -> Result<()> {
             cpu.stop_reason = None;
             metal.stop_reason = None;
             let report = MatchedBenchmarkComparison {
+                schema_version: BENCHMARK_SCHEMA_VERSION,
                 accepted_for_performance_claim: accepted,
                 convergence_profile: "matched-metal-compatible-v1",
                 repetitions,

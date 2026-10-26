@@ -1,9 +1,9 @@
 [package]
 name = "rust-pw-dft"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-description = "A fail-closed educational plane-wave DFT prototype for Apple Silicon"
+description = "A fail-closed plane-wave DFT prototype for Apple Silicon GPUs"
 build = "build.rs"
 
 [features]
@@ -12,6 +12,7 @@ metal = []
 
 [dependencies]
 anyhow = "1.0"
+bincode = { version = "2.0", features = ["serde"] }
 clap = { version = "4.5", features = ["derive"] }
 faer = "0.22"
 hex = "0.4"

@@ -4,9 +4,12 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+pub const INPUT_SCHEMA_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SimulationInput {
+    pub schema_version: u32,
     pub cell: CellInput,
     pub atoms: Vec<AtomInput>,
     pub pseudopotentials: BTreeMap<String, PathBuf>,
@@ -111,6 +114,12 @@ impl SimulationInput {
     }
 
     pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.schema_version == INPUT_SCHEMA_VERSION,
+            "unsupported input schema_version {}; expected {}",
+            self.schema_version,
+            INPUT_SCHEMA_VERSION
+        );
         ensure!(self.cell.fixed, "cell relaxation is unsupported");
         ensure!(
             self.k_points.eq_ignore_ascii_case("gamma"),
@@ -164,6 +173,7 @@ mod tests {
     fn rejects_unknown_input_keys() {
         let bad = r#"
 cutoff_ry = 12.0
+schema_version = 1
 xc = "lda-pz"
 k_points = "gamma"
 spin_components = 1
@@ -177,10 +187,35 @@ lattice_bohr = [[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]]
     }
 
     #[test]
+    fn requires_supported_input_schema_version() {
+        let missing = r#"
+cutoff_ry = 12.0
+xc = "lda-pz"
+pseudopotentials = { Si = "Si.UPF" }
+atoms = [{ element = "Si", fractional = [0.0, 0.0, 0.0] }]
+[cell]
+lattice_bohr = [[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]]
+"#;
+        assert!(toml::from_str::<SimulationInput>(missing).is_err());
+
+        let mut unsupported = missing.replacen("cutoff_ry", "schema_version = 2\ncutoff_ry", 1);
+        let parsed: SimulationInput = toml::from_str(&unsupported).unwrap();
+        assert!(parsed.validate().is_err());
+        unsupported = unsupported.replacen("schema_version = 2", "schema_version = 1", 1);
+        assert!(
+            toml::from_str::<SimulationInput>(&unsupported)
+                .unwrap()
+                .validate()
+                .is_ok()
+        );
+    }
+
+    #[test]
     fn rejects_out_of_scope_physics() {
         let mut input: SimulationInput = toml::from_str(
             r#"
 cutoff_ry = 12.0
+schema_version = 1
 xc = "lda-pz"
 pseudopotentials = { Si = "Si.UPF" }
 atoms = [{ element = "Si", fractional = [0.0, 0.0, 0.0] }]

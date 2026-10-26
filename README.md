@@ -18,6 +18,11 @@ machine-readable evidence rather than feature presence alone.
   norm-conserving UPF v2 PZ files, including local potential, radial mesh,
   separable projectors, and `Dij`;
 - explicit provenance and precision policy in JSON results;
+- required version identifiers for input, result, comparison, benchmark, and
+  checkpoint contracts;
+- checksummed binary SCF checkpoints with atomic replacement, strict
+  compatibility validation, cumulative timing/counter restoration, compact
+  inspection, and deterministic CPU and Metal interruption/resume tests;
 - a long-lived MPSGraph complex-FP32 context with persistent input, potential,
   kinetic, and projector buffers behind the macOS-only `metal` feature;
 - compact separable `B D B-dagger` nonlocal application, avoiding the former
@@ -117,7 +122,16 @@ cargo run -- run examples/si2.toml --backend cpu --output result.json
 cargo run --release -- compare results/cpu-scf.json results/qe-reference.json
 cargo run --release --features metal -- run examples/si2.toml --backend metal --output result-metal.json
 cargo run --release --features metal -- bench-compare examples/si16.toml --repetitions 5 --output benchmark-comparison.json
+cargo run --release --features metal -- run examples/si16.toml --backend metal --output paused.json --checkpoint si16.chk --stop-after 10
+cargo run --release -- inspect-checkpoint si16.chk
+cargo run --release --features metal -- resume examples/si16.toml si16.chk --backend metal --output resumed.json
 ```
+
+Checkpoint format, atomicity, and compatibility rules are documented in
+[`docs/checkpoints.md`](docs/checkpoints.md). A checkpoint is intentionally
+bound to its input, pseudopotentials, backend, precision policy, run profile,
+source revision, FFT grid, and basis dimensions; incompatible state is rejected
+rather than approximately resumed.
 
 The CPU scientific milestone and resident Metal Si2/Si16 accuracy, transfer,
 and matched-performance milestones are accepted. The stateful driver is

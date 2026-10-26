@@ -48,8 +48,11 @@ Exit criteria:
 
 Build the machinery required to add physics without weakening evidence.
 
-- version the input, result, checkpoint, and validation-manifest schemas;
-- add binary checkpoints with hashes, compatibility checks, and atomic writes;
+- version the input, result, comparison, benchmark, checkpoint, and
+  validation-manifest schemas; **implemented at the format level**
+- add binary checkpoints with hashes, compatibility checks, atomic writes,
+  compact inspection, and CPU/Metal interruption equivalence tests;
+  **implemented for the current SCF state boundary**
 - provide a fixture manifest that records licenses, origins, download hashes,
   and independent reference commands;
 - separate smoke, invariant, scientific, and performance suites;

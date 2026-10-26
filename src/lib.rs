@@ -5,6 +5,7 @@
 //! norm-conserving LDA-PZ silicon calculations.
 
 pub mod backend;
+pub mod checkpoint;
 pub mod eigensolver;
 pub mod fft;
 pub mod input;

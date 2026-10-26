@@ -1,4 +1,5 @@
 {
+  "schema_version": 1,
   "converged": true,
   "iterations": 49,
   "atom_count": 2,

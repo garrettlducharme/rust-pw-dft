@@ -1,8 +1,10 @@
 {
+  "schema_version": 1,
   "accepted_for_performance_claim": true,
   "convergence_profile": "matched-metal-compatible-v1",
   "repetitions": 5,
   "cpu": {
+    "schema_version": 1,
     "accepted_for_performance_claim": false,
     "requested_backend": "cpu-f64",
     "actual_backend": "cpu-f64",
@@ -31,6 +33,7 @@
     "stop_reason": null
   },
   "metal": {
+    "schema_version": 1,
     "accepted_for_performance_claim": false,
     "requested_backend": "metal-mixed",
     "actual_backend": "metal-mixed",

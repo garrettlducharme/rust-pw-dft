@@ -17,6 +17,13 @@ jobs:
           components: clippy, rustfmt
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
+      - name: Fetch pinned silicon pseudopotential fixture
+        run: |
+          curl --fail --location \
+            https://gitlab.com/QEF/q-e/-/raw/qe-7.6/EPW/examples/sic/pp/Si.pz-vbc.UPF \
+            --output pseudopotentials/Si.pz-vbc.UPF
+          echo 'd75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d  pseudopotentials/Si.pz-vbc.UPF' \
+            | sha256sum --check
       - run: cargo test --locked
 
   macos-metal-build:

@@ -1,3 +1,4 @@
+schema_version = 1
 cutoff_ry = 12.0
 xc = "lda-pz"
 k_points = "gamma"
