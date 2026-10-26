@@ -185,7 +185,7 @@ fn main() -> Result<()> {
             let performance_eligible = last.converged && kind == BackendKind::CpuF64;
             let benchmark_stop_reason = if kind == BackendKind::MetalMixed && last.converged {
                 Some(
-                    "Metal uses persistent operator buffers plus GPU cross-Gram and direct residual-norm partial reductions, but the canonical Davidson basis, orthogonalization, residual construction, and correction vectors remain host FP64 and are staged by block; a fully resident eigensolver is required for a production performance claim"
+                    "The resident Metal eigensolver passed its per-iteration transfer invariant, but this single-backend report is not an accuracy-matched CPU/Metal comparison; regenerate matched scientific and five-warm-run evidence at this exact revision before making a production performance claim"
                         .into(),
                 )
             } else {

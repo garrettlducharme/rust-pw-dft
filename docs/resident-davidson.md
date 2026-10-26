@@ -1,6 +1,6 @@
 # Resident Davidson design
 
-This document defines the next Metal eigensolver milestone. It is an
+This document defines the first production Metal eigensolver milestone. It is an
 implementation contract, not a claim that the full path already exists.
 
 ## Goal
@@ -31,15 +31,15 @@ The implementation already provides:
   application, and device-local basis/H-basis journal append;
 - device-local journal replacement from resident Ritz/applied-Ritz blocks that
   preserves raw corrections for post-restart reorthogonalization;
-- explicit restart resynchronization and fail-closed error handling.
+- per-iteration transfer accounting and fail-closed error handling.
 
-The production driver still constructs Ritz vectors and residuals in complex
-FP64, preconditions and orthogonalizes corrections, and treats its basis
-vectors as canonical. The resident formation, preconditioning, and
-orthogonalization, Hamiltonian, append, and restart paths are currently fixed-
-density-tested primitives, not yet the production iteration path. They
-therefore prove the complete kernel boundary without yet removing normal-
-iteration full-vector traffic from the production driver.
+The production SCF driver now uses this resident path. CPU FP64 receives the
+small projected Hamiltonian, finishes reduction partials, solves the projected
+Rayleigh-Ritz problem, and makes convergence decisions. A normal Davidson
+iteration transfers no full wavefunction. The initial basis is uploaded once,
+and final Ritz vectors are downloaded once and reorthonormalized in CPU FP64
+for density and energy assembly. Fixed-density kernel tests and a complete Si2
+SCF test cover the integrated path; matched Si16 evidence remains pending.
 
 ## Buffer ownership
 
@@ -166,7 +166,8 @@ reuse timings from an earlier source revision.
 3. Add resident Hamiltonian application and correction append. **Done.**
 4. Replace host restart resynchronization with a device-local restart. **Done.**
 5. Add transfer accounting and assert the normal-iteration residency invariant.
-6. Integrate the stateful driver into SCF behind the Metal backend.
+   **Done.**
+6. Integrate the stateful driver into SCF behind the Metal backend. **Done.**
 7. Regenerate Si2 and Si16 scientific and benchmark evidence at the committed
    revision.
 

@@ -665,6 +665,50 @@ impl CpuHamiltonian {
     }
 
     #[cfg(all(feature = "metal", target_os = "macos"))]
+    pub fn initialize_metal_resident_davidson(
+        &self,
+        context: &mut crate::metal::HamiltonianContext,
+        wavefunctions: &[Vec<Complex64>],
+        hartree_xc_real_ry: &[f64],
+    ) -> Result<()> {
+        ensure!(
+            !wavefunctions.is_empty(),
+            "resident Metal Davidson initial basis is empty"
+        );
+        ensure!(
+            hartree_xc_real_ry.len() == self.fft.len(),
+            "real-space potential has the wrong grid size"
+        );
+        let mut grid_input = vec![Complex32::default(); self.fft.len() * wavefunctions.len()];
+        let mut compact_input = Vec::with_capacity(self.dimension() * wavefunctions.len());
+        for (state, wavefunction) in wavefunctions.iter().enumerate() {
+            ensure!(
+                wavefunction.len() == self.dimension(),
+                "wavefunction has the wrong dimension"
+            );
+            let grid_offset = state * self.fft.len();
+            for (basis, &grid_index) in self.basis_grid_indices.iter().enumerate() {
+                let value = wavefunction[basis];
+                let value = Complex32::new(value.re as f32, value.im as f32);
+                grid_input[grid_offset + grid_index] = value;
+                compact_input.push(value);
+            }
+        }
+        let potential: Vec<_> = self
+            .ionic_local_real_ry
+            .iter()
+            .zip(hartree_xc_real_ry)
+            .map(|(&ionic, &electronic)| Complex32::new((ionic + electronic) as f32, 0.0))
+            .collect();
+        context.initialize_resident_davidson(
+            &grid_input,
+            &compact_input,
+            &potential,
+            wavefunctions.len(),
+        )
+    }
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
     pub fn apply_hamiltonian_metal_persistent(
         &self,
         context: &mut crate::metal::HamiltonianContext,
@@ -729,6 +773,16 @@ impl CpuHamiltonian {
         &self,
         _max_batch: usize,
     ) -> Result<crate::metal::HamiltonianContext> {
+        anyhow::bail!("Metal Hamiltonian requires the macOS-only `metal` feature")
+    }
+
+    #[cfg(not(all(feature = "metal", target_os = "macos")))]
+    pub fn initialize_metal_resident_davidson(
+        &self,
+        _context: &mut crate::metal::HamiltonianContext,
+        _wavefunctions: &[Vec<Complex64>],
+        _hartree_xc_real_ry: &[f64],
+    ) -> Result<()> {
         anyhow::bail!("Metal Hamiltonian requires the macOS-only `metal` feature")
     }
 

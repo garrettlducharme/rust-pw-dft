@@ -28,6 +28,33 @@ pub struct DavidsonResult {
     pub residual_norms: Vec<f64>,
 }
 
+/// Stateful boundary for an eigensolver whose full-vector state remains on an
+/// accelerator. Implementations may exchange compact projected matrices and
+/// convergence scalars, but normal iterations must not upload or download a
+/// complete wavefunction.
+pub trait ResidentDavidsonBackend {
+    fn initialize(&mut self, basis: &[Vec<Complex64>]) -> Result<()>;
+    fn resident_count(&self) -> usize;
+    fn projected_hamiltonian(&mut self, subspace: usize) -> Result<Vec<Complex64>>;
+    fn form_ritz_residuals(
+        &mut self,
+        coefficients: &[Vec<Complex64>],
+        eigenvalues: &[f64],
+    ) -> Result<()>;
+    fn residual_norms(&mut self, roots: usize) -> Result<Vec<f64>>;
+    fn precondition(&mut self, active_roots: &[bool]) -> Result<()>;
+    fn restart_from_ritz(&mut self, roots: usize) -> Result<()>;
+    fn orthonormalize_corrections(&mut self, active_roots: &[bool]) -> Result<usize>;
+    fn apply_accepted_corrections(&mut self, accepted_count: usize) -> Result<()>;
+    fn download_ritz(&mut self, roots: usize) -> Result<Vec<Vec<Complex64>>>;
+    fn full_vector_transfer_bytes(&self) -> (usize, usize);
+    fn verify_iteration_residency(
+        &mut self,
+        expected_upload_bytes: usize,
+        expected_download_bytes: usize,
+    ) -> Result<()>;
+}
+
 fn inner_product(left: &[Complex64], right: &[Complex64]) -> Complex64 {
     left.iter().zip(right).map(|(a, b)| a.conj() * b).sum()
 }
@@ -80,6 +107,117 @@ fn combine_basis(basis: &[Vec<Complex64>], coefficients: &[Complex64]) -> Vec<Co
         }
     }
     result
+}
+
+fn validate_davidson_inputs(kinetic_diagonal: &[f64], options: &DavidsonOptions) -> Result<()> {
+    let dimension = kinetic_diagonal.len();
+    ensure!(dimension > 0, "Davidson dimension must be nonzero");
+    ensure!(
+        options.roots > 0 && options.roots <= dimension,
+        "invalid Davidson root count"
+    );
+    ensure!(
+        options.residual_tolerance.is_finite() && options.residual_tolerance > 0.0,
+        "invalid Davidson residual tolerance"
+    );
+    ensure!(
+        options.max_iterations > 0,
+        "invalid Davidson iteration limit"
+    );
+    ensure!(
+        options.max_subspace > options.roots && options.max_subspace <= dimension,
+        "Davidson max_subspace must be in roots+1..=dimension"
+    );
+    ensure!(
+        kinetic_diagonal.iter().all(|value| value.is_finite()),
+        "kinetic diagonal contains non-finite values"
+    );
+    Ok(())
+}
+
+pub(crate) fn initialize_davidson_basis(
+    kinetic_diagonal: &[f64],
+    initial_vectors: Option<&[Vec<Complex64>]>,
+    options: &DavidsonOptions,
+) -> Result<Vec<Vec<Complex64>>> {
+    validate_davidson_inputs(kinetic_diagonal, options)?;
+    let dimension = kinetic_diagonal.len();
+    let mut basis = Vec::with_capacity(options.max_subspace);
+    if let Some(initial) = initial_vectors {
+        for vector in initial {
+            ensure!(
+                vector.len() == dimension,
+                "initial Davidson vector has wrong size"
+            );
+            if let Some(vector) = orthonormalize_candidate(vector.clone(), &basis) {
+                basis.push(vector);
+            }
+            if basis.len() == options.roots {
+                break;
+            }
+        }
+    }
+    let mut kinetic_order: Vec<_> = (0..dimension).collect();
+    kinetic_order.sort_by(|&a, &b| kinetic_diagonal[a].total_cmp(&kinetic_diagonal[b]));
+    for index in kinetic_order {
+        if basis.len() == options.roots {
+            break;
+        }
+        let mut vector = vec![Complex64::default(); dimension];
+        vector[index] = Complex64::new(1.0, 0.0);
+        if let Some(vector) = orthonormalize_candidate(vector, &basis) {
+            basis.push(vector);
+        }
+    }
+    ensure!(
+        basis.len() == options.roots,
+        "failed to initialize Davidson basis"
+    );
+    Ok(basis)
+}
+
+pub(crate) fn solve_raw_projected_hamiltonian(
+    raw_projection: &[Complex64],
+    subspace: usize,
+) -> Result<ProjectedEigenpairs> {
+    ensure!(
+        raw_projection.len() == subspace * subspace,
+        "cross-Gram backend returned the wrong matrix size"
+    );
+    let mut projected = vec![Complex64::default(); subspace * subspace];
+    for i in 0..subspace {
+        for j in 0..=i {
+            let lower = raw_projection[i * subspace + j];
+            let upper = raw_projection[j * subspace + i].conj();
+            let value = 0.5 * (lower + upper);
+            projected[i * subspace + j] = if i == j {
+                Complex64::new(value.re, 0.0)
+            } else {
+                value
+            };
+            projected[j * subspace + i] = projected[i * subspace + j].conj();
+        }
+    }
+    projected_hermitian_eigensolve(&projected, subspace)
+}
+
+fn download_orthonormalized_ritz<B: ResidentDavidsonBackend>(
+    backend: &mut B,
+    roots: usize,
+    dimension: usize,
+) -> Result<Vec<Vec<Complex64>>> {
+    let downloaded = backend.download_ritz(roots)?;
+    ensure!(
+        downloaded.len() == roots && downloaded.iter().all(|vector| vector.len() == dimension),
+        "resident Ritz download returned the wrong shape"
+    );
+    let mut orthonormal = Vec::with_capacity(roots);
+    for vector in downloaded {
+        let vector = orthonormalize_candidate(vector, &orthonormal)
+            .ok_or_else(|| anyhow::anyhow!("resident Ritz download is rank deficient"))?;
+        orthonormal.push(vector);
+    }
+    Ok(orthonormal)
 }
 
 /// Block Davidson eigensolver with diagonal kinetic preconditioning.
@@ -170,59 +308,7 @@ where
     N: FnMut(&[Vec<Complex64>]) -> Result<Vec<f64>>,
 {
     let dimension = kinetic_diagonal.len();
-    ensure!(dimension > 0, "Davidson dimension must be nonzero");
-    ensure!(
-        options.roots > 0 && options.roots <= dimension,
-        "invalid Davidson root count"
-    );
-    ensure!(
-        options.residual_tolerance.is_finite() && options.residual_tolerance > 0.0,
-        "invalid Davidson residual tolerance"
-    );
-    ensure!(
-        options.max_iterations > 0,
-        "invalid Davidson iteration limit"
-    );
-    ensure!(
-        options.max_subspace > options.roots && options.max_subspace <= dimension,
-        "Davidson max_subspace must be in roots+1..=dimension"
-    );
-    ensure!(
-        kinetic_diagonal.iter().all(|value| value.is_finite()),
-        "kinetic diagonal contains non-finite values"
-    );
-
-    let mut basis = Vec::new();
-    if let Some(initial) = initial_vectors {
-        for vector in initial {
-            ensure!(
-                vector.len() == dimension,
-                "initial Davidson vector has wrong size"
-            );
-            if let Some(vector) = orthonormalize_candidate(vector.clone(), &basis) {
-                basis.push(vector);
-            }
-            if basis.len() == options.roots {
-                break;
-            }
-        }
-    }
-    let mut kinetic_order: Vec<_> = (0..dimension).collect();
-    kinetic_order.sort_by(|&a, &b| kinetic_diagonal[a].total_cmp(&kinetic_diagonal[b]));
-    for index in kinetic_order {
-        if basis.len() == options.roots {
-            break;
-        }
-        let mut vector = vec![Complex64::default(); dimension];
-        vector[index] = Complex64::new(1.0, 0.0);
-        if let Some(vector) = orthonormalize_candidate(vector, &basis) {
-            basis.push(vector);
-        }
-    }
-    ensure!(
-        basis.len() == options.roots,
-        "failed to initialize Davidson basis"
-    );
+    let mut basis = initialize_davidson_basis(kinetic_diagonal, initial_vectors, options)?;
 
     let mut applied_basis = apply_batch(&basis)?;
     ensure!(
@@ -249,25 +335,7 @@ where
     for iteration in 1..=options.max_iterations {
         let subspace = basis.len();
         let raw_projection = cross_gram(&basis, &applied_basis)?;
-        ensure!(
-            raw_projection.len() == subspace * subspace,
-            "cross-Gram backend returned the wrong matrix size"
-        );
-        let mut projected = vec![Complex64::default(); subspace * subspace];
-        for i in 0..subspace {
-            for j in 0..=i {
-                let lower = raw_projection[i * subspace + j];
-                let upper = raw_projection[j * subspace + i].conj();
-                let value = 0.5 * (lower + upper);
-                projected[i * subspace + j] = if i == j {
-                    Complex64::new(value.re, 0.0)
-                } else {
-                    value
-                };
-                projected[j * subspace + i] = projected[i * subspace + j].conj();
-            }
-        }
-        let projected_pairs = projected_hermitian_eigensolve(&projected, subspace)?;
+        let projected_pairs = solve_raw_projected_hamiltonian(&raw_projection, subspace)?;
         let eigenvalues = projected_pairs.eigenvalues[..options.roots].to_vec();
         let mut ritz_vectors = Vec::with_capacity(options.roots);
         let mut applied_ritz = Vec::with_capacity(options.roots);
@@ -372,6 +440,118 @@ where
     Ok(last_result)
 }
 
+/// Block Davidson driver for an accelerator-resident basis and Hamiltonian
+/// journal.
+///
+/// The initial basis is uploaded once. Each normal iteration exchanges only a
+/// compact projected matrix, Ritz coefficients, eigenvalues, reduction
+/// partials, and convergence decisions. A complete vector is downloaded only
+/// when the solve terminates, and any other full-vector transfer fails closed.
+pub fn block_davidson_resident<B>(
+    kinetic_diagonal: &[f64],
+    initial_vectors: Option<&[Vec<Complex64>]>,
+    options: &DavidsonOptions,
+    backend: &mut B,
+) -> Result<DavidsonResult>
+where
+    B: ResidentDavidsonBackend,
+{
+    let initial_basis = initialize_davidson_basis(kinetic_diagonal, initial_vectors, options)?;
+    backend.initialize(&initial_basis)?;
+    ensure!(
+        backend.resident_count() == initial_basis.len(),
+        "resident Davidson initialization produced the wrong basis size"
+    );
+    let (expected_upload_bytes, expected_download_bytes) = backend.full_vector_transfer_bytes();
+    let mut applications = initial_basis.len();
+    let mut last_result: DavidsonResult;
+
+    for iteration in 1..=options.max_iterations {
+        let subspace = backend.resident_count();
+        ensure!(
+            subspace >= options.roots && subspace <= options.max_subspace,
+            "resident Davidson subspace is out of range"
+        );
+        let raw_projection = backend.projected_hamiltonian(subspace)?;
+        let projected_pairs = solve_raw_projected_hamiltonian(&raw_projection, subspace)?;
+        ensure!(
+            projected_pairs.eigenvalues.len() >= options.roots
+                && projected_pairs.eigenvectors.len() >= options.roots,
+            "projected eigensolve returned too few roots"
+        );
+        let eigenvalues = projected_pairs.eigenvalues[..options.roots].to_vec();
+        let coefficients = projected_pairs.eigenvectors[..options.roots].to_vec();
+        backend.form_ritz_residuals(&coefficients, &eigenvalues)?;
+        let residual_norms = backend.residual_norms(options.roots)?;
+        ensure!(
+            residual_norms.len() == options.roots,
+            "resident norm backend returned the wrong vector count"
+        );
+        ensure!(
+            residual_norms
+                .iter()
+                .all(|norm| norm.is_finite() && *norm >= 0.0),
+            "resident norm backend returned an invalid residual norm"
+        );
+        let converged = residual_norms
+            .iter()
+            .all(|&norm| norm <= options.residual_tolerance);
+        last_result = DavidsonResult {
+            converged,
+            iterations: iteration,
+            hamiltonian_applications: applications,
+            eigenvalues,
+            eigenvectors: Vec::new(),
+            residual_norms,
+        };
+
+        backend.verify_iteration_residency(expected_upload_bytes, expected_download_bytes)?;
+        if converged || iteration == options.max_iterations {
+            last_result.eigenvectors =
+                download_orthonormalized_ritz(backend, options.roots, kinetic_diagonal.len())?;
+            return Ok(last_result);
+        }
+
+        let active_roots: Vec<_> = last_result
+            .residual_norms
+            .iter()
+            .map(|&norm| norm > options.residual_tolerance)
+            .collect();
+        let active_count = active_roots.iter().filter(|&&active| active).count();
+        ensure!(
+            active_count > 0,
+            "unconverged resident solve has no active roots"
+        );
+        backend.precondition(&active_roots)?;
+
+        if subspace + active_count > options.max_subspace {
+            backend.restart_from_ritz(options.roots)?;
+            ensure!(
+                backend.resident_count() == options.roots,
+                "resident Davidson restart produced the wrong basis size"
+            );
+        }
+        let basis_before_append = backend.resident_count();
+        let accepted = backend.orthonormalize_corrections(&active_roots)?;
+        if accepted == 0 {
+            last_result.eigenvectors =
+                download_orthonormalized_ritz(backend, options.roots, kinetic_diagonal.len())?;
+            return Ok(last_result);
+        }
+        backend.apply_accepted_corrections(accepted)?;
+        applications += accepted;
+        ensure!(
+            backend.resident_count() == basis_before_append + accepted,
+            "resident Davidson append produced the wrong basis size"
+        );
+        ensure!(
+            backend.resident_count() <= options.max_subspace,
+            "resident Davidson append exceeded its subspace"
+        );
+    }
+    unreachable!("positive Davidson iteration limit must terminate in the loop")
+}
+
 /// Solve a small CPU-FP64 Hermitian projected problem using `faer`.
 ///
 /// This is the Rayleigh-Ritz precision boundary shared by CPU and Metal
@@ -417,6 +597,99 @@ pub fn projected_hermitian_eigensolve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct MinimalResidentBackend {
+        basis: Vec<Vec<Complex64>>,
+        upload_bytes: usize,
+        download_bytes: usize,
+        leak_during_iteration: bool,
+        invariant_checks: usize,
+    }
+
+    impl MinimalResidentBackend {
+        fn new(leak_during_iteration: bool) -> Self {
+            Self {
+                basis: Vec::new(),
+                upload_bytes: 0,
+                download_bytes: 0,
+                leak_during_iteration,
+                invariant_checks: 0,
+            }
+        }
+    }
+
+    impl ResidentDavidsonBackend for MinimalResidentBackend {
+        fn initialize(&mut self, basis: &[Vec<Complex64>]) -> Result<()> {
+            self.basis = basis.to_vec();
+            self.upload_bytes = basis.iter().map(|vector| vector.len() * 16).sum();
+            Ok(())
+        }
+
+        fn resident_count(&self) -> usize {
+            self.basis.len()
+        }
+
+        fn projected_hamiltonian(&mut self, subspace: usize) -> Result<Vec<Complex64>> {
+            ensure!(subspace == 1, "test backend only supports one state");
+            Ok(vec![Complex64::new(1.0, 0.0)])
+        }
+
+        fn form_ritz_residuals(
+            &mut self,
+            _coefficients: &[Vec<Complex64>],
+            _eigenvalues: &[f64],
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn residual_norms(&mut self, roots: usize) -> Result<Vec<f64>> {
+            ensure!(roots == 1, "test backend only supports one root");
+            Ok(vec![0.0])
+        }
+
+        fn precondition(&mut self, _active_roots: &[bool]) -> Result<()> {
+            anyhow::bail!("a converged test solve must not precondition")
+        }
+
+        fn restart_from_ritz(&mut self, _roots: usize) -> Result<()> {
+            anyhow::bail!("a converged test solve must not restart")
+        }
+
+        fn orthonormalize_corrections(&mut self, _active_roots: &[bool]) -> Result<usize> {
+            anyhow::bail!("a converged test solve must not form corrections")
+        }
+
+        fn apply_accepted_corrections(&mut self, _accepted_count: usize) -> Result<()> {
+            anyhow::bail!("a converged test solve must not append corrections")
+        }
+
+        fn download_ritz(&mut self, roots: usize) -> Result<Vec<Vec<Complex64>>> {
+            ensure!(roots == 1, "test backend only supports one root");
+            self.download_bytes += self.basis[0].len() * 16;
+            Ok(self.basis.clone())
+        }
+
+        fn full_vector_transfer_bytes(&self) -> (usize, usize) {
+            (self.upload_bytes, self.download_bytes)
+        }
+
+        fn verify_iteration_residency(
+            &mut self,
+            expected_upload_bytes: usize,
+            expected_download_bytes: usize,
+        ) -> Result<()> {
+            if self.leak_during_iteration {
+                self.download_bytes += self.basis[0].len() * 16;
+            }
+            ensure!(
+                self.upload_bytes == expected_upload_bytes
+                    && self.download_bytes == expected_download_bytes,
+                "resident Davidson iteration crossed a full-vector boundary"
+            );
+            self.invariant_checks += 1;
+            Ok(())
+        }
+    }
 
     #[test]
     fn solves_complex_hermitian_projection() {
@@ -562,5 +835,37 @@ mod tests {
         )
         .unwrap_err();
         assert!(invalid_value.to_string().contains("invalid residual norm"));
+    }
+
+    #[test]
+    fn resident_driver_allows_only_initial_upload_and_final_download() {
+        let kinetic = [1.0, 2.0];
+        let options = DavidsonOptions {
+            roots: 1,
+            residual_tolerance: 1.0e-12,
+            max_iterations: 2,
+            max_subspace: 2,
+        };
+        let mut backend = MinimalResidentBackend::new(false);
+        let result = block_davidson_resident(&kinetic, None, &options, &mut backend).unwrap();
+        assert!(result.converged);
+        assert_eq!(result.iterations, 1);
+        assert_eq!(result.eigenvalues, vec![1.0]);
+        assert_eq!(backend.invariant_checks, 1);
+        assert_eq!(backend.full_vector_transfer_bytes(), (32, 32));
+    }
+
+    #[test]
+    fn resident_driver_fails_closed_on_iteration_vector_transfer() {
+        let kinetic = [1.0, 2.0];
+        let options = DavidsonOptions {
+            roots: 1,
+            residual_tolerance: 1.0e-12,
+            max_iterations: 2,
+            max_subspace: 2,
+        };
+        let mut backend = MinimalResidentBackend::new(true);
+        let error = block_davidson_resident(&kinetic, None, &options, &mut backend).unwrap_err();
+        assert!(error.to_string().contains("crossed a full-vector boundary"));
     }
 }

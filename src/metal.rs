@@ -132,6 +132,13 @@ mod imp {
             error_buffer: *mut c_char,
             error_capacity: usize,
         ) -> c_int;
+        fn rpd_metal_hamiltonian_resident_read_ritz(
+            context: *mut c_void,
+            ritz_output_interleaved: *mut f32,
+            roots: usize,
+            error_buffer: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
         fn rpd_metal_hamiltonian_resident_partial_residual_norms(
             context: *mut c_void,
             partial_output_interleaved: *mut f32,
@@ -260,6 +267,8 @@ mod imp {
         resident_correction_hamiltonian_applications: usize,
         resident_corrections_appended: usize,
         resident_restarts: usize,
+        resident_driver_iterations: usize,
+        resident_transfer_invariant_checks: usize,
         resident_coefficient_upload_bytes: usize,
         resident_reduction_download_bytes: usize,
         resident_vector_download_bytes: usize,
@@ -365,6 +374,8 @@ mod imp {
                 resident_correction_hamiltonian_applications: 0,
                 resident_corrections_appended: 0,
                 resident_restarts: 0,
+                resident_driver_iterations: 0,
+                resident_transfer_invariant_checks: 0,
                 resident_coefficient_upload_bytes: 0,
                 resident_reduction_download_bytes: 0,
                 resident_vector_download_bytes: 0,
@@ -440,6 +451,111 @@ mod imp {
             Ok(())
         }
 
+        /// Upload and apply the initial Davidson basis while retaining both the
+        /// basis and its Hamiltonian image in the resident journal. Unlike the
+        /// validation `apply` boundary, this does not download H|psi>.
+        pub fn initialize_resident_davidson(
+            &mut self,
+            grid_input: &[Complex32],
+            compact_input: &[Complex32],
+            potential: &[Complex32],
+            batch: usize,
+        ) -> Result<()> {
+            let grid_points = self.shape.iter().product::<usize>();
+            if batch == 0 || batch > self.max_batch {
+                bail!(
+                    "resident Davidson initial batch {batch} exceeds configured maximum {}",
+                    self.max_batch
+                );
+            }
+            if grid_input.len() != grid_points * batch {
+                bail!("resident Davidson grid input has the wrong size");
+            }
+            if compact_input.len() != self.dimension * batch {
+                bail!("resident Davidson compact input has the wrong size");
+            }
+            if potential.len() != grid_points {
+                bail!("resident Davidson local potential has the wrong size");
+            }
+            self.begin_resident_davidson()?;
+            let mut error = vec![0_i8; 2048];
+            let status = unsafe {
+                rpd_metal_hamiltonian_apply(
+                    self.raw.as_ptr(),
+                    grid_input.as_ptr().cast::<f32>(),
+                    compact_input.as_ptr().cast::<f32>(),
+                    potential.as_ptr().cast::<f32>(),
+                    std::ptr::null_mut(),
+                    batch,
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            if status != 0 {
+                let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
+                bail!("resident Davidson initialization failed ({status}): {message}");
+            }
+            self.full_vector_upload_bytes +=
+                (grid_input.len() + compact_input.len()) * std::mem::size_of::<Complex32>();
+            if self.resident_count() != batch {
+                bail!("resident Davidson initialization did not retain its basis");
+            }
+            Ok(())
+        }
+
+        pub fn resident_count(&self) -> usize {
+            unsafe { rpd_metal_hamiltonian_resident_count(self.raw.as_ptr()) }
+        }
+
+        /// Project the already-resident Davidson basis against its resident
+        /// Hamiltonian images. This path cannot resynchronize from host vectors.
+        pub fn resident_projected_hamiltonian(
+            &mut self,
+            subspace: usize,
+        ) -> Result<Vec<num_complex::Complex64>> {
+            if subspace == 0 || subspace > self.max_batch {
+                bail!("resident Metal projection subspace is invalid");
+            }
+            if self.resident_count() != subspace {
+                bail!("resident Metal projection is out of sync");
+            }
+            let pair_count = subspace
+                .checked_mul(subspace)
+                .ok_or_else(|| anyhow::anyhow!("resident Metal projection size overflow"))?;
+            let partial_count = pair_count
+                .checked_mul(self.reduction_chunks)
+                .ok_or_else(|| anyhow::anyhow!("resident Metal reduction size overflow"))?;
+            let mut partials = vec![Complex32::default(); partial_count];
+            let mut error = vec![0_i8; 2048];
+            let status = unsafe {
+                rpd_metal_hamiltonian_resident_partial_gram(
+                    self.raw.as_ptr(),
+                    partials.as_mut_ptr().cast::<f32>(),
+                    subspace,
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            if status != 0 {
+                let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
+                bail!("resident Metal projection failed ({status}): {message}");
+            }
+            self.gram_reduction_calls += 1;
+            self.gram_reduction_pairs += pair_count;
+            self.resident_projection_calls += 1;
+            self.resident_reduction_download_bytes +=
+                partials.len() * std::mem::size_of::<Complex32>();
+            Ok((0..pair_count)
+                .map(|pair| {
+                    partials[pair * self.reduction_chunks..(pair + 1) * self.reduction_chunks]
+                        .iter()
+                        .fold(num_complex::Complex64::default(), |sum, value| {
+                            sum + num_complex::Complex64::new(value.re as f64, value.im as f64)
+                        })
+                })
+                .collect())
+        }
+
         /// Project a resident Davidson basis against its resident Hamiltonian
         /// images. Normal append iterations require no host-vector upload;
         /// subspace restarts are detected by a row-count mismatch and resynced.
@@ -461,7 +577,7 @@ mod imp {
             {
                 bail!("resident Metal projection vector has the wrong dimension");
             }
-            let resident_count = unsafe { rpd_metal_hamiltonian_resident_count(self.raw.as_ptr()) };
+            let resident_count = self.resident_count();
             if resident_count != basis.len() {
                 let basis_values: Vec<_> = basis
                     .iter()
@@ -493,36 +609,7 @@ mod imp {
                     (basis_values.len() + applied_values.len()) * std::mem::size_of::<Complex32>();
             }
 
-            let pair_count = basis.len() * basis.len();
-            let mut partials = vec![Complex32::default(); pair_count * self.reduction_chunks];
-            let mut error = vec![0_i8; 2048];
-            let status = unsafe {
-                rpd_metal_hamiltonian_resident_partial_gram(
-                    self.raw.as_ptr(),
-                    partials.as_mut_ptr().cast::<f32>(),
-                    basis.len(),
-                    error.as_mut_ptr(),
-                    error.len(),
-                )
-            };
-            if status != 0 {
-                let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
-                bail!("resident Metal projection failed ({status}): {message}");
-            }
-            self.gram_reduction_calls += 1;
-            self.gram_reduction_pairs += pair_count;
-            self.resident_projection_calls += 1;
-            self.resident_reduction_download_bytes +=
-                partials.len() * std::mem::size_of::<Complex32>();
-            Ok((0..pair_count)
-                .map(|pair| {
-                    partials[pair * self.reduction_chunks..(pair + 1) * self.reduction_chunks]
-                        .iter()
-                        .fold(num_complex::Complex64::default(), |sum, value| {
-                            sum + num_complex::Complex64::new(value.re as f64, value.im as f64)
-                        })
-                })
-                .collect())
+            self.resident_projected_hamiltonian(basis.len())
         }
 
         /// Form Ritz vectors, applied Ritz vectors, and residuals from the
@@ -634,6 +721,44 @@ mod imp {
                 applied_ritz: unpack(applied_ritz),
                 residuals: unpack(residuals),
             })
+        }
+
+        /// Download only the converged resident Ritz vectors. This is the sole
+        /// full-vector download used by the production resident driver.
+        pub fn download_resident_ritz(
+            &mut self,
+            roots: usize,
+        ) -> Result<Vec<Vec<num_complex::Complex64>>> {
+            if roots == 0 || roots > self.max_batch {
+                bail!("resident Ritz download root count is invalid");
+            }
+            let value_count = roots * self.dimension;
+            let mut ritz = vec![Complex32::default(); value_count];
+            let mut error = vec![0_i8; 2048];
+            let status = unsafe {
+                rpd_metal_hamiltonian_resident_read_ritz(
+                    self.raw.as_ptr(),
+                    ritz.as_mut_ptr().cast::<f32>(),
+                    roots,
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            if status != 0 {
+                let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
+                bail!("resident Metal Ritz download failed ({status}): {message}");
+            }
+            let download_bytes = value_count * std::mem::size_of::<Complex32>();
+            self.resident_vector_download_bytes += download_bytes;
+            self.full_vector_download_bytes += download_bytes;
+            Ok(ritz
+                .chunks_exact(self.dimension)
+                .map(|row| {
+                    row.iter()
+                        .map(|value| num_complex::Complex64::new(value.re as f64, value.im as f64))
+                        .collect()
+                })
+                .collect())
         }
 
         /// Reduce norms directly from resident residual buffers without a
@@ -1311,6 +1436,38 @@ mod imp {
             self.full_vector_download_bytes
         }
 
+        /// Assert that a complete normal resident iteration transferred no full
+        /// vectors. Compact coefficients and reduction partials are accounted
+        /// separately and are intentionally allowed.
+        pub fn verify_resident_iteration_transfers(
+            &mut self,
+            expected_upload_bytes: usize,
+            expected_download_bytes: usize,
+        ) -> Result<()> {
+            if self.full_vector_upload_bytes != expected_upload_bytes
+                || self.full_vector_download_bytes != expected_download_bytes
+            {
+                bail!(
+                    "resident Davidson iteration crossed a full-vector boundary (upload {} -> {}, download {} -> {})",
+                    expected_upload_bytes,
+                    self.full_vector_upload_bytes,
+                    expected_download_bytes,
+                    self.full_vector_download_bytes
+                );
+            }
+            self.resident_driver_iterations += 1;
+            self.resident_transfer_invariant_checks += 1;
+            Ok(())
+        }
+
+        pub fn resident_driver_iterations(&self) -> usize {
+            self.resident_driver_iterations
+        }
+
+        pub fn resident_transfer_invariant_checks(&self) -> usize {
+            self.resident_transfer_invariant_checks
+        }
+
         pub fn projector_count(&self) -> usize {
             self.projector_count
         }
@@ -1518,6 +1675,24 @@ mod imp {
         ) -> Result<Self> {
             bail!("binary was built without the macOS-only `metal` feature")
         }
+        pub fn initialize_resident_davidson(
+            &mut self,
+            _grid_input: &[Complex32],
+            _compact_input: &[Complex32],
+            _potential: &[Complex32],
+            _batch: usize,
+        ) -> Result<()> {
+            bail!("binary was built without the macOS-only `metal` feature")
+        }
+        pub fn resident_count(&self) -> usize {
+            0
+        }
+        pub fn resident_projected_hamiltonian(
+            &mut self,
+            _subspace: usize,
+        ) -> Result<Vec<num_complex::Complex64>> {
+            bail!("binary was built without the macOS-only `metal` feature")
+        }
         pub fn apply_resident_accepted_corrections(
             &mut self,
             _accepted_count: usize,
@@ -1572,6 +1747,12 @@ mod imp {
             &mut self,
             _roots: usize,
         ) -> Result<ResidentRitzVectors> {
+            bail!("binary was built without the macOS-only `metal` feature")
+        }
+        pub fn download_resident_ritz(
+            &mut self,
+            _roots: usize,
+        ) -> Result<Vec<Vec<num_complex::Complex64>>> {
             bail!("binary was built without the macOS-only `metal` feature")
         }
         pub fn resident_residual_norms(&mut self, _roots: usize) -> Result<Vec<f64>> {
@@ -1660,6 +1841,19 @@ mod imp {
             0
         }
         pub fn full_vector_download_bytes(&self) -> usize {
+            0
+        }
+        pub fn verify_resident_iteration_transfers(
+            &mut self,
+            _expected_upload_bytes: usize,
+            _expected_download_bytes: usize,
+        ) -> Result<()> {
+            bail!("binary was built without the macOS-only `metal` feature")
+        }
+        pub fn resident_driver_iterations(&self) -> usize {
+            0
+        }
+        pub fn resident_transfer_invariant_checks(&self) -> usize {
             0
         }
         pub fn projector_count(&self) -> usize {

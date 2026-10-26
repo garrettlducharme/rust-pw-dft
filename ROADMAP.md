@@ -23,11 +23,14 @@ path. CPU FP64 and an independent established code remain required references.
 
 Status: in progress.
 
-The current code has a persistent Metal Hamiltonian, compact nonlocal
-projectors, a resident basis/applied-basis journal, GPU cross-Gram reductions,
-and GPU direct residual-norm reductions. The remaining work is device-local
-Ritz/residual formation, preconditioning, orthogonalization, correction append,
-and restart. The complete implementation contract is in
+The current code has a persistent Metal Hamiltonian and a production resident
+Davidson driver. Basis and Hamiltonian journals, Ritz and residual formation,
+preconditioning, two-pass correction orthogonalization, correction Hamiltonian
+application, journal append, and subspace restart all remain on the GPU.
+Runtime transfer counters fail closed if a normal iteration uploads or
+downloads a full vector. Si2 accuracy and transfer gates pass; matched Si16
+scientific and performance evidence is the remaining Phase 1 gate. The
+complete implementation contract is in
 [`docs/resident-davidson.md`](docs/resident-davidson.md).
 
 Exit criteria:

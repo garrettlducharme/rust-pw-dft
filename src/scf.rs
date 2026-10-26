@@ -1,6 +1,6 @@
 use crate::backend::{BackendKind, PrecisionPolicy};
 use crate::eigensolver::{
-    DavidsonOptions, block_davidson_batched, block_davidson_batched_with_reductions,
+    DavidsonOptions, ResidentDavidsonBackend, block_davidson_batched, block_davidson_resident,
 };
 use crate::input::SimulationInput;
 use crate::lattice::Lattice;
@@ -17,6 +17,78 @@ use std::path::Path;
 use std::time::Instant;
 
 const RY_TO_EV: f64 = 13.605_693_122_994;
+
+struct MetalResidentDavidson<'a> {
+    hamiltonian: &'a CpuHamiltonian,
+    context: &'a mut crate::metal::HamiltonianContext,
+    potential_ry: &'a [f64],
+}
+
+impl ResidentDavidsonBackend for MetalResidentDavidson<'_> {
+    fn initialize(&mut self, basis: &[Vec<num_complex::Complex64>]) -> Result<()> {
+        self.hamiltonian
+            .initialize_metal_resident_davidson(self.context, basis, self.potential_ry)
+    }
+
+    fn resident_count(&self) -> usize {
+        self.context.resident_count()
+    }
+
+    fn projected_hamiltonian(&mut self, subspace: usize) -> Result<Vec<num_complex::Complex64>> {
+        self.context.resident_projected_hamiltonian(subspace)
+    }
+
+    fn form_ritz_residuals(
+        &mut self,
+        coefficients: &[Vec<num_complex::Complex64>],
+        eigenvalues: &[f64],
+    ) -> Result<()> {
+        self.context
+            .form_resident_ritz_residuals(coefficients, eigenvalues)
+    }
+
+    fn residual_norms(&mut self, roots: usize) -> Result<Vec<f64>> {
+        self.context.resident_residual_norms(roots)
+    }
+
+    fn precondition(&mut self, active_roots: &[bool]) -> Result<()> {
+        self.context.precondition_resident_residuals(active_roots)
+    }
+
+    fn restart_from_ritz(&mut self, roots: usize) -> Result<()> {
+        self.context.restart_resident_from_ritz(roots)
+    }
+
+    fn orthonormalize_corrections(&mut self, active_roots: &[bool]) -> Result<usize> {
+        self.context
+            .orthonormalize_resident_corrections(active_roots)
+    }
+
+    fn apply_accepted_corrections(&mut self, accepted_count: usize) -> Result<()> {
+        self.context
+            .apply_resident_accepted_corrections(accepted_count)
+    }
+
+    fn download_ritz(&mut self, roots: usize) -> Result<Vec<Vec<num_complex::Complex64>>> {
+        self.context.download_resident_ritz(roots)
+    }
+
+    fn full_vector_transfer_bytes(&self) -> (usize, usize) {
+        (
+            self.context.full_vector_upload_bytes(),
+            self.context.full_vector_download_bytes(),
+        )
+    }
+
+    fn verify_iteration_residency(
+        &mut self,
+        expected_upload_bytes: usize,
+        expected_download_bytes: usize,
+    ) -> Result<()> {
+        self.context
+            .verify_resident_iteration_transfers(expected_upload_bytes, expected_download_bytes)
+    }
+}
 
 fn add_timing(timings: &mut BTreeMap<String, f64>, name: &str, elapsed: f64) {
     *timings.entry(name.into()).or_default() += elapsed;
@@ -72,6 +144,7 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
         eigensolver_tolerance,
         scf_orbital_tolerance,
         scf_energy_tolerance,
+        scf_density_tolerance,
     ) = match requested_backend {
         BackendKind::CpuF64 => (
             "Apple CPU (rustfft/f64 + block-Davidson/faer-f64)".into(),
@@ -79,18 +152,20 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
             input.scf_options.orbital_residual_tolerance.min(1.0e-10),
             input.scf_options.orbital_residual_tolerance,
             input.scf_options.energy_tolerance_ry,
+            input.scf_options.density_tolerance,
         ),
         BackendKind::MetalMixed => {
             let device = crate::metal::device_name()
                 .context("Metal backend unavailable (no CPU Hamiltonian fallback)")?;
             (
                 format!(
-                    "{device} (persistent MPSGraph Hamiltonian; resident GPU Davidson journal)"
+                    "{device} (persistent MPSGraph Hamiltonian; fully resident GPU Davidson iterations)"
                 ),
-                PrecisionPolicy::metal_validation(),
+                PrecisionPolicy::metal_mixed(),
                 1.0e-5,
                 1.0e-5,
                 input.scf_options.energy_tolerance_ry.max(5.0e-7),
+                input.scf_options.density_tolerance.max(5.0e-8),
             )
         }
     };
@@ -166,30 +241,16 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
                 let context = metal_context
                     .as_mut()
                     .context("persistent Metal Hamiltonian context is missing")?;
-                context
-                    .begin_resident_davidson()
-                    .context("failed to initialize resident Davidson journal")?;
-                let context = std::cell::RefCell::new(context);
-                block_davidson_batched_with_reductions(
+                let mut backend = MetalResidentDavidson {
+                    hamiltonian: &hamiltonian,
+                    context,
+                    potential_ry: &potential.real_ry,
+                };
+                block_davidson_resident(
                     hamiltonian.kinetic_ry(),
                     previous_orbitals.as_deref(),
                     &davidson_options,
-                    |orbitals| {
-                        let mut context = context.borrow_mut();
-                        hamiltonian.apply_hamiltonian_metal_persistent(
-                            &mut context,
-                            orbitals,
-                            &potential.real_ry,
-                        )
-                    },
-                    |left, right| {
-                        let mut context = context.borrow_mut();
-                        context.resident_cross_gram(left, right)
-                    },
-                    |vectors| {
-                        let mut context = context.borrow_mut();
-                        context.residual_norms(vectors)
-                    },
+                    &mut backend,
                 )
             }
         }?;
@@ -250,6 +311,7 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
             ("integral_rho_vxc_ry".into(), potential.integral_rho_vxc_ry),
             ("ewald_ry".into(), ewald_ry),
             ("density_residual".into(), final_density_residual),
+            ("density_tolerance".into(), scf_density_tolerance),
             ("energy_change_ry".into(), final_energy_change),
             ("energy_tolerance_ry".into(), scf_energy_tolerance),
             (
@@ -259,7 +321,7 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
         ]);
 
         let maximum_orbital_residual = final_residuals.iter().copied().fold(0.0_f64, f64::max);
-        if final_density_residual <= input.scf_options.density_tolerance
+        if final_density_residual <= scf_density_tolerance
             && final_energy_change <= scf_energy_tolerance
             && maximum_orbital_residual <= scf_orbital_tolerance
         {
@@ -377,6 +439,14 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
             context.resident_restarts() as f64,
         );
         final_terms.insert(
+            "metal_resident_driver_iterations".into(),
+            context.resident_driver_iterations() as f64,
+        );
+        final_terms.insert(
+            "metal_resident_transfer_invariant_checks".into(),
+            context.resident_transfer_invariant_checks() as f64,
+        );
+        final_terms.insert(
             "metal_resident_compact_upload_bytes".into(),
             context.resident_coefficient_upload_bytes() as f64,
         );
@@ -385,7 +455,7 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
             context.resident_reduction_download_bytes() as f64,
         );
         final_terms.insert(
-            "metal_resident_validation_vector_download_bytes".into(),
+            "metal_resident_vector_download_bytes".into(),
             context.resident_vector_download_bytes() as f64,
         );
         final_terms.insert(
@@ -418,4 +488,70 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
         },
         stop_reason,
     })
+}
+
+#[cfg(all(test, feature = "metal", target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resident_metal_scf_matches_cpu_and_transfers_only_at_boundaries() {
+        let input_path = Path::new("examples/si2.toml");
+        let input = SimulationInput::from_path(input_path).unwrap();
+        let lattice = Lattice::new(input.cell.lattice_bohr).unwrap();
+        let g_vectors = lattice.enumerate_g_vectors(input.cutoff_ry);
+        let grid_points = Lattice::density_fft_grid(&g_vectors)
+            .iter()
+            .product::<usize>();
+        let pseudo = NormConservingPseudo::from_upf(&input.pseudopotentials["Si"]).unwrap();
+        let roots = (pseudo.valence_charge * input.atoms.len() as f64 / 2.0) as usize;
+
+        let cpu = run(input_path, BackendKind::CpuF64).unwrap();
+        let metal = run(input_path, BackendKind::MetalMixed).unwrap();
+        assert!(cpu.converged);
+        assert!(metal.converged);
+        let energy_error_mev_atom = (metal.total_energy_ry.unwrap() - cpu.total_energy_ry.unwrap())
+            .abs()
+            * 13_605.693_122_994
+            / input.atoms.len() as f64;
+        let eigenvalue_error_mev = metal
+            .eigenvalues_ry
+            .iter()
+            .zip(&cpu.eigenvalues_ry)
+            .map(|(left, right)| (left - right).abs() * 13_605.693_122_994)
+            .fold(0.0_f64, f64::max);
+        assert!(energy_error_mev_atom <= 1.0, "{energy_error_mev_atom:e}");
+        assert!(eigenvalue_error_mev <= 5.0, "{eigenvalue_error_mev:e}");
+        assert!((metal.electron_count.unwrap() - cpu.electron_count.unwrap()).abs() <= 1.0e-5);
+
+        let terms = &metal.energy_terms;
+        assert_eq!(terms["metal_resident_projection_resyncs"], 0.0);
+        assert_eq!(
+            terms["metal_resident_driver_iterations"],
+            terms["davidson_iterations"]
+        );
+        assert_eq!(
+            terms["metal_resident_transfer_invariant_checks"],
+            terms["davidson_iterations"]
+        );
+        assert!(terms["metal_resident_corrections_appended"] > 0.0);
+        assert!(terms["metal_resident_restarts"] > 0.0);
+
+        let complex_bytes = std::mem::size_of::<num_complex::Complex32>();
+        let expected_upload_bytes =
+            metal.iterations * roots * (grid_points + g_vectors.len()) * complex_bytes;
+        let expected_download_bytes = metal.iterations * roots * g_vectors.len() * complex_bytes;
+        assert_eq!(
+            terms["metal_full_vector_upload_bytes"] as usize,
+            expected_upload_bytes
+        );
+        assert_eq!(
+            terms["metal_full_vector_download_bytes"] as usize,
+            expected_download_bytes
+        );
+        assert_eq!(
+            terms["metal_resident_vector_download_bytes"] as usize,
+            expected_download_bytes
+        );
+    }
 }

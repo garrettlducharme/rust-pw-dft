@@ -1170,8 +1170,7 @@ extern "C" int rpd_metal_hamiltonian_apply(
     @autoreleasepool {
         ResidentHamiltonian *context = static_cast<ResidentHamiltonian *>(opaque_context);
         if (!context || !grid_input_interleaved || !compact_input_interleaved ||
-            !potential_interleaved || !compact_output_interleaved ||
-            batch == 0 || batch > context->max_batch) {
+            !potential_interleaved || batch == 0 || batch > context->max_batch) {
             copy_message(error_buffer, error_capacity, @"invalid resident-Hamiltonian apply arguments");
             return 2;
         }
@@ -1231,9 +1230,11 @@ extern "C" int rpd_metal_hamiltonian_apply(
                                            }
                                 targetOperations:nil
                                resultsDictionary:@{cached.hamiltonian_output: output_data}];
-            std::memcpy(compact_output_interleaved,
-                        context->hamiltonian_output.contents,
-                        compact_batch_bytes);
+            if (compact_output_interleaved != nullptr) {
+                std::memcpy(compact_output_interleaved,
+                            context->hamiltonian_output.contents,
+                            compact_batch_bytes);
+            }
             if (context->resident_recording) {
                 if (context->resident_count + batch > context->max_batch) {
                     // A Davidson restart replaced the old subspace before this
@@ -2274,6 +2275,30 @@ extern "C" int rpd_metal_hamiltonian_resident_read_ritz_residuals(
                     compact_row_bytes);
         std::memcpy(residual_output_interleaved + root * context->dimension * 2,
                     static_cast<const char *>(context->resident_residual.contents) +
+                        root * resident_row_bytes,
+                    compact_row_bytes);
+    }
+    return 0;
+}
+
+extern "C" int rpd_metal_hamiltonian_resident_read_ritz(
+    void *opaque_context,
+    float *ritz_output_interleaved,
+    size_t roots,
+    char *error_buffer, size_t error_capacity) {
+    ResidentHamiltonian *context = static_cast<ResidentHamiltonian *>(opaque_context);
+    if (!context || !ritz_output_interleaved || roots == 0 ||
+        roots != context->resident_ritz_count) {
+        copy_message(error_buffer, error_capacity,
+                     @"resident Ritz vectors are unavailable or out of sync");
+        return 2;
+    }
+    const size_t complex_bytes = 2 * sizeof(float);
+    const size_t resident_row_bytes = context->reduction_dimension * complex_bytes;
+    const size_t compact_row_bytes = context->dimension * complex_bytes;
+    for (size_t root = 0; root < roots; ++root) {
+        std::memcpy(ritz_output_interleaved + root * context->dimension * 2,
+                    static_cast<const char *>(context->resident_ritz.contents) +
                         root * resident_row_bytes,
                     compact_row_bytes);
     }
