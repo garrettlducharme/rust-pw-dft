@@ -15,8 +15,8 @@
     "highest_occupied_eigenvalue_ev": 7.127295261250414,
     "integral_rho_vxc_ry": -6.564950963276653,
     "maximum_orbital_residual_ry": 5.252382347016987e-6,
-    "metal_peak_device_allocated_bytes": 4243456.0,
-    "metal_persistent_buffer_bytes": 189552.0,
+    "metal_peak_device_allocated_bytes": 4161536.0,
+    "metal_persistent_buffer_bytes": 200448.0,
     "metal_projector_count": 8.0,
     "orbital_residual_tolerance_ry": 0.00001,
     "xc_ry": -5.032840793515884
@@ -35,11 +35,11 @@
     5.204012555857146e-6
   ],
   "timings": {
-    "density_seconds": 0.0025625849999999996,
-    "eigensolve_seconds": 0.13838387200000005,
-    "potential_seconds": 0.0022218720000000006,
-    "setup_seconds": 0.051752417,
-    "total_seconds": 0.1957515
+    "density_seconds": 0.0024445900000000004,
+    "eigensolve_seconds": 0.18567187699999996,
+    "potential_seconds": 0.002227248,
+    "setup_seconds": 0.049168458,
+    "total_seconds": 0.240216791
   },
   "provenance": {
     "requested_backend": "metal-mixed",
@@ -51,10 +51,10 @@
       "eigensolve": "f64-cpu",
       "energy": "f64-cpu"
     },
-    "input_sha256": "7a6f32c22973bd1212173b6bcdc0e28bdfee250989eab88baef119ccbc670292",
+    "input_sha256": "5818e5aee80895efeac7ec846ce0a945ecd361329c2d71e52ad117c22801844e",
     "pseudopotential_sha256": {
       "Si": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d"
     },
-    "git_revision": "35327178b9bbe7408d93ee15c1fea65b269417fa"
+    "git_revision": "948d3d6b3dd4c6d887e03abc0ab905c3799079ab"
   }
 }

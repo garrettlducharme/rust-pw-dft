@@ -5,9 +5,9 @@
   "converged": true,
   "iterations": 49,
   "repetitions": 5,
-  "min_seconds": 0.1583065,
-  "median_seconds": 0.1741005,
-  "max_seconds": 0.232102959,
+  "min_seconds": 0.11090975,
+  "median_seconds": 0.115925875,
+  "max_seconds": 0.117483,
   "provenance": {
     "requested_backend": "metal-mixed",
     "actual_backend": "metal-mixed",
@@ -18,11 +18,11 @@
       "eigensolve": "f64-cpu",
       "energy": "f64-cpu"
     },
-    "input_sha256": "7a6f32c22973bd1212173b6bcdc0e28bdfee250989eab88baef119ccbc670292",
+    "input_sha256": "5818e5aee80895efeac7ec846ce0a945ecd361329c2d71e52ad117c22801844e",
     "pseudopotential_sha256": {
       "Si": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d"
     },
-    "git_revision": "35327178b9bbe7408d93ee15c1fea65b269417fa"
+    "git_revision": "948d3d6b3dd4c6d887e03abc0ab905c3799079ab"
   },
   "stop_reason": "Metal uses persistent operator buffers and compact projectors, but the Davidson basis remains host FP64 and is staged by block; a fully resident eigensolver is required for a production performance claim"
 }

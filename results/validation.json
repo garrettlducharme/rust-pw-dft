@@ -1,6 +1,6 @@
 {
-  "schema_version": 3,
-  "source_revision": "35327178b9bbe7408d93ee15c1fea65b269417fa",
+  "schema_version": 4,
+  "source_revision": "948d3d6b3dd4c6d887e03abc0ab905c3799079ab",
   "tests": {
     "cpu_passed": 17,
     "metal_feature_passed": 20,
@@ -10,6 +10,7 @@
   "input_and_pseudopotential": {
     "legacy_si_upf": "accepted",
     "strict_norm_conserving_upf_v2_pz": "accepted",
+    "pinned_sha256": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d",
     "ultrasoft_paw_core_correction_spin_orbit_non_pz": "fail-closed"
   },
   "cpu": {
@@ -29,12 +30,13 @@
   },
   "metal": {
     "device": "Apple M5 Pro",
-    "architecture": "persistent MPSGraph buffers with compact separable projectors; host-FP64 Davidson basis staged by block",
+    "architecture": "persistent MPSGraph buffers, compact separable projectors, on-device compact output gather, and chunked FP32 overlap partials; host-FP64 Davidson basis staged by block",
     "fft_roundtrip_relative_l2": 1.7528988478321696e-7,
     "fft_roundtrip_relative_l2_gate": 1e-5,
     "fixed_density_local_kinetic_relative_l2": 9.364917040762578e-8,
     "fixed_density_legacy_dense_hamiltonian_relative_l2": 1.0252054904136722e-7,
     "fixed_density_persistent_compact_hamiltonian_relative_l2": 1.3434963476124747e-7,
+    "partial_gram_maximum_absolute_error": 6.853431053961487e-8,
     "fixed_density_occupied_eigenvalue_error_mev": 0.0035761492398059835,
     "si2_scf": {
       "accepted": true,
@@ -45,8 +47,8 @@
       "electron_count_error": 3.375077994860476e-14,
       "maximum_orbital_residual_ry": 5.252382347016987e-6,
       "energy_tolerance_ry": 5e-7,
-      "persistent_buffer_bytes": 189552,
-      "peak_device_allocated_bytes": 4243456
+      "persistent_buffer_bytes": 200448,
+      "peak_device_allocated_bytes": 4161536
     },
     "behavior": "fail-closed; no CPU Hamiltonian fallback"
   },
@@ -55,18 +57,18 @@
     "cold_processes": 1,
     "warmed_repetitions": 5,
     "cpu_seconds": {
-      "min": 24.179927792,
-      "median": 24.539545791,
-      "max": 25.96016375,
+      "min": 22.23640175,
+      "median": 22.361167583,
+      "max": 22.620249333,
       "scf_iterations": 47
     },
     "metal_seconds": {
-      "min": 5.726357625,
-      "median": 6.031642583,
-      "max": 6.486106125,
+      "min": 4.998938208,
+      "median": 5.124237042,
+      "max": 5.335745166,
       "scf_iterations": 49
     },
-    "median_speedup": 4.068468158269848,
+    "median_speedup": 4.3638042892473985,
     "numeric_1_20x_gate_passed": true,
     "scientific_parity": {
       "energy_error_mev_atom": 0.007593363905174137,
@@ -74,16 +76,16 @@
       "electron_count_error": 2.9132252166164108e-12,
       "accepted": true
     },
-    "persistent_buffer_bytes": 9244288,
-    "peak_device_allocated_bytes": 66813952,
+    "persistent_buffer_bytes": 9824256,
+    "peak_device_allocated_bytes": 70991872,
     "project_memory_limit_bytes": 12884901888,
     "production_claim_accepted": false,
-    "reason": "the Davidson basis remains host FP64 and is staged into persistent Metal buffers by block"
+    "reason": "the Davidson basis and correction vectors remain host FP64; the validated GPU partial-reduction primitive is not yet integrated into Davidson"
   },
   "go_no_go": {
     "cpu_educational_solver": "go",
     "persistent_metal_operator": "go for the pinned silicon workloads",
-    "gpu_resident_davidson_and_reductions": "go as the next bounded milestone",
+    "gpu_resident_davidson_integration": "go as the next bounded milestone",
     "production_science_or_scope_expansion": "no-go until the resident eigensolver repeats both gates"
   }
 }

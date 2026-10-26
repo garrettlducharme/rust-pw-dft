@@ -5,9 +5,9 @@
   "converged": true,
   "iterations": 47,
   "repetitions": 5,
-  "min_seconds": 24.179927792,
-  "median_seconds": 24.539545791,
-  "max_seconds": 25.96016375,
+  "min_seconds": 22.23640175,
+  "median_seconds": 22.361167583,
+  "max_seconds": 22.620249333,
   "provenance": {
     "requested_backend": "cpu-f64",
     "actual_backend": "cpu-f64",
@@ -18,11 +18,11 @@
       "eigensolve": "f64",
       "energy": "f64"
     },
-    "input_sha256": "908d8d220855721fa5ab4a3a5c71ff3426e709dc29dad600193467b891d8400b",
+    "input_sha256": "037dca4dda4414718809378c8225ab18608a51852c822933b45a00d1cc577d36",
     "pseudopotential_sha256": {
       "Si": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d"
     },
-    "git_revision": "35327178b9bbe7408d93ee15c1fea65b269417fa"
+    "git_revision": "948d3d6b3dd4c6d887e03abc0ab905c3799079ab"
   },
   "stop_reason": null
 }

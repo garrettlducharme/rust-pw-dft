@@ -88,11 +88,11 @@
     4.800663622724251e-11
   ],
   "timings": {
-    "density_seconds": 0.40341333299999993,
-    "eigensolve_seconds": 24.280871542,
-    "potential_seconds": 0.03199187100000001,
-    "setup_seconds": 0.235322625,
-    "total_seconds": 24.955703667
+    "density_seconds": 0.32300337899999987,
+    "eigensolve_seconds": 21.760465165000003,
+    "potential_seconds": 0.027831373999999996,
+    "setup_seconds": 0.230113417,
+    "total_seconds": 22.346683875
   },
   "provenance": {
     "requested_backend": "cpu-f64",
@@ -104,10 +104,10 @@
       "eigensolve": "f64",
       "energy": "f64"
     },
-    "input_sha256": "908d8d220855721fa5ab4a3a5c71ff3426e709dc29dad600193467b891d8400b",
+    "input_sha256": "037dca4dda4414718809378c8225ab18608a51852c822933b45a00d1cc577d36",
     "pseudopotential_sha256": {
       "Si": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d"
     },
-    "git_revision": "35327178b9bbe7408d93ee15c1fea65b269417fa"
+    "git_revision": "948d3d6b3dd4c6d887e03abc0ab905c3799079ab"
   }
 }

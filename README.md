@@ -53,7 +53,7 @@ through the persistent compact-projector context differs from CPU by
 `1.34e-7` in relative L2 norm.
 
 On the pinned 16-atom silicon supercell, five warmed runs give median wall
-times of `22.418 s` CPU and `4.919 s` Metal, an observed `4.557x` speedup.
+times of `22.361 s` CPU and `5.124 s` Metal, an observed `4.364x` speedup.
 Persistent Metal buffers occupy 9.82 MB and measured peak device allocation is
 71.0 MB on this workload, well below the 12 GiB project cap.
 
