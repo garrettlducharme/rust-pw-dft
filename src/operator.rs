@@ -1255,7 +1255,9 @@ mod tests {
                         .collect()
                 })
                 .collect();
-            let ritz_eigenvalues = [-0.35, 0.42];
+            // Root zero intentionally exercises the signed 0.25 Ry
+            // denominator floor at the G=0 kinetic entry.
+            let ritz_eigenvalues = [0.10, 0.42];
             persistent_context
                 .form_resident_ritz_residuals(&ritz_coefficients, &ritz_eigenvalues)
                 .unwrap();
@@ -1322,9 +1324,44 @@ mod tests {
             assert!(maximum_residual_error < 2.0e-5);
             assert!(maximum_resident_norm_error < 2.0e-5);
             assert_eq!(persistent_context.resident_ritz_updates(), 1);
+
+            persistent_context
+                .precondition_resident_residuals(&[true, false])
+                .unwrap();
+            let resident_corrections = persistent_context.read_resident_corrections(2).unwrap();
+            let expected_correction: Vec<_> = resident_vectors.residuals[0]
+                .iter()
+                .zip(hamiltonian.kinetic_ry())
+                .map(|(&residual, &kinetic)| {
+                    let denominator = kinetic - ritz_eigenvalues[0];
+                    let safe_denominator = if denominator.abs() < 0.25 {
+                        0.25_f64.copysign(denominator)
+                    } else {
+                        denominator
+                    };
+                    -residual / safe_denominator
+                })
+                .collect();
+            let correction_error = relative_l2(&resident_corrections[0], &expected_correction);
+            let masked_correction_norm = resident_corrections[1]
+                .iter()
+                .map(Complex64::norm_sqr)
+                .sum::<f64>()
+                .sqrt();
+            eprintln!(
+                "silicon resident preconditioner relative error / masked-root norm: {correction_error:e} / {masked_correction_norm:e}"
+            );
+            assert!(correction_error < 2.0e-5);
+            assert_eq!(masked_correction_norm, 0.0);
+            assert_eq!(persistent_context.resident_preconditioner_updates(), 1);
+            assert_eq!(
+                persistent_context.resident_coefficient_upload_bytes(),
+                (2 * wavefunctions.len() + 2) * std::mem::size_of::<Complex32>()
+                    + 2 * std::mem::size_of::<f32>()
+            );
             assert_eq!(
                 persistent_context.resident_vector_download_bytes(),
-                3 * 2 * hamiltonian.dimension() * std::mem::size_of::<Complex32>()
+                4 * 2 * hamiltonian.dimension() * std::mem::size_of::<Complex32>()
             );
             let resynced_projection = persistent_context
                 .resident_cross_gram(&wavefunctions[..2], &persistent_full[..2])
@@ -1344,6 +1381,11 @@ mod tests {
             assert_eq!(persistent_context.resident_projection_calls(), 2);
             assert_eq!(persistent_context.resident_projection_resyncs(), 1);
             assert!(persistent_context.resident_residual_norms(2).is_err());
+            assert!(
+                persistent_context
+                    .precondition_resident_residuals(&[true, false])
+                    .is_err()
+            );
 
             let metal_gram = persistent_context
                 .cross_gram(&wavefunctions, &wavefunctions)

@@ -340,6 +340,22 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
             "metal_norm_reduction_vectors".into(),
             context.norm_reduction_vectors() as f64,
         );
+        final_terms.insert(
+            "metal_resident_ritz_updates".into(),
+            context.resident_ritz_updates() as f64,
+        );
+        final_terms.insert(
+            "metal_resident_preconditioner_updates".into(),
+            context.resident_preconditioner_updates() as f64,
+        );
+        final_terms.insert(
+            "metal_resident_compact_upload_bytes".into(),
+            context.resident_coefficient_upload_bytes() as f64,
+        );
+        final_terms.insert(
+            "metal_resident_full_vector_download_bytes".into(),
+            context.resident_vector_download_bytes() as f64,
+        );
     }
     Ok(ScfResult {
         converged,

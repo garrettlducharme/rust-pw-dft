@@ -29,6 +29,10 @@ machine-readable evidence rather than feature presence alone.
   projection;
 - direct complex-FP32 residual-norm partials on Metal with CPU-FP64 final
   accumulation and fail-closed backend result validation;
+- resident complex-FP32 Ritz-vector, applied-Ritz, residual, and guarded
+  kinetic-preconditioner graphs; the fixed-density preconditioner agrees with
+  the CPU formula to `3.23e-8` relative L2 error and masks converged roots
+  exactly;
 - a persistent compact-FP32 Davidson journal: Hamiltonian inputs and outputs
   append to caller-owned MTLBuffers, normal projections require no host-vector
   upload, and subspace restarts resynchronize explicitly;
@@ -74,9 +78,11 @@ norm reductions covering 5,280 residual vectors; only one subspace restart
 requires a host resynchronization.
 
 Metal remains marked ineligible for a production performance claim because
-the canonical Davidson basis, orthogonalization, residual construction, and
-correction vectors still live in host FP64. The compact FP32 projection journal
-is resident, but correction blocks are still produced and staged by the CPU.
+the canonical Davidson basis, orthogonalization, and production correction
+updates still live in host FP64. Fixed-density resident Ritz, residual, and
+preconditioning kernels now pass their CPU-reference gates, but they are not
+yet connected into the production eigensolver and correction blocks are still
+staged by the CPU.
 There is no silent CPU Hamiltonian or reduction fallback; the actual device,
 effective mixed-precision convergence tolerances, resident/resynchronization
 counts, memory measurements, and precision policy are recorded in every result.
@@ -99,9 +105,10 @@ cargo run --release --features metal -- bench examples/si16.toml --backend metal
 
 The CPU scientific milestone, persistent Metal operator accuracy milestone,
 integrated Rayleigh-Ritz and direct residual-norm reduction milestones, and
-larger-workload numeric speed threshold are accepted. The next bounded
-milestone is GPU-resident Ritz/residual construction, orthogonalization,
-preconditioning, and correction updates; only that path may turn the observed
-speedup into a production performance acceptance claim. Its buffer contract,
+larger-workload numeric speed threshold are accepted. Resident Ritz/residual
+formation and kinetic preconditioning now pass fixed-density gates. The next
+bounded milestone is GPU-resident two-pass orthogonalization, correction
+append, and device-local restart; only the integrated path may turn the
+observed speedup into a production performance acceptance claim. Its buffer contract,
 dataflow, transfer accounting, and fail-closed gates are specified in
 [`docs/resident-davidson.md`](docs/resident-davidson.md).

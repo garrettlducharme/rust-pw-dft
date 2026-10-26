@@ -23,12 +23,16 @@ The implementation already provides:
 - a compact FP32 journal of basis vectors and Hamiltonian images;
 - resident cross-Gram partial reductions with CPU complex-FP64 final sums;
 - direct residual-norm partial reductions with CPU FP64 final sums;
+- resident Ritz/applied-Ritz/residual formation and guarded kinetic
+  preconditioning with active-root masking;
 - explicit restart resynchronization and fail-closed error handling.
 
-The host still constructs Ritz vectors and residuals in complex FP64,
-preconditions and orthogonalizes corrections, and treats its basis vectors as
-canonical. The direct norm kernel therefore removes reduction work but does not
-yet remove full-vector traffic.
+The production driver still constructs Ritz vectors and residuals in complex
+FP64, preconditions and orthogonalizes corrections, and treats its basis
+vectors as canonical. The resident formation and preconditioning graphs are
+currently fixed-density-tested primitives, not yet the production iteration
+path. They therefore prove the next numerical boundary without yet removing
+normal-iteration full-vector traffic.
 
 ## Buffer ownership
 
@@ -145,8 +149,9 @@ reuse timings from an earlier source revision.
 
 ## Delivery sequence
 
-1. Add resident Ritz/residual construction and fixed-density tests.
+1. Add resident Ritz/residual construction and fixed-density tests. **Done.**
 2. Add resident preconditioning and two-pass orthogonalization.
+   **Preconditioning done; orthogonalization remains.**
 3. Replace host restart resynchronization with a device-local restart.
 4. Add transfer accounting and assert the normal-iteration residency invariant.
 5. Integrate the stateful driver into SCF behind the Metal backend.

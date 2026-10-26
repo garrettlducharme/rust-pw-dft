@@ -133,6 +133,20 @@ mod imp {
             error_buffer: *mut c_char,
             error_capacity: usize,
         ) -> c_int;
+        fn rpd_metal_hamiltonian_resident_precondition(
+            context: *mut c_void,
+            active_mask: *const f32,
+            roots: usize,
+            error_buffer: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
+        fn rpd_metal_hamiltonian_resident_read_corrections(
+            context: *mut c_void,
+            correction_output_interleaved: *mut f32,
+            roots: usize,
+            error_buffer: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
         fn rpd_metal_hamiltonian_partial_norms(
             context: *mut c_void,
             input_interleaved: *const f32,
@@ -159,6 +173,7 @@ mod imp {
         norm_reduction_calls: usize,
         norm_reduction_vectors: usize,
         resident_ritz_updates: usize,
+        resident_preconditioner_updates: usize,
         resident_coefficient_upload_bytes: usize,
         resident_vector_download_bytes: usize,
         _not_send_or_sync: PhantomData<Rc<()>>,
@@ -233,7 +248,9 @@ mod imp {
                     + 6 * reduction_dimension * max_batch
                     + max_batch * max_batch
                     + max_batch)
-                + std::mem::size_of_val(basis_indices);
+                + std::mem::size_of_val(basis_indices)
+                + std::mem::size_of::<f32>()
+                    * (reduction_dimension + 2 * max_batch + 2 * reduction_dimension * max_batch);
             Ok(Self {
                 raw,
                 shape,
@@ -249,6 +266,7 @@ mod imp {
                 norm_reduction_calls: 0,
                 norm_reduction_vectors: 0,
                 resident_ritz_updates: 0,
+                resident_preconditioner_updates: 0,
                 resident_coefficient_upload_bytes: 0,
                 resident_vector_download_bytes: 0,
                 _not_send_or_sync: PhantomData,
@@ -550,6 +568,75 @@ mod imp {
             Ok(norms)
         }
 
+        /// Apply the CPU-reference Davidson kinetic preconditioner directly to
+        /// resident residuals. Converged roots are masked to zero and no full
+        /// vectors cross the CPU/GPU boundary.
+        pub fn precondition_resident_residuals(&mut self, active_roots: &[bool]) -> Result<()> {
+            if active_roots.is_empty() || active_roots.len() > self.max_batch {
+                bail!("resident preconditioner root count is invalid");
+            }
+            if !active_roots.iter().any(|active| *active) {
+                bail!("resident preconditioner requires an active root");
+            }
+            let active_mask: Vec<f32> = active_roots
+                .iter()
+                .map(|&active| if active { 1.0 } else { 0.0 })
+                .collect();
+            let mut error = vec![0_i8; 2048];
+            let status = unsafe {
+                rpd_metal_hamiltonian_resident_precondition(
+                    self.raw.as_ptr(),
+                    active_mask.as_ptr(),
+                    active_mask.len(),
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            if status != 0 {
+                let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
+                bail!("resident Metal preconditioner failed ({status}): {message}");
+            }
+            self.resident_preconditioner_updates += 1;
+            self.resident_coefficient_upload_bytes += std::mem::size_of_val(active_mask.as_slice());
+            Ok(())
+        }
+
+        /// Download resident preconditioned corrections for validation. The
+        /// production resident driver must not call this during an iteration.
+        pub fn read_resident_corrections(
+            &mut self,
+            roots: usize,
+        ) -> Result<Vec<Vec<num_complex::Complex64>>> {
+            if roots == 0 || roots > self.max_batch {
+                bail!("resident correction download root count is invalid");
+            }
+            let value_count = roots * self.dimension;
+            let mut corrections = vec![Complex32::default(); value_count];
+            let mut error = vec![0_i8; 2048];
+            let status = unsafe {
+                rpd_metal_hamiltonian_resident_read_corrections(
+                    self.raw.as_ptr(),
+                    corrections.as_mut_ptr().cast::<f32>(),
+                    roots,
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            if status != 0 {
+                let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
+                bail!("resident Metal correction download failed ({status}): {message}");
+            }
+            self.resident_vector_download_bytes += value_count * std::mem::size_of::<Complex32>();
+            Ok(corrections
+                .chunks_exact(self.dimension)
+                .map(|row| {
+                    row.iter()
+                        .map(|value| num_complex::Complex64::new(value.re as f64, value.im as f64))
+                        .collect()
+                })
+                .collect())
+        }
+
         /// Return direct residual norms from chunked complex-FP32 Metal
         /// partials with final complex-FP64 accumulation on the CPU.
         pub fn residual_norms(
@@ -693,6 +780,10 @@ mod imp {
 
         pub fn resident_ritz_updates(&self) -> usize {
             self.resident_ritz_updates
+        }
+
+        pub fn resident_preconditioner_updates(&self) -> usize {
+            self.resident_preconditioner_updates
         }
 
         pub fn resident_coefficient_upload_bytes(&self) -> usize {
@@ -942,6 +1033,15 @@ mod imp {
         pub fn resident_residual_norms(&mut self, _roots: usize) -> Result<Vec<f64>> {
             bail!("binary was built without the macOS-only `metal` feature")
         }
+        pub fn precondition_resident_residuals(&mut self, _active_roots: &[bool]) -> Result<()> {
+            bail!("binary was built without the macOS-only `metal` feature")
+        }
+        pub fn read_resident_corrections(
+            &mut self,
+            _roots: usize,
+        ) -> Result<Vec<Vec<num_complex::Complex64>>> {
+            bail!("binary was built without the macOS-only `metal` feature")
+        }
         pub fn begin_resident_davidson(&mut self) -> Result<()> {
             bail!("binary was built without the macOS-only `metal` feature")
         }
@@ -977,6 +1077,9 @@ mod imp {
             0
         }
         pub fn resident_ritz_updates(&self) -> usize {
+            0
+        }
+        pub fn resident_preconditioner_updates(&self) -> usize {
             0
         }
         pub fn resident_coefficient_upload_bytes(&self) -> usize {
