@@ -48,17 +48,25 @@ struct CachedResidentGraph {
     MPSGraphTensor *compact_input;
     MPSGraphTensor *potential;
     MPSGraphTensor *kinetic;
+    MPSGraphTensor *basis_indices;
     MPSGraphTensor *projector_conjugate;
     MPSGraphTensor *d_transpose;
     MPSGraphTensor *projector_transpose;
-    MPSGraphTensor *local_output;
-    MPSGraphTensor *nonlocal_output;
+    MPSGraphTensor *hamiltonian_output;
     MPSShape *grid_shape;
     MPSShape *compact_shape;
     MPSShape *potential_shape;
+    MPSShape *indices_shape;
     MPSShape *projector_conjugate_shape;
     MPSShape *d_shape;
     MPSShape *projector_transpose_shape;
+};
+
+struct CachedPartialGramGraph {
+    MPSGraph *graph;
+    MPSGraphTensor *input;
+    MPSGraphTensor *output;
+    MPSShape *input_shape;
 };
 
 struct ResidentHamiltonian {
@@ -71,14 +79,18 @@ struct ResidentHamiltonian {
     size_t dimension;
     size_t projector_count;
     size_t max_batch;
+    size_t reduction_chunks;
+    size_t reduction_dimension;
     uint64_t peak_device_allocated_bytes;
     id<MTLBuffer> grid_input;
     id<MTLBuffer> compact_input;
     id<MTLBuffer> potential;
     id<MTLBuffer> kinetic;
+    id<MTLBuffer> basis_indices;
     id<MTLBuffer> projector_conjugate;
     id<MTLBuffer> d_transpose;
     id<MTLBuffer> projector_transpose;
+    id<MTLBuffer> reduction_input;
 };
 
 std::mutex cache_mutex;
@@ -86,6 +98,7 @@ std::unordered_map<std::string, CachedGraph> graph_cache;
 std::unordered_map<std::string, CachedLocalGraph> local_graph_cache;
 std::unordered_map<std::string, CachedMatrixGraph> matrix_graph_cache;
 std::unordered_map<std::string, CachedResidentGraph> resident_graph_cache;
+std::unordered_map<std::string, CachedPartialGramGraph> partial_gram_graph_cache;
 
 id<MTLDevice> shared_device() {
     static id<MTLDevice> device = MTLCreateSystemDefaultDevice();
@@ -211,6 +224,7 @@ CachedResidentGraph resident_graph_for(size_t nx, size_t ny, size_t nz,
     MPSShape *grid_shape = @[@(batch), @(nx), @(ny), @(nz)];
     MPSShape *compact_shape = @[@(batch), @(dimension)];
     MPSShape *potential_shape = @[@1, @(nx), @(ny), @(nz)];
+    MPSShape *indices_shape = @[@(batch), @(dimension)];
     MPSShape *projector_conjugate_shape = @[@(dimension), @(projector_count)];
     MPSShape *d_shape = @[@(projector_count), @(projector_count)];
     MPSShape *projector_transpose_shape = @[@(projector_count), @(dimension)];
@@ -227,6 +241,9 @@ CachedResidentGraph resident_graph_for(size_t nx, size_t ny, size_t nz,
     MPSGraphTensor *kinetic = [graph placeholderWithShape:potential_shape
                                                  dataType:MPSDataTypeComplexFloat32
                                                      name:@"kinetic_energy"];
+    MPSGraphTensor *basis_indices = [graph placeholderWithShape:indices_shape
+                                                       dataType:MPSDataTypeInt32
+                                                           name:@"basis_grid_indices"];
     MPSGraphTensor *projector_conjugate =
         [graph placeholderWithShape:projector_conjugate_shape
                            dataType:MPSDataTypeComplexFloat32
@@ -272,13 +289,67 @@ CachedResidentGraph resident_graph_for(size_t nx, size_t ny, size_t nz,
         [graph matrixMultiplicationWithPrimaryTensor:weighted
                                      secondaryTensor:projector_transpose
                                                 name:@"nonlocal_output"];
+    MPSGraphTensor *flattened_local = [graph reshapeTensor:local_output
+                                                  withShape:@[@(batch), @(nx * ny * nz)]
+                                                       name:@"flattened_local_output"];
+    // MPSGraph's gather kernel rejects complex tensors on current macOS.
+    // Gather each FP32 component independently and reconstruct the complex
+    // compact basis without leaving the graph or reading the FFT grid back.
+    MPSGraphTensor *local_real = [graph realPartOfTensor:flattened_local
+                                                    name:@"local_real"];
+    MPSGraphTensor *local_imaginary = [graph imaginaryPartOfTensor:flattened_local
+                                                              name:@"local_imaginary"];
+    MPSGraphTensor *compact_real = [graph gatherAlongAxis:1
+                                        withUpdatesTensor:local_real
+                                            indicesTensor:basis_indices
+                                                     name:@"compact_local_real"];
+    MPSGraphTensor *compact_imaginary = [graph gatherAlongAxis:1
+                                             withUpdatesTensor:local_imaginary
+                                                 indicesTensor:basis_indices
+                                                          name:@"compact_local_imaginary"];
+    MPSGraphTensor *compact_local = [graph complexTensorWithRealTensor:compact_real
+                                                    imaginaryTensor:compact_imaginary
+                                                               name:@"compact_local_output"];
+    MPSGraphTensor *hamiltonian_output = [graph additionWithPrimaryTensor:compact_local
+                                                              secondaryTensor:nonlocal_output
+                                                                         name:@"compact_hamiltonian_output"];
     CachedResidentGraph cached{
-        graph, grid_input, compact_input, potential, kinetic,
+        graph, grid_input, compact_input, potential, kinetic, basis_indices,
         projector_conjugate, d_transpose, projector_transpose,
-        local_output, nonlocal_output, grid_shape, compact_shape,
-        potential_shape, projector_conjugate_shape, d_shape,
+        hamiltonian_output, grid_shape, compact_shape,
+        potential_shape, indices_shape, projector_conjugate_shape, d_shape,
         projector_transpose_shape};
     resident_graph_cache.emplace(key, cached);
+    return cached;
+}
+
+CachedPartialGramGraph partial_gram_graph_for(size_t chunks, size_t batch) {
+    constexpr size_t chunk_size = 256;
+    std::string key = std::to_string(batch) + ":" + std::to_string(chunks);
+    std::lock_guard<std::mutex> lock(cache_mutex);
+    auto found = partial_gram_graph_cache.find(key);
+    if (found != partial_gram_graph_cache.end()) return found->second;
+
+    MPSShape *input_shape = @[@(batch), @(chunks), @(chunk_size)];
+    MPSGraph *graph = [[MPSGraph alloc] init];
+    MPSGraphTensor *input = [graph placeholderWithShape:input_shape
+                                               dataType:MPSDataTypeComplexFloat32
+                                                   name:@"overlap_vectors"];
+    MPSGraphTensor *conjugate = [graph conjugateWithTensor:input name:@"overlap_conjugate"];
+    MPSGraphTensor *left = [graph reshapeTensor:conjugate
+                                      withShape:@[@(batch), @1, @(chunks), @(chunk_size)]
+                                           name:@"overlap_left"];
+    MPSGraphTensor *right = [graph reshapeTensor:input
+                                       withShape:@[@1, @(batch), @(chunks), @(chunk_size)]
+                                            name:@"overlap_right"];
+    MPSGraphTensor *products = [graph multiplicationWithPrimaryTensor:left
+                                                       secondaryTensor:right
+                                                                  name:@"overlap_products"];
+    MPSGraphTensor *output = [graph reductionSumWithTensor:products
+                                                       axis:3
+                                                       name:@"overlap_partials"];
+    CachedPartialGramGraph cached{graph, input, output, input_shape};
+    partial_gram_graph_cache.emplace(key, cached);
     return cached;
 }
 }  // namespace
@@ -503,6 +574,7 @@ extern "C" int rpd_metal_apply_dense(const float *input_interleaved,
 
 extern "C" void *rpd_metal_hamiltonian_create(
     const float *kinetic_interleaved,
+    const int32_t *basis_indices,
     const float *projector_conjugate_interleaved,
     const float *d_transpose_interleaved,
     const float *projector_transpose_interleaved,
@@ -510,7 +582,7 @@ extern "C" void *rpd_metal_hamiltonian_create(
     size_t dimension, size_t projector_count, size_t max_batch,
     char *error_buffer, size_t error_capacity) {
     @autoreleasepool {
-        if (!kinetic_interleaved || !projector_conjugate_interleaved ||
+        if (!kinetic_interleaved || !basis_indices || !projector_conjugate_interleaved ||
             !d_transpose_interleaved || !projector_transpose_interleaved ||
             nx == 0 || ny == 0 || nz == 0 || dimension == 0 ||
             projector_count == 0 || max_batch == 0) {
@@ -532,18 +604,24 @@ extern "C" void *rpd_metal_hamiltonian_create(
             return nullptr;
         }
         const size_t grid_count = nx * ny * nz;
+        constexpr size_t reduction_chunk_size = 256;
+        const size_t reduction_chunks =
+            (dimension + reduction_chunk_size - 1) / reduction_chunk_size;
+        const size_t reduction_dimension = reduction_chunks * reduction_chunk_size;
         const size_t complex_bytes = 2 * sizeof(float);
         const size_t grid_batch_bytes = grid_count * max_batch * complex_bytes;
         const size_t compact_batch_bytes = dimension * max_batch * complex_bytes;
         const size_t grid_bytes = grid_count * complex_bytes;
+        const size_t index_bytes = dimension * max_batch * sizeof(int32_t);
         const size_t projector_bytes = dimension * projector_count * complex_bytes;
         const size_t d_bytes = projector_count * projector_count * complex_bytes;
+        const size_t reduction_bytes = reduction_dimension * max_batch * complex_bytes;
         const uint64_t project_limit = std::min((uint64_t)(12ULL << 30),
                                                 device.recommendedMaxWorkingSetSize);
         uint64_t total = 0;
         const size_t allocations[] = {
-            grid_batch_bytes, compact_batch_bytes, grid_bytes, grid_bytes,
-            projector_bytes, d_bytes, projector_bytes};
+            grid_batch_bytes, compact_batch_bytes, grid_bytes, grid_bytes, index_bytes,
+            projector_bytes, d_bytes, projector_bytes, reduction_bytes};
         for (size_t bytes : allocations) {
             if (bytes > project_limit - total) {
                 copy_message(error_buffer, error_capacity,
@@ -562,6 +640,8 @@ extern "C" void *rpd_metal_hamiltonian_create(
         context->dimension = dimension;
         context->projector_count = projector_count;
         context->max_batch = max_batch;
+        context->reduction_chunks = reduction_chunks;
+        context->reduction_dimension = reduction_dimension;
         context->peak_device_allocated_bytes = device.currentAllocatedSize;
         context->grid_input = [device newBufferWithLength:grid_batch_bytes
                                                options:MTLResourceStorageModeShared];
@@ -572,6 +652,9 @@ extern "C" void *rpd_metal_hamiltonian_create(
         context->kinetic = [device newBufferWithBytes:kinetic_interleaved
                                                length:grid_bytes
                                               options:MTLResourceStorageModeShared];
+        context->basis_indices = [device newBufferWithBytes:basis_indices
+                                                     length:index_bytes
+                                                    options:MTLResourceStorageModeShared];
         context->projector_conjugate =
             [device newBufferWithBytes:projector_conjugate_interleaved
                                 length:projector_bytes
@@ -583,10 +666,13 @@ extern "C" void *rpd_metal_hamiltonian_create(
             [device newBufferWithBytes:projector_transpose_interleaved
                                 length:projector_bytes
                                options:MTLResourceStorageModeShared];
+        context->reduction_input = [device newBufferWithLength:reduction_bytes
+                                                        options:MTLResourceStorageModeShared];
         if (context->grid_input == nil || context->compact_input == nil ||
             context->potential == nil || context->kinetic == nil ||
+            context->basis_indices == nil ||
             context->projector_conjugate == nil || context->d_transpose == nil ||
-            context->projector_transpose == nil) {
+            context->projector_transpose == nil || context->reduction_input == nil) {
             delete context;
             copy_message(error_buffer, error_capacity,
                          @"failed to allocate resident Metal buffers");
@@ -601,15 +687,14 @@ extern "C" int rpd_metal_hamiltonian_apply(
     const float *grid_input_interleaved,
     const float *compact_input_interleaved,
     const float *potential_interleaved,
-    float *grid_output_interleaved,
-    float *nonlocal_output_interleaved,
+    float *compact_output_interleaved,
     size_t batch,
     char *error_buffer, size_t error_capacity) {
     @autoreleasepool {
         ResidentHamiltonian *context = static_cast<ResidentHamiltonian *>(opaque_context);
         if (!context || !grid_input_interleaved || !compact_input_interleaved ||
-            !potential_interleaved || !grid_output_interleaved ||
-            !nonlocal_output_interleaved || batch == 0 || batch > context->max_batch) {
+            !potential_interleaved || !compact_output_interleaved ||
+            batch == 0 || batch > context->max_batch) {
             copy_message(error_buffer, error_capacity, @"invalid resident-Hamiltonian apply arguments");
             return 2;
         }
@@ -636,6 +721,9 @@ extern "C" int rpd_metal_hamiltonian_apply(
         MPSGraphTensorData *kinetic_data = [[MPSGraphTensorData alloc]
             initWithMTLBuffer:context->kinetic shape:cached.potential_shape
                      dataType:MPSDataTypeComplexFloat32];
+        MPSGraphTensorData *indices_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:context->basis_indices shape:cached.indices_shape
+                     dataType:MPSDataTypeInt32];
         MPSGraphTensorData *projector_conjugate_data = [[MPSGraphTensorData alloc]
             initWithMTLBuffer:context->projector_conjugate
                         shape:cached.projector_conjugate_shape
@@ -654,19 +742,15 @@ extern "C" int rpd_metal_hamiltonian_apply(
                                                                       cached.compact_input: compact_input_data,
                                                                       cached.potential: potential_data,
                                                                       cached.kinetic: kinetic_data,
+                                                                      cached.basis_indices: indices_data,
                                                                       cached.projector_conjugate: projector_conjugate_data,
                                                                       cached.d_transpose: d_data,
                                                                       cached.projector_transpose: projector_transpose_data
                                                                   }
-                                                          targetTensors:@[
-                                                              cached.local_output,
-                                                              cached.nonlocal_output
-                                                          ]
+                                                          targetTensors:@[cached.hamiltonian_output]
                                                        targetOperations:nil];
-            MPSGraphTensorData *local_output = result[cached.local_output];
-            MPSGraphTensorData *nonlocal_output = result[cached.nonlocal_output];
-            [[local_output mpsndarray] readBytes:grid_output_interleaved strideBytes:nil];
-            [[nonlocal_output mpsndarray] readBytes:nonlocal_output_interleaved strideBytes:nil];
+            MPSGraphTensorData *output = result[cached.hamiltonian_output];
+            [[output mpsndarray] readBytes:compact_output_interleaved strideBytes:nil];
             context->peak_device_allocated_bytes = std::max(
                 context->peak_device_allocated_bytes,
                 static_cast<uint64_t>(context->device.currentAllocatedSize));
@@ -676,6 +760,60 @@ extern "C" int rpd_metal_hamiltonian_apply(
         }
         return 0;
     }
+}
+
+extern "C" int rpd_metal_hamiltonian_partial_gram(
+    void *opaque_context,
+    float *partial_output_interleaved,
+    size_t batch,
+    char *error_buffer, size_t error_capacity) {
+    @autoreleasepool {
+        ResidentHamiltonian *context = static_cast<ResidentHamiltonian *>(opaque_context);
+        if (!context || !partial_output_interleaved || batch == 0 ||
+            batch > context->max_batch) {
+            copy_message(error_buffer, error_capacity,
+                         @"invalid partial-Gram arguments");
+            return 2;
+        }
+        const size_t complex_bytes = 2 * sizeof(float);
+        const size_t reduction_row_bytes = context->reduction_dimension * complex_bytes;
+        const size_t compact_row_bytes = context->dimension * complex_bytes;
+        std::memset(context->reduction_input.contents, 0,
+                    context->reduction_dimension * batch * complex_bytes);
+        for (size_t state = 0; state < batch; ++state) {
+            std::memcpy(static_cast<char *>(context->reduction_input.contents) +
+                            state * reduction_row_bytes,
+                        static_cast<const char *>(context->compact_input.contents) +
+                            state * compact_row_bytes,
+                        compact_row_bytes);
+        }
+        CachedPartialGramGraph cached =
+            partial_gram_graph_for(context->reduction_chunks, batch);
+        MPSGraphTensorData *input_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:context->reduction_input
+                        shape:cached.input_shape
+                     dataType:MPSDataTypeComplexFloat32];
+        @try {
+            NSDictionary *result = [cached.graph runWithMTLCommandQueue:context->queue
+                                                                  feeds:@{cached.input: input_data}
+                                                          targetTensors:@[cached.output]
+                                                       targetOperations:nil];
+            MPSGraphTensorData *output = result[cached.output];
+            [[output mpsndarray] readBytes:partial_output_interleaved strideBytes:nil];
+            context->peak_device_allocated_bytes = std::max(
+                context->peak_device_allocated_bytes,
+                static_cast<uint64_t>(context->device.currentAllocatedSize));
+        } @catch (NSException *exception) {
+            copy_message(error_buffer, error_capacity, exception.reason);
+            return 3;
+        }
+        return 0;
+    }
+}
+
+extern "C" size_t rpd_metal_hamiltonian_reduction_chunks(void *opaque_context) {
+    ResidentHamiltonian *context = static_cast<ResidentHamiltonian *>(opaque_context);
+    return context ? context->reduction_chunks : 0;
 }
 
 extern "C" void rpd_metal_hamiltonian_destroy(void *opaque_context) {

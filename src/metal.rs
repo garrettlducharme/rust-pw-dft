@@ -45,6 +45,7 @@ mod imp {
         ) -> c_int;
         fn rpd_metal_hamiltonian_create(
             kinetic_interleaved: *const f32,
+            basis_indices: *const i32,
             projector_conjugate_interleaved: *const f32,
             d_transpose_interleaved: *const f32,
             projector_transpose_interleaved: *const f32,
@@ -62,14 +63,21 @@ mod imp {
             grid_input_interleaved: *const f32,
             compact_input_interleaved: *const f32,
             potential_interleaved: *const f32,
-            grid_output_interleaved: *mut f32,
-            nonlocal_output_interleaved: *mut f32,
+            compact_output_interleaved: *mut f32,
             batch: usize,
             error_buffer: *mut c_char,
             error_capacity: usize,
         ) -> c_int;
         fn rpd_metal_hamiltonian_destroy(context: *mut c_void);
         fn rpd_metal_hamiltonian_peak_allocated_bytes(context: *mut c_void) -> u64;
+        fn rpd_metal_hamiltonian_partial_gram(
+            context: *mut c_void,
+            partial_output_interleaved: *mut f32,
+            batch: usize,
+            error_buffer: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
+        fn rpd_metal_hamiltonian_reduction_chunks(context: *mut c_void) -> usize;
     }
 
     pub struct HamiltonianContext {
@@ -78,7 +86,9 @@ mod imp {
         dimension: usize,
         projector_count: usize,
         max_batch: usize,
+        reduction_chunks: usize,
         persistent_buffer_bytes: usize,
+        last_batch: Option<usize>,
         _not_send_or_sync: PhantomData<Rc<()>>,
     }
 
@@ -90,6 +100,7 @@ mod imp {
             projector_count: usize,
             max_batch: usize,
             kinetic: &[Complex32],
+            basis_indices: &[i32],
             projector_conjugate: &[Complex32],
             d_transpose: &[Complex32],
             projector_transpose: &[Complex32],
@@ -100,6 +111,9 @@ mod imp {
             }
             if kinetic.len() != grid_points {
                 bail!("Metal kinetic grid has the wrong size");
+            }
+            if basis_indices.len() != dimension * max_batch {
+                bail!("Metal basis-index matrix has the wrong size");
             }
             if projector_conjugate.len() != dimension * projector_count
                 || projector_transpose.len() != projector_count * dimension
@@ -113,6 +127,7 @@ mod imp {
             let raw = unsafe {
                 rpd_metal_hamiltonian_create(
                     kinetic.as_ptr().cast::<f32>(),
+                    basis_indices.as_ptr(),
                     projector_conjugate.as_ptr().cast::<f32>(),
                     d_transpose.as_ptr().cast::<f32>(),
                     projector_transpose.as_ptr().cast::<f32>(),
@@ -130,20 +145,30 @@ mod imp {
                 let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
                 bail!("Metal Hamiltonian context creation failed: {message}");
             };
+            let reduction_chunks = unsafe { rpd_metal_hamiltonian_reduction_chunks(raw.as_ptr()) };
+            if reduction_chunks == 0 {
+                unsafe { rpd_metal_hamiltonian_destroy(raw.as_ptr()) };
+                bail!("Metal Hamiltonian reported zero reduction chunks");
+            }
+            let reduction_dimension = reduction_chunks * 256;
             let complex_bytes = std::mem::size_of::<Complex32>();
             let persistent_buffer_bytes = complex_bytes
                 * (grid_points * max_batch
                     + dimension * max_batch
                     + 2 * grid_points
                     + 2 * dimension * projector_count
-                    + projector_count * projector_count);
+                    + projector_count * projector_count
+                    + reduction_dimension * max_batch)
+                + std::mem::size_of_val(basis_indices);
             Ok(Self {
                 raw,
                 shape,
                 dimension,
                 projector_count,
                 max_batch,
+                reduction_chunks,
                 persistent_buffer_bytes,
+                last_batch: None,
                 _not_send_or_sync: PhantomData,
             })
         }
@@ -154,7 +179,7 @@ mod imp {
             compact_input: &[Complex32],
             potential: &[Complex32],
             batch: usize,
-        ) -> Result<(Vec<Complex32>, Vec<Complex32>)> {
+        ) -> Result<Vec<Complex32>> {
             let grid_points = self.shape.iter().product::<usize>();
             if batch == 0 || batch > self.max_batch {
                 bail!(
@@ -171,8 +196,7 @@ mod imp {
             if potential.len() != grid_points {
                 bail!("Metal local potential has the wrong size");
             }
-            let mut grid_output = vec![Complex32::default(); grid_input.len()];
-            let mut nonlocal_output = vec![Complex32::default(); compact_input.len()];
+            let mut compact_output = vec![Complex32::default(); compact_input.len()];
             let mut error = vec![0_i8; 2048];
             let status = unsafe {
                 rpd_metal_hamiltonian_apply(
@@ -180,8 +204,7 @@ mod imp {
                     grid_input.as_ptr().cast::<f32>(),
                     compact_input.as_ptr().cast::<f32>(),
                     potential.as_ptr().cast::<f32>(),
-                    grid_output.as_mut_ptr().cast::<f32>(),
-                    nonlocal_output.as_mut_ptr().cast::<f32>(),
+                    compact_output.as_mut_ptr().cast::<f32>(),
                     batch,
                     error.as_mut_ptr(),
                     error.len(),
@@ -191,7 +214,41 @@ mod imp {
                 let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
                 bail!("resident Metal Hamiltonian failed ({status}): {message}");
             }
-            Ok((grid_output, nonlocal_output))
+            self.last_batch = Some(batch);
+            Ok(compact_output)
+        }
+
+        /// Return `<psi_i|psi_j>` for the last uploaded block. Metal produces
+        /// one complex-FP32 partial per 256 coefficients; Rust performs the
+        /// final accumulation in complex FP64.
+        pub fn last_input_gram(&mut self, batch: usize) -> Result<Vec<num_complex::Complex64>> {
+            if self.last_batch != Some(batch) {
+                bail!("partial Gram request does not match the last Metal batch");
+            }
+            let mut partials = vec![Complex32::default(); batch * batch * self.reduction_chunks];
+            let mut error = vec![0_i8; 2048];
+            let status = unsafe {
+                rpd_metal_hamiltonian_partial_gram(
+                    self.raw.as_ptr(),
+                    partials.as_mut_ptr().cast::<f32>(),
+                    batch,
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            if status != 0 {
+                let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
+                bail!("Metal partial Gram reduction failed ({status}): {message}");
+            }
+            Ok((0..batch * batch)
+                .map(|pair| {
+                    partials[pair * self.reduction_chunks..(pair + 1) * self.reduction_chunks]
+                        .iter()
+                        .fold(num_complex::Complex64::default(), |sum, value| {
+                            sum + num_complex::Complex64::new(value.re as f64, value.im as f64)
+                        })
+                })
+                .collect())
         }
 
         pub fn projector_count(&self) -> usize {
@@ -394,6 +451,7 @@ mod imp {
             _projector_count: usize,
             _max_batch: usize,
             _kinetic: &[Complex32],
+            _basis_indices: &[i32],
             _projector_conjugate: &[Complex32],
             _d_transpose: &[Complex32],
             _projector_transpose: &[Complex32],
@@ -406,7 +464,10 @@ mod imp {
             _compact_input: &[Complex32],
             _potential: &[Complex32],
             _batch: usize,
-        ) -> Result<(Vec<Complex32>, Vec<Complex32>)> {
+        ) -> Result<Vec<Complex32>> {
+            bail!("binary was built without the macOS-only `metal` feature")
+        }
+        pub fn last_input_gram(&mut self, _batch: usize) -> Result<Vec<num_complex::Complex64>> {
             bail!("binary was built without the macOS-only `metal` feature")
         }
         pub fn projector_count(&self) -> usize {

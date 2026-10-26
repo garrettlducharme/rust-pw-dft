@@ -643,12 +643,21 @@ impl CpuHamiltonian {
         for (basis, &grid_index) in self.basis_grid_indices.iter().enumerate() {
             kinetic[grid_index] = Complex32::new(self.kinetic_ry[basis] as f32, 0.0);
         }
+        ensure!(
+            self.fft.len() <= i32::MAX as usize,
+            "Metal FFT grid is too large for MPSGraph gather indices"
+        );
+        let mut basis_indices = Vec::with_capacity(dimension * max_batch);
+        for _ in 0..max_batch {
+            basis_indices.extend(self.basis_grid_indices.iter().map(|&index| index as i32));
+        }
         crate::metal::HamiltonianContext::new(
             self.fft.shape(),
             dimension,
             projector_count,
             max_batch,
             &kinetic,
+            &basis_indices,
             &projector_conjugate,
             &d_transpose,
             &projector_transpose,
@@ -691,18 +700,14 @@ impl CpuHamiltonian {
             .zip(hartree_xc_real_ry)
             .map(|(&ionic, &electronic)| Complex32::new((ionic + electronic) as f32, 0.0))
             .collect();
-        let (grid_output, nonlocal_output) =
+        let compact_output =
             context.apply(&grid_input, &compact_input, &potential, wavefunctions.len())?;
         Ok((0..wavefunctions.len())
             .map(|state| {
-                let grid_offset = state * self.fft.len();
                 let compact_offset = state * self.dimension();
-                self.basis_grid_indices
-                    .iter()
-                    .enumerate()
-                    .map(|(basis, &grid_index)| {
-                        let value = grid_output[grid_offset + grid_index]
-                            + nonlocal_output[compact_offset + basis];
+                (0..self.dimension())
+                    .map(|basis| {
+                        let value = compact_output[compact_offset + basis];
                         Complex64::new(value.re as f64, value.im as f64)
                     })
                     .collect()
@@ -1207,6 +1212,24 @@ mod tests {
                 "silicon persistent compact-projector Metal error: {persistent_relative_l2:e}"
             );
             assert!(persistent_relative_l2 < 1.0e-5);
+
+            let metal_gram = persistent_context
+                .last_input_gram(wavefunctions.len())
+                .unwrap();
+            let mut maximum_gram_error = 0.0_f64;
+            for left in 0..wavefunctions.len() {
+                for right in 0..wavefunctions.len() {
+                    let cpu_overlap: Complex64 = wavefunctions[left]
+                        .iter()
+                        .zip(&wavefunctions[right])
+                        .map(|(a, b)| a.conj() * b)
+                        .sum();
+                    maximum_gram_error = maximum_gram_error
+                        .max((metal_gram[left * wavefunctions.len() + right] - cpu_overlap).norm());
+                }
+            }
+            eprintln!("silicon Metal partial-Gram maximum absolute error: {maximum_gram_error:e}");
+            assert!(maximum_gram_error < 1.0e-5);
 
             let metal_davidson = block_davidson(
                 hamiltonian.kinetic_ry(),
