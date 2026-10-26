@@ -1,3 +1,4 @@
 /target/
 *.profraw
 .DS_Store
+pseudopotentials/*.UPF

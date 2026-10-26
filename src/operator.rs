@@ -1055,6 +1055,9 @@ mod tests {
             return;
         }
         let input = SimulationInput::from_path(input_path).unwrap();
+        if !input.pseudopotentials["Si"].exists() {
+            return;
+        }
         let pseudo = NormConservingPseudo::from_upf(&input.pseudopotentials["Si"]).unwrap();
         let lattice = Lattice::new(input.cell.lattice_bohr).unwrap();
         let g_vectors = lattice.enumerate_g_vectors(input.cutoff_ry);

@@ -18,6 +18,10 @@ GPL DFT implementations.
   kinetic, and projector buffers behind the macOS-only `metal` feature;
 - compact separable `B D B-dagger` nonlocal application, avoiding the former
   plane-wave-squared dense validation matrix in production SCF;
+- on-device real/imaginary gather of FFT output into the compact plane-wave
+  basis, so a Hamiltonian application returns only compact `H|psi>` blocks;
+- chunked complex-FP32 overlap partials on Metal with final accumulation in
+  CPU complex FP64 (validated as a primitive, not yet wired into Davidson);
 - complete CPU-FP64 silicon SCF with atomic-density initialization, local and
   separable nonlocal pseudopotentials, Hartree and LDA-PZ potentials, Ewald
   energy, linear density mixing, and dual convergence checks;
@@ -49,9 +53,9 @@ through the persistent compact-projector context differs from CPU by
 `1.34e-7` in relative L2 norm.
 
 On the pinned 16-atom silicon supercell, five warmed runs give median wall
-times of `24.540 s` CPU and `6.032 s` Metal, an observed `4.068x` speedup.
-Persistent Metal buffers occupy 9.24 MB and measured peak device allocation is
-66.8 MB on this workload, well below the 12 GiB project cap.
+times of `22.418 s` CPU and `4.919 s` Metal, an observed `4.557x` speedup.
+Persistent Metal buffers occupy 9.82 MB and measured peak device allocation is
+71.0 MB on this workload, well below the 12 GiB project cap.
 
 Metal remains marked ineligible for a production performance claim because
 the Davidson basis and correction vectors still live in host FP64 and are
@@ -61,6 +65,11 @@ tolerances, memory measurements, and precision policy are recorded in every
 result.
 
 ## Commands
+
+First download and verify the external QE 7.6 fixture as described in
+[`pseudopotentials/README.md`](pseudopotentials/README.md). Relative
+pseudopotential paths are resolved from the input file, so the examples work
+from any current directory once that file is present.
 
 ```sh
 cargo test
