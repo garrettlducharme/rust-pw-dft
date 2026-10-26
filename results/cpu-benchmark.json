@@ -5,13 +5,13 @@
   "converged": true,
   "iterations": 49,
   "repetitions": 5,
-  "min_seconds": 0.428332875,
-  "median_seconds": 0.4309215,
-  "max_seconds": 0.4318765,
+  "min_seconds": 0.168637958,
+  "median_seconds": 0.169138625,
+  "max_seconds": 0.171535,
   "provenance": {
     "requested_backend": "cpu-f64",
     "actual_backend": "cpu-f64",
-    "actual_device": "Apple CPU (rustfft/f64 + faer dense-reference eigensolve)",
+    "actual_device": "Apple CPU (rustfft/f64 + block-Davidson/faer-f64)",
     "precision_policy": {
       "storage": "complex-f64",
       "reductions": "f64",
@@ -22,7 +22,7 @@
     "pseudopotential_sha256": {
       "Si": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d"
     },
-    "git_revision": "47d8c0b467a2671939df4940c12a2d1ff6f42b16"
+    "git_revision": "26407da01103fe6accd1708ab4eda1edf94da84e"
   },
   "stop_reason": null
 }

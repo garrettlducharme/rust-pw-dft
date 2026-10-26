@@ -1,0 +1,55 @@
+{
+  "converged": true,
+  "iterations": 50,
+  "atom_count": 2,
+  "total_energy_ry": -14.529470016571501,
+  "energy_terms": {
+    "band_energy_ry": 2.400887577762391,
+    "davidson_iterations": 122.0,
+    "density_residual": 5.944204112034981e-9,
+    "energy_change_ry": 3.844064622171572e-9,
+    "ewald_ry": -16.81732072317454,
+    "hamiltonian_applications": 461.0,
+    "hartree_ry": 1.6451470423214805,
+    "highest_occupied_eigenvalue_ev": 7.127295767840229,
+    "integral_rho_vxc_ry": -6.564950969080273,
+    "maximum_orbital_residual_ry": 5.204491193243485e-6,
+    "xc_ry": -5.032840797918146
+  },
+  "eigenvalues_ry": [
+    -0.3710958568439652,
+    0.5238465171262399,
+    0.5238465517718348,
+    0.5238465768270858
+  ],
+  "electron_count": 8.000000000000018,
+  "residuals": [
+    2.7945378304365463e-6,
+    5.164238801991093e-6,
+    5.16549963956372e-6,
+    5.204491193243485e-6
+  ],
+  "timings": {
+    "density_seconds": 0.0024819209999999998,
+    "eigensolve_seconds": 0.13367708400000006,
+    "potential_seconds": 0.002154545,
+    "setup_seconds": 0.115145083,
+    "total_seconds": 0.254172167
+  },
+  "provenance": {
+    "requested_backend": "metal-mixed",
+    "actual_backend": "metal-mixed",
+    "actual_device": "Apple M5 Pro (MPSGraph Hamiltonian validation; nonresident host round trips)",
+    "precision_policy": {
+      "storage": "complex-f64-host+complex-f32-metal-per-application",
+      "reductions": "f64-cpu",
+      "eigensolve": "f64-cpu",
+      "energy": "f64-cpu"
+    },
+    "input_sha256": "7a6f32c22973bd1212173b6bcdc0e28bdfee250989eab88baef119ccbc670292",
+    "pseudopotential_sha256": {
+      "Si": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d"
+    },
+    "git_revision": "26407da01103fe6accd1708ab4eda1edf94da84e"
+  }
+}

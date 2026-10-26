@@ -1,0 +1,28 @@
+{
+  "accepted_for_performance_claim": false,
+  "requested_backend": "metal-mixed",
+  "actual_backend": "metal-mixed",
+  "converged": true,
+  "iterations": 50,
+  "repetitions": 5,
+  "min_seconds": 0.192706458,
+  "median_seconds": 0.195484375,
+  "max_seconds": 0.2001795,
+  "provenance": {
+    "requested_backend": "metal-mixed",
+    "actual_backend": "metal-mixed",
+    "actual_device": "Apple M5 Pro (MPSGraph Hamiltonian validation; nonresident host round trips)",
+    "precision_policy": {
+      "storage": "complex-f64-host+complex-f32-metal-per-application",
+      "reductions": "f64-cpu",
+      "eigensolve": "f64-cpu",
+      "energy": "f64-cpu"
+    },
+    "input_sha256": "7a6f32c22973bd1212173b6bcdc0e28bdfee250989eab88baef119ccbc670292",
+    "pseudopotential_sha256": {
+      "Si": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d"
+    },
+    "git_revision": "26407da01103fe6accd1708ab4eda1edf94da84e"
+  },
+  "stop_reason": "Metal validation uses nonresident host round trips and is not eligible for an end-to-end performance claim"
+}

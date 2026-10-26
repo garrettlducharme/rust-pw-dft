@@ -1,47 +1,75 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "source_revision": "f5a46800bba5bb50eb9b1592cdfdcdb56b6b1986",
+  "tests": {
+    "cpu_passed": 15,
+    "metal_feature_passed": 18,
+    "failed": 0,
+    "clippy_all_targets_metal_feature": "passed"
+  },
   "cpu": {
-    "tests_passed": 14,
-    "tests_failed": 0,
     "fft_roundtrip_relative_l2_gate": 1e-12,
     "parseval_relative_gate": 1e-12,
-    "clippy_all_targets_metal_feature": "passed",
-    "scf": {
+    "si2_scf": {
       "accepted": true,
       "iterations": 49,
-      "total_energy_ry": -14.529468342292569,
+      "total_energy_ry": -14.529468342292542,
       "qe_total_energy_ry": -14.52946835446514,
-      "energy_error_mev_atom": 0.00008280814150321396,
-      "maximum_occupied_eigenvalue_error_mev": 0.0002529139939519718,
-      "electron_count_error": 4.263256414560601e-14,
-      "maximum_orbital_residual_ry": 1.1803057763067715e-14
+      "energy_error_mev_atom": 0.00008280831068317619,
+      "maximum_occupied_eigenvalue_error_mev": 0.0002529113988521939,
+      "electron_count_error": 3.9968028886505635e-14,
+      "maximum_orbital_residual_ry": 8.760124477612133e-11
     }
   },
   "metal": {
     "device": "Apple M5 Pro",
     "fft_roundtrip_relative_l2": 1.7528988478321696e-7,
     "fft_roundtrip_relative_l2_gate": 1e-5,
-    "gate_passed": true
-  },
-  "scientific_scf": {
-    "cpu_implemented": true,
-    "cpu_accepted": true,
-    "metal_implemented": false,
-    "metal_accepted": false,
-    "metal_behavior": "fail-closed"
+    "fixed_density_local_kinetic_relative_l2": 9.364917040762578e-8,
+    "fixed_density_complete_hamiltonian_relative_l2": 1.0252054904136722e-7,
+    "fixed_density_occupied_eigenvalue_error_mev": 0.0034954163843387335,
+    "si2_scf": {
+      "accepted": true,
+      "iterations": 50,
+      "total_energy_ry": -14.529470016571501,
+      "cpu_energy_error_mev_atom": 0.011389862847337055,
+      "maximum_occupied_eigenvalue_error_mev": 0.0015695685059592293,
+      "electron_count_error": 5.773159728050814e-14,
+      "maximum_orbital_residual_ry": 5.204491193243485e-6
+    },
+    "behavior": "fail-closed; no CPU Hamiltonian fallback"
   },
   "performance": {
-    "cpu_warmed_seconds": {
-      "min": 0.428332875,
-      "median": 0.4309215,
-      "max": 0.4318765,
-      "repetitions": 5
+    "workload": "examples/si16.toml",
+    "cold_processes": 1,
+    "warmed_repetitions": 5,
+    "cpu_seconds": {
+      "min": 27.000048,
+      "median": 27.274262916,
+      "max": 27.364706083,
+      "scf_iterations": 47
     },
-    "metal_accepted": false,
-    "reason": "a complete identical-physics Metal SCF path does not yet exist"
+    "metal_seconds": {
+      "min": 11.52509825,
+      "median": 11.56504575,
+      "max": 11.623144084,
+      "scf_iterations": 60
+    },
+    "median_speedup": 2.358335929280695,
+    "numeric_1_20x_gate_passed": true,
+    "scientific_parity": {
+      "energy_error_mev_atom": 0.009670486021057306,
+      "maximum_occupied_eigenvalue_error_mev": 0.0022825623270945608,
+      "electron_count_error": 2.8421709430404007e-12,
+      "accepted": true
+    },
+    "production_claim_accepted": false,
+    "reason": "Metal validation still performs nonresident host round trips and uses a dense nonlocal validation matrix"
   },
-  "known_scaling_limit": {
-    "current_eigensolver": "dense faer reference solve",
-    "planned_eigensolver": "block Davidson with kinetic preconditioning"
+  "go_no_go": {
+    "cpu_educational_solver": "go",
+    "metal_scientific_validation": "go for the pinned silicon workloads only",
+    "metal_resident_backend": "go as the next bounded milestone",
+    "production_science_or_scope_expansion": "no-go until the resident backend repeats both gates"
   }
 }
