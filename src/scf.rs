@@ -1,5 +1,5 @@
 use crate::backend::{BackendKind, PrecisionPolicy};
-use crate::eigensolver::{DavidsonOptions, block_davidson};
+use crate::eigensolver::{DavidsonOptions, block_davidson_batched};
 use crate::input::SimulationInput;
 use crate::lattice::Lattice;
 use crate::operator::{
@@ -30,81 +30,7 @@ fn relative_density_residual(input: &[f64], output: &[f64]) -> f64 {
     (difference / reference.max(f64::MIN_POSITIVE)).sqrt()
 }
 
-pub fn preflight(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResult> {
-    let started = Instant::now();
-    let input = SimulationInput::from_path(input_path)?;
-    let lattice = Lattice::new(input.cell.lattice_bohr)?;
-    let g_vectors = lattice.enumerate_g_vectors(input.cutoff_ry);
-    let grid = Lattice::density_fft_grid(&g_vectors);
-    ensure!(grid.iter().product::<usize>() > 0, "empty FFT grid");
-    let mut pseudo_hashes = BTreeMap::new();
-    let mut electrons = 0.0;
-    for (element, path) in &input.pseudopotentials {
-        let pseudo = NormConservingPseudo::from_legacy_upf(path)?;
-        ensure!(
-            &pseudo.element == element,
-            "pseudopotential element mismatch"
-        );
-        electrons += pseudo.valence_charge
-            * input
-                .atoms
-                .iter()
-                .filter(|atom| &atom.element == element)
-                .count() as f64;
-        pseudo_hashes.insert(element.clone(), sha256(path)?);
-    }
-    let (actual_backend, actual_device, policy) = match requested_backend {
-        BackendKind::CpuF64 => (
-            BackendKind::CpuF64,
-            "Apple CPU (rustfft/f64)".into(),
-            PrecisionPolicy::cpu_f64(),
-        ),
-        BackendKind::MetalMixed => {
-            let device = crate::metal::device_name()
-                .context("Metal backend unavailable (no CPU fallback)")?;
-            (
-                BackendKind::MetalMixed,
-                device,
-                PrecisionPolicy::metal_mixed(),
-            )
-        }
-    };
-    let mut timings = BTreeMap::new();
-    timings.insert("preflight_seconds".into(), started.elapsed().as_secs_f64());
-    let stop_reason = format!(
-        "Metal scientific SCF is fail-closed: only the native MPSGraph complex-FP32 FFT has passed; the resident Hamiltonian, mixed-precision reductions, and SCF orchestration are not yet integrated ({} plane waves, grid {}x{}x{})",
-        g_vectors.len(),
-        grid[0],
-        grid[1],
-        grid[2]
-    );
-    Ok(ScfResult {
-        converged: false,
-        iterations: 0,
-        atom_count: input.atoms.len(),
-        total_energy_ry: None,
-        energy_terms: BTreeMap::new(),
-        eigenvalues_ry: Vec::new(),
-        electron_count: Some(electrons),
-        residuals: Vec::new(),
-        timings,
-        provenance: Provenance {
-            requested_backend,
-            actual_backend,
-            actual_device,
-            precision_policy: policy,
-            input_sha256: sha256(input_path)?,
-            pseudopotential_sha256: pseudo_hashes,
-            git_revision: git_revision(),
-        },
-        stop_reason: Some(stop_reason),
-    })
-}
-
 pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResult> {
-    if requested_backend == BackendKind::MetalMixed {
-        return preflight(input_path, requested_backend);
-    }
     let total_started = Instant::now();
     let input = SimulationInput::from_path(input_path)?;
     let lattice = Lattice::new(input.cell.lattice_bohr)?;
@@ -135,6 +61,27 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
 
     let setup_started = Instant::now();
     let hamiltonian = CpuHamiltonian::new(&lattice, &g_vectors, &input.atoms, &pseudo)?;
+    let (actual_device, precision_policy, eigensolver_tolerance, scf_orbital_tolerance) =
+        match requested_backend {
+            BackendKind::CpuF64 => (
+                "Apple CPU (rustfft/f64 + block-Davidson/faer-f64)".into(),
+                PrecisionPolicy::cpu_f64(),
+                input.scf_options.orbital_residual_tolerance.min(1.0e-10),
+                input.scf_options.orbital_residual_tolerance,
+            ),
+            BackendKind::MetalMixed => {
+                let device = crate::metal::device_name()
+                    .context("Metal backend unavailable (no CPU Hamiltonian fallback)")?;
+                (
+                    format!(
+                        "{device} (MPSGraph Hamiltonian validation; nonresident host round trips)"
+                    ),
+                    PrecisionPolicy::metal_validation(),
+                    1.0e-5,
+                    1.0e-5,
+                )
+            }
+        };
     let mut density = atomic_starting_density(
         hamiltonian.fft(),
         &lattice,
@@ -179,17 +126,25 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
         let eigensolve_started = Instant::now();
         let davidson_options = DavidsonOptions {
             roots: occupied_states,
-            residual_tolerance: input.scf_options.orbital_residual_tolerance.min(1.0e-10),
+            residual_tolerance: eigensolver_tolerance,
             max_iterations: 80,
             max_subspace: (occupied_states * 8)
                 .max(occupied_states + 4)
                 .min(hamiltonian.dimension()),
         };
-        let eigenpairs = block_davidson(
+        let eigenpairs = block_davidson_batched(
             hamiltonian.kinetic_ry(),
             previous_orbitals.as_deref(),
             &davidson_options,
-            |orbital| hamiltonian.apply_fft(orbital, &potential.real_ry),
+            |orbitals| match requested_backend {
+                BackendKind::CpuF64 => orbitals
+                    .iter()
+                    .map(|orbital| hamiltonian.apply_fft(orbital, &potential.real_ry))
+                    .collect(),
+                BackendKind::MetalMixed => {
+                    hamiltonian.apply_hamiltonian_metal_validation(orbitals, &potential.real_ry)
+                }
+            },
         )?;
         add_timing(
             &mut timings,
@@ -254,7 +209,7 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
         let maximum_orbital_residual = final_residuals.iter().copied().fold(0.0_f64, f64::max);
         if final_density_residual <= input.scf_options.density_tolerance
             && final_energy_change <= input.scf_options.energy_tolerance_ry
-            && maximum_orbital_residual <= input.scf_options.orbital_residual_tolerance
+            && maximum_orbital_residual <= scf_orbital_tolerance
         {
             converged = true;
             break;
@@ -276,8 +231,11 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
         ))
     } else {
         Some(format!(
-            "CPU SCF did not converge in {} iterations (density residual {:.3e}, energy change {:.3e} Ry); no scientific acceptance claim is allowed",
-            input.scf_options.max_iterations, final_density_residual, final_energy_change
+            "{:?} SCF did not converge in {} iterations (density residual {:.3e}, energy change {:.3e} Ry); no scientific acceptance claim is allowed",
+            requested_backend,
+            input.scf_options.max_iterations,
+            final_density_residual,
+            final_energy_change
         ))
     };
     final_terms.insert("davidson_iterations".into(), davidson_iterations as f64);
@@ -305,9 +263,9 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
         timings,
         provenance: Provenance {
             requested_backend,
-            actual_backend: BackendKind::CpuF64,
-            actual_device: "Apple CPU (rustfft/f64 + block-Davidson/faer-f64)".into(),
-            precision_policy: PrecisionPolicy::cpu_f64(),
+            actual_backend: requested_backend,
+            actual_device,
+            precision_policy,
             input_sha256: sha256(input_path)?,
             pseudopotential_sha256: pseudo_hashes,
             git_revision: git_revision(),

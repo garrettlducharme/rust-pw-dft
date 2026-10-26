@@ -121,8 +121,16 @@ fn compare(result_path: &Path, reference_path: &Path) -> Result<Comparison> {
     let energy_mev =
         (energy - reference_energy).abs() * 13_605.693_122_994 / result.atom_count as f64;
     let eigen_mev = max_eigen_ry * 13_605.693_122_994;
+    let (energy_tolerance_mev_atom, electron_tolerance) =
+        if result.provenance.actual_backend == BackendKind::MetalMixed {
+            (1.0, 1.0e-5)
+        } else {
+            (2.0, 1.0e-8)
+        };
     Ok(Comparison {
-        accepted: energy_mev <= 2.0 && eigen_mev <= 5.0 && electron_error <= 1.0e-8,
+        accepted: energy_mev <= energy_tolerance_mev_atom
+            && eigen_mev <= 5.0
+            && electron_error <= electron_tolerance,
         total_energy_error_mev_atom: energy_mev,
         maximum_occupied_eigenvalue_error_mev: eigen_mev,
         electron_count_error: electron_error,
@@ -174,8 +182,17 @@ fn main() -> Result<()> {
             }
             timings.sort_by(f64::total_cmp);
             let last = last.unwrap();
+            let performance_eligible = last.converged && kind == BackendKind::CpuF64;
+            let benchmark_stop_reason = if kind == BackendKind::MetalMixed && last.converged {
+                Some(
+                    "Metal validation uses nonresident host round trips and is not eligible for an end-to-end performance claim"
+                        .into(),
+                )
+            } else {
+                last.stop_reason.clone()
+            };
             let report = Benchmark {
-                accepted_for_performance_claim: last.converged,
+                accepted_for_performance_claim: performance_eligible,
                 requested_backend: kind,
                 actual_backend: last.provenance.actual_backend,
                 converged: last.converged,
@@ -185,7 +202,7 @@ fn main() -> Result<()> {
                 median_seconds: timings[timings.len() / 2],
                 max_seconds: *timings.last().unwrap(),
                 provenance: last.provenance,
-                stop_reason: last.stop_reason,
+                stop_reason: benchmark_stop_reason,
             };
             let rendered = serde_json::to_string_pretty(&report)?;
             if let Some(path) = output {
@@ -194,7 +211,7 @@ fn main() -> Result<()> {
                 println!("{rendered}");
             }
             if !report.accepted_for_performance_claim {
-                bail!("benchmark is preflight-only and cannot support a performance claim");
+                bail!("benchmark cannot support a performance claim; see its stop_reason");
             }
         }
     }

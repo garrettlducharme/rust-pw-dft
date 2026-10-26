@@ -80,6 +80,25 @@ pub fn block_davidson<F>(
 where
     F: FnMut(&[Complex64]) -> Result<Vec<Complex64>>,
 {
+    block_davidson_batched(kinetic_diagonal, initial_vectors, options, |vectors| {
+        vectors.iter().map(|vector| apply(vector)).collect()
+    })
+}
+
+/// Batched block-Davidson boundary used by accelerator backends.
+///
+/// Every call receives the complete block of new basis vectors, allowing one
+/// FFT graph execution to process all states. Returned vectors must preserve
+/// input order.
+pub fn block_davidson_batched<F>(
+    kinetic_diagonal: &[f64],
+    initial_vectors: Option<&[Vec<Complex64>]>,
+    options: &DavidsonOptions,
+    mut apply_batch: F,
+) -> Result<DavidsonResult>
+where
+    F: FnMut(&[Vec<Complex64>]) -> Result<Vec<Vec<Complex64>>>,
+{
     let dimension = kinetic_diagonal.len();
     ensure!(dimension > 0, "Davidson dimension must be nonzero");
     ensure!(
@@ -135,15 +154,18 @@ where
         "failed to initialize Davidson basis"
     );
 
-    let mut applied_basis = Vec::with_capacity(options.max_subspace);
-    for vector in &basis {
-        let applied = apply(vector)?;
+    let mut applied_basis = apply_batch(&basis)?;
+    ensure!(
+        applied_basis.len() == basis.len(),
+        "Hamiltonian batch result has wrong state count"
+    );
+    for applied in &applied_basis {
         ensure!(
             applied.len() == dimension,
             "Hamiltonian result has wrong size"
         );
-        applied_basis.push(applied);
     }
+    applied_basis.reserve(options.max_subspace - applied_basis.len());
     let mut applications = basis.len();
     let mut last_result = DavidsonResult {
         converged: false,
@@ -248,8 +270,12 @@ where
             }
             corrections = restarted_corrections;
         }
-        for correction in corrections {
-            let applied = apply(&correction)?;
+        let applied_corrections = apply_batch(&corrections)?;
+        ensure!(
+            applied_corrections.len() == corrections.len(),
+            "Hamiltonian batch result has wrong state count"
+        );
+        for (correction, applied) in corrections.into_iter().zip(applied_corrections) {
             ensure!(
                 applied.len() == dimension,
                 "Hamiltonian result has wrong size"

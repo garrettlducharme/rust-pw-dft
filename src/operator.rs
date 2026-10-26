@@ -9,8 +9,11 @@ use crate::lattice::{GVector, Lattice, Vec3};
 use crate::pseudo::{NormConservingPseudo, Projector};
 use crate::xc::lda_pz_unpolarized;
 use anyhow::{Result, ensure};
+#[cfg(all(feature = "metal", target_os = "macos"))]
+use num_complex::Complex32;
 use num_complex::Complex64;
 use std::f64::consts::{PI, TAU};
+use std::sync::OnceLock;
 
 const FOUR_PI: f64 = 4.0 * PI;
 const ELECTRON_CHARGE_SQUARED_RY: f64 = 2.0;
@@ -187,6 +190,7 @@ pub struct CpuHamiltonian {
     fft: Fft3d,
     basis_grid_indices: Vec<usize>,
     ionic_local_real_ry: Vec<f64>,
+    nonlocal_dense_ry: OnceLock<Vec<Complex64>>,
 }
 
 impl CpuHamiltonian {
@@ -326,6 +330,7 @@ impl CpuHamiltonian {
             fft,
             basis_grid_indices,
             ionic_local_real_ry,
+            nonlocal_dense_ry: OnceLock::new(),
         })
     }
 
@@ -378,6 +383,26 @@ impl CpuHamiltonian {
         }
     }
 
+    fn build_nonlocal_dense_matrix(&self) -> Vec<Complex64> {
+        let n = self.dimension();
+        let mut matrix = vec![Complex64::default(); n * n];
+        for column in 0..n {
+            let mut basis = vec![Complex64::default(); n];
+            basis[column] = Complex64::new(1.0, 0.0);
+            let mut applied = vec![Complex64::default(); n];
+            self.add_nonlocal(&basis, &mut applied);
+            for row in 0..n {
+                matrix[row * n + column] = applied[row];
+            }
+        }
+        matrix
+    }
+
+    pub fn nonlocal_dense_matrix(&self) -> &[Complex64] {
+        self.nonlocal_dense_ry
+            .get_or_init(|| self.build_nonlocal_dense_matrix())
+    }
+
     pub fn apply(&self, wavefunction: &[Complex64]) -> Result<Vec<Complex64>> {
         let n = self.dimension();
         ensure!(
@@ -395,10 +420,9 @@ impl CpuHamiltonian {
         Ok(result)
     }
 
-    /// Apply the FFT local path plus kinetic and nonlocal terms. The supplied
-    /// potential contains Hartree and XC only; the ionic local potential is
-    /// cached internally.
-    pub fn apply_fft(
+    /// Apply only the kinetic and FFT-local terms. This is the exact boundary
+    /// implemented by the first Metal Hamiltonian graph.
+    pub fn apply_local_kinetic_fft(
         &self,
         wavefunction: &[Complex64],
         hartree_xc_real_ry: &[f64],
@@ -425,16 +449,130 @@ impl CpuHamiltonian {
             *value *= ionic + electronic;
         }
         self.fft.forward(&mut grid)?;
-        let mut result: Vec<_> = self
+        Ok(self
             .basis_grid_indices
             .iter()
             .enumerate()
             .map(|(basis, &grid_index)| {
                 grid[grid_index] + self.kinetic_ry[basis] * wavefunction[basis]
             })
-            .collect();
+            .collect())
+    }
+
+    /// Apply the FFT local path plus kinetic and nonlocal terms. The supplied
+    /// potential contains Hartree and XC only; the ionic local potential is
+    /// cached internally.
+    pub fn apply_fft(
+        &self,
+        wavefunction: &[Complex64],
+        hartree_xc_real_ry: &[f64],
+    ) -> Result<Vec<Complex64>> {
+        let mut result = self.apply_local_kinetic_fft(wavefunction, hartree_xc_real_ry)?;
         self.add_nonlocal(wavefunction, &mut result);
         Ok(result)
+    }
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    pub fn apply_local_kinetic_metal(
+        &self,
+        wavefunctions: &[Vec<Complex64>],
+        hartree_xc_real_ry: &[f64],
+    ) -> Result<Vec<Vec<Complex64>>> {
+        ensure!(
+            !wavefunctions.is_empty(),
+            "Metal Hamiltonian batch is empty"
+        );
+        ensure!(
+            hartree_xc_real_ry.len() == self.fft.len(),
+            "real-space potential has the wrong grid size"
+        );
+        let mut input = vec![Complex32::default(); self.fft.len() * wavefunctions.len()];
+        for (state, wavefunction) in wavefunctions.iter().enumerate() {
+            ensure!(
+                wavefunction.len() == self.dimension(),
+                "wavefunction has the wrong dimension"
+            );
+            let offset = state * self.fft.len();
+            for (basis, &grid_index) in self.basis_grid_indices.iter().enumerate() {
+                input[offset + grid_index] =
+                    Complex32::new(wavefunction[basis].re as f32, wavefunction[basis].im as f32);
+            }
+        }
+        let potential: Vec<_> = self
+            .ionic_local_real_ry
+            .iter()
+            .zip(hartree_xc_real_ry)
+            .map(|(&ionic, &electronic)| (ionic + electronic) as f32)
+            .collect();
+        let mut kinetic = vec![0.0_f32; self.fft.len()];
+        for (basis, &grid_index) in self.basis_grid_indices.iter().enumerate() {
+            kinetic[grid_index] = self.kinetic_ry[basis] as f32;
+        }
+        let output = crate::metal::apply_local_hamiltonian(
+            &input,
+            &potential,
+            &kinetic,
+            self.fft.shape(),
+            wavefunctions.len(),
+        )?;
+        Ok((0..wavefunctions.len())
+            .map(|state| {
+                let offset = state * self.fft.len();
+                self.basis_grid_indices
+                    .iter()
+                    .map(|&grid_index| {
+                        let value = output[offset + grid_index];
+                        Complex64::new(value.re as f64, value.im as f64)
+                    })
+                    .collect()
+            })
+            .collect())
+    }
+
+    /// Complete FP32 Metal Hamiltonian validation path. This deliberately
+    /// transfers packed vectors between the local FFT graph and the nonlocal
+    /// matrix graph, so it is not admitted as the production Metal backend.
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    pub fn apply_hamiltonian_metal_validation(
+        &self,
+        wavefunctions: &[Vec<Complex64>],
+        hartree_xc_real_ry: &[f64],
+    ) -> Result<Vec<Vec<Complex64>>> {
+        let mut output = self.apply_local_kinetic_metal(wavefunctions, hartree_xc_real_ry)?;
+        let packed: Vec<_> = wavefunctions
+            .iter()
+            .flatten()
+            .map(|value| Complex32::new(value.re as f32, value.im as f32))
+            .collect();
+        let nonlocal_matrix: Vec<_> = self
+            .nonlocal_dense_matrix()
+            .iter()
+            .map(|value| Complex32::new(value.re as f32, value.im as f32))
+            .collect();
+        let nonlocal = crate::metal::apply_dense_operator(
+            &packed,
+            &nonlocal_matrix,
+            self.dimension(),
+            wavefunctions.len(),
+        )?;
+        for (state, state_output) in output.iter_mut().enumerate() {
+            for (coefficient, nonlocal_value) in state_output
+                .iter_mut()
+                .zip(&nonlocal[state * self.dimension()..(state + 1) * self.dimension()])
+            {
+                *coefficient += Complex64::new(nonlocal_value.re as f64, nonlocal_value.im as f64);
+            }
+        }
+        Ok(output)
+    }
+
+    #[cfg(not(all(feature = "metal", target_os = "macos")))]
+    pub fn apply_hamiltonian_metal_validation(
+        &self,
+        _wavefunctions: &[Vec<Complex64>],
+        _hartree_xc_real_ry: &[f64],
+    ) -> Result<Vec<Vec<Complex64>>> {
+        anyhow::bail!("Metal Hamiltonian requires the macOS-only `metal` feature")
     }
 
     pub fn dense_matrix_fft(&self, hartree_xc_real_ry: &[f64]) -> Result<Vec<Complex64>> {
@@ -820,6 +958,100 @@ mod tests {
             .zip(&dense_eigenpairs.eigenvalues)
         {
             assert!((davidson_value - dense_value).abs() < 1.0e-10);
+        }
+
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        {
+            let wavefunctions: Vec<Vec<Complex64>> = (0..3)
+                .map(|state| {
+                    let mut values: Vec<_> = (0..hamiltonian.dimension())
+                        .map(|i| {
+                            Complex64::new(
+                                ((i + 3 * state) as f64 * 0.17).sin(),
+                                ((2 * i + state) as f64 * 0.09).cos(),
+                            )
+                        })
+                        .collect();
+                    let norm = values.iter().map(Complex64::norm_sqr).sum::<f64>().sqrt();
+                    for value in &mut values {
+                        *value /= norm;
+                    }
+                    values
+                })
+                .collect();
+            let cpu: Vec<_> = wavefunctions
+                .iter()
+                .map(|orbital| {
+                    hamiltonian
+                        .apply_local_kinetic_fft(orbital, &electronic.real_ry)
+                        .unwrap()
+                })
+                .collect();
+            let metal = hamiltonian
+                .apply_local_kinetic_metal(&wavefunctions, &electronic.real_ry)
+                .unwrap();
+            let reference_norm = cpu.iter().flatten().map(Complex64::norm_sqr).sum::<f64>();
+            let error = cpu
+                .iter()
+                .flatten()
+                .zip(metal.iter().flatten())
+                .map(|(a, b)| (*a - *b).norm_sqr())
+                .sum::<f64>();
+            let relative_l2 = (error / reference_norm).sqrt();
+            eprintln!("silicon Metal local+kinetic fixed-density error: {relative_l2:e}");
+            assert!(relative_l2 < 1.0e-5);
+
+            let cpu_full: Vec<_> = wavefunctions
+                .iter()
+                .map(|orbital| hamiltonian.apply_fft(orbital, &electronic.real_ry).unwrap())
+                .collect();
+            let metal_full = hamiltonian
+                .apply_hamiltonian_metal_validation(&wavefunctions, &electronic.real_ry)
+                .unwrap();
+            let full_reference_norm = cpu_full
+                .iter()
+                .flatten()
+                .map(Complex64::norm_sqr)
+                .sum::<f64>();
+            let full_error = cpu_full
+                .iter()
+                .flatten()
+                .zip(metal_full.iter().flatten())
+                .map(|(a, b)| (*a - *b).norm_sqr())
+                .sum::<f64>();
+            let full_relative_l2 = (full_error / full_reference_norm).sqrt();
+            eprintln!("silicon complete Metal fixed-density error: {full_relative_l2:e}");
+            assert!(full_relative_l2 < 1.0e-5);
+
+            let metal_davidson = block_davidson(
+                hamiltonian.kinetic_ry(),
+                None,
+                &DavidsonOptions {
+                    roots: 4,
+                    residual_tolerance: 1.0e-5,
+                    max_iterations: 80,
+                    max_subspace: 32,
+                },
+                |orbital| {
+                    let mut batch = hamiltonian.apply_hamiltonian_metal_validation(
+                        &[orbital.to_vec()],
+                        &electronic.real_ry,
+                    )?;
+                    Ok(batch.remove(0))
+                },
+            )
+            .unwrap();
+            assert!(metal_davidson.converged);
+            let maximum_eigenvalue_error_mev = metal_davidson
+                .eigenvalues
+                .iter()
+                .zip(&dense_eigenpairs.eigenvalues)
+                .map(|(metal, cpu)| (metal - cpu).abs() * 13_605.693_122_994)
+                .fold(0.0_f64, f64::max);
+            eprintln!(
+                "silicon Metal fixed-density occupied eigenvalue error: {maximum_eigenvalue_error_mev:e} meV"
+            );
+            assert!(maximum_eigenvalue_error_mev < 5.0);
         }
 
         let ewald_a = ewald_energy_ry(&lattice, &input.atoms, pseudo.valence_charge, 0.6).unwrap();
