@@ -1964,6 +1964,64 @@ extern "C" size_t rpd_metal_hamiltonian_resident_accepted_correction_count(
     return context ? context->resident_accepted_correction_count : 0;
 }
 
+extern "C" int rpd_metal_hamiltonian_resident_restart_from_ritz(
+    void *opaque_context,
+    size_t roots,
+    char *error_buffer, size_t error_capacity) {
+    @autoreleasepool {
+        ResidentHamiltonian *context = static_cast<ResidentHamiltonian *>(opaque_context);
+        if (!context || roots == 0 || roots != context->resident_ritz_count ||
+            roots > context->max_batch) {
+            copy_message(error_buffer, error_capacity,
+                         @"resident Ritz restart is unavailable or out of sync");
+            return 2;
+        }
+        const size_t row_bytes =
+            context->reduction_dimension * 2 * sizeof(float);
+        const size_t journal_bytes = context->max_batch * row_bytes;
+        id<MTLCommandBuffer> command_buffer = [context->queue commandBuffer];
+        id<MTLBlitCommandEncoder> encoder = [command_buffer blitCommandEncoder];
+        if (command_buffer == nil || encoder == nil) {
+            copy_message(error_buffer, error_capacity,
+                         @"failed to create resident Ritz restart command");
+            return 3;
+        }
+        [encoder fillBuffer:context->reduction_left
+                      range:NSMakeRange(0, journal_bytes)
+                      value:0];
+        [encoder fillBuffer:context->reduction_right
+                      range:NSMakeRange(0, journal_bytes)
+                      value:0];
+        [encoder copyFromBuffer:context->resident_ritz
+                   sourceOffset:0
+                       toBuffer:context->reduction_left
+              destinationOffset:0
+                           size:roots * row_bytes];
+        [encoder copyFromBuffer:context->resident_applied_ritz
+                   sourceOffset:0
+                       toBuffer:context->reduction_right
+              destinationOffset:0
+                           size:roots * row_bytes];
+        [encoder endEncoding];
+        [command_buffer commit];
+        [command_buffer waitUntilCompleted];
+        if (command_buffer.status == MTLCommandBufferStatusError) {
+            copy_message(error_buffer, error_capacity,
+                         command_buffer.error.localizedDescription);
+            return 3;
+        }
+        context->resident_count = roots;
+        context->resident_recording = true;
+        context->resident_accepted_correction_count = 0;
+        context->resident_correction_work_valid = false;
+        context->resident_correction_work_is_a = true;
+        context->peak_device_allocated_bytes = std::max(
+            context->peak_device_allocated_bytes,
+            static_cast<uint64_t>(context->device.currentAllocatedSize));
+        return 0;
+    }
+}
+
 extern "C" int rpd_metal_hamiltonian_resident_apply_accepted_corrections(
     void *opaque_context,
     size_t accepted_count,

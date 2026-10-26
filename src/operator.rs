@@ -1650,6 +1650,58 @@ mod tests {
             );
 
             persistent_context.begin_resident_davidson().unwrap();
+            assert!(persistent_context.restart_resident_from_ritz(2).is_err());
+            hamiltonian
+                .apply_hamiltonian_metal_persistent(
+                    &mut persistent_context,
+                    &wavefunctions,
+                    &electronic.real_ry,
+                )
+                .unwrap();
+            persistent_context
+                .form_resident_ritz_residuals(&ritz_coefficients, &ritz_eigenvalues)
+                .unwrap();
+            persistent_context
+                .precondition_resident_residuals(&[true, true])
+                .unwrap();
+            let uploads_before_restart = persistent_context.full_vector_upload_bytes();
+            let downloads_before_restart = persistent_context.full_vector_download_bytes();
+            persistent_context.restart_resident_from_ritz(2).unwrap();
+            assert_eq!(
+                persistent_context.full_vector_upload_bytes(),
+                uploads_before_restart
+            );
+            assert_eq!(
+                persistent_context.full_vector_download_bytes(),
+                downloads_before_restart
+            );
+            assert_eq!(persistent_context.resident_restarts(), 1);
+            let restarted_journal = persistent_context.read_resident_journal_tail(2).unwrap();
+            let maximum_restart_basis_error = restarted_journal
+                .basis
+                .iter()
+                .zip(&resident_vectors.ritz)
+                .map(|(actual, expected)| relative_l2(actual, expected))
+                .fold(0.0_f64, f64::max);
+            let maximum_restart_applied_error = restarted_journal
+                .applied_basis
+                .iter()
+                .zip(&resident_vectors.applied_ritz)
+                .map(|(actual, expected)| relative_l2(actual, expected))
+                .fold(0.0_f64, f64::max);
+            eprintln!(
+                "silicon device-local Ritz restart basis/H errors: {maximum_restart_basis_error:e} / {maximum_restart_applied_error:e}"
+            );
+            assert!(maximum_restart_basis_error < 2.0e-5);
+            assert!(maximum_restart_applied_error < 2.0e-5);
+            assert!(
+                persistent_context
+                    .orthonormalize_resident_corrections(&[true, true])
+                    .unwrap()
+                    > 0
+            );
+
+            persistent_context.begin_resident_davidson().unwrap();
             let context = std::cell::RefCell::new(&mut persistent_context);
             let metal_davidson = block_davidson_batched_with_reductions(
                 hamiltonian.kinetic_ry(),

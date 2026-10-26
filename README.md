@@ -42,6 +42,10 @@ machine-readable evidence rather than feature presence alone.
   Hamiltonian directly from accepted resident corrections, followed by
   device-local basis/H-basis journal append; the appended Hamiltonian images
   agree with CPU FP64 to `2.22e-7` relative L2 with zero full-vector transfer;
+- device-local Davidson subspace restart that replaces the journal with
+  resident Ritz/applied-Ritz blocks, preserves raw corrections for
+  reorthogonalization, and shows zero observed vector error and zero
+  full-vector transfer in the fixed-density gate;
 - a persistent compact-FP32 Davidson journal: Hamiltonian inputs and outputs
   append to caller-owned MTLBuffers, normal projections require no host-vector
   upload, and subspace restarts resynchronize explicitly;
@@ -89,9 +93,10 @@ requires a host resynchronization.
 Metal remains marked ineligible for a production performance claim because
 the canonical Davidson basis, orthogonalization, and production correction
 updates still live in host FP64. Fixed-density resident Ritz, residual,
-preconditioning, orthogonalization, Hamiltonian, and journal-append kernels
-now pass their CPU-reference gates, but they are not yet connected into the
-production eigensolver and correction blocks are still staged by the CPU.
+preconditioning, orthogonalization, Hamiltonian, journal-append, and restart
+kernels now pass their CPU-reference gates, but they are not yet connected
+into the production eigensolver and correction blocks are still staged by the
+CPU.
 There is no silent CPU Hamiltonian or reduction fallback; the actual device,
 effective mixed-precision convergence tolerances, resident/resynchronization
 counts, memory measurements, and precision policy are recorded in every result.
@@ -117,8 +122,9 @@ integrated Rayleigh-Ritz and direct residual-norm reduction milestones, and
 larger-workload numeric speed threshold are accepted. Resident Ritz/residual
 formation, kinetic preconditioning, and correction orthogonalization now pass
 fixed-density gates, as do resident correction Hamiltonian application and
-journal append. The next bounded milestone is device-local subspace restart;
-only the integrated path may turn the observed speedup into a production
+journal append and device-local restart. The next bounded milestone is the
+stateful resident SCF-driver integration and its zero-transfer invariant; only
+the integrated path may turn the observed speedup into a production
 performance acceptance claim. Its buffer contract,
 dataflow, transfer accounting, and fail-closed gates are specified in
 [`docs/resident-davidson.md`](docs/resident-davidson.md).

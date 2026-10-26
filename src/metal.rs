@@ -199,6 +199,12 @@ mod imp {
             error_capacity: usize,
         ) -> c_int;
         fn rpd_metal_hamiltonian_resident_accepted_correction_count(context: *mut c_void) -> usize;
+        fn rpd_metal_hamiltonian_resident_restart_from_ritz(
+            context: *mut c_void,
+            roots: usize,
+            error_buffer: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
         fn rpd_metal_hamiltonian_resident_apply_accepted_corrections(
             context: *mut c_void,
             accepted_count: usize,
@@ -253,6 +259,7 @@ mod imp {
         resident_corrections_rejected: usize,
         resident_correction_hamiltonian_applications: usize,
         resident_corrections_appended: usize,
+        resident_restarts: usize,
         resident_coefficient_upload_bytes: usize,
         resident_reduction_download_bytes: usize,
         resident_vector_download_bytes: usize,
@@ -357,6 +364,7 @@ mod imp {
                 resident_corrections_rejected: 0,
                 resident_correction_hamiltonian_applications: 0,
                 resident_corrections_appended: 0,
+                resident_restarts: 0,
                 resident_coefficient_upload_bytes: 0,
                 resident_reduction_download_bytes: 0,
                 resident_vector_download_bytes: 0,
@@ -1002,6 +1010,30 @@ mod imp {
                 .collect())
         }
 
+        /// Replace the resident Davidson journal with the current Ritz and
+        /// applied-Ritz blocks using device-local buffer copies. Formed raw
+        /// corrections remain available for reorthogonalization after restart.
+        pub fn restart_resident_from_ritz(&mut self, roots: usize) -> Result<()> {
+            if roots == 0 || roots > self.max_batch {
+                bail!("resident Ritz restart root count is invalid");
+            }
+            let mut error = vec![0_i8; 2048];
+            let status = unsafe {
+                rpd_metal_hamiltonian_resident_restart_from_ritz(
+                    self.raw.as_ptr(),
+                    roots,
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            if status != 0 {
+                let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
+                bail!("resident Ritz restart failed ({status}): {message}");
+            }
+            self.resident_restarts += 1;
+            Ok(())
+        }
+
         /// Scatter accepted compact corrections into FFT grids, apply the
         /// persistent Hamiltonian, and append both correction and H-correction
         /// rows to the resident Davidson journal without full-vector transfer.
@@ -1255,6 +1287,10 @@ mod imp {
             self.resident_corrections_appended
         }
 
+        pub fn resident_restarts(&self) -> usize {
+            self.resident_restarts
+        }
+
         pub fn resident_coefficient_upload_bytes(&self) -> usize {
             self.resident_coefficient_upload_bytes
         }
@@ -1488,6 +1524,9 @@ mod imp {
         ) -> Result<()> {
             bail!("binary was built without the macOS-only `metal` feature")
         }
+        pub fn restart_resident_from_ritz(&mut self, _roots: usize) -> Result<()> {
+            bail!("binary was built without the macOS-only `metal` feature")
+        }
         pub fn read_resident_journal_tail(
             &mut self,
             _tail_count: usize,
@@ -1603,6 +1642,9 @@ mod imp {
             0
         }
         pub fn resident_corrections_appended(&self) -> usize {
+            0
+        }
+        pub fn resident_restarts(&self) -> usize {
             0
         }
         pub fn resident_coefficient_upload_bytes(&self) -> usize {

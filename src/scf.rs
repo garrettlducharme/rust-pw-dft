@@ -373,6 +373,10 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
             context.resident_corrections_appended() as f64,
         );
         final_terms.insert(
+            "metal_resident_restarts".into(),
+            context.resident_restarts() as f64,
+        );
+        final_terms.insert(
             "metal_resident_compact_upload_bytes".into(),
             context.resident_coefficient_upload_bytes() as f64,
         );
