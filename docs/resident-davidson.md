@@ -25,14 +25,16 @@ The implementation already provides:
 - direct residual-norm partial reductions with CPU FP64 final sums;
 - resident Ritz/applied-Ritz/residual formation and guarded kinetic
   preconditioning with active-root masking;
+- resident two-pass block modified Gram-Schmidt correction orthogonalization,
+  normalization, device-local row copies, and rank rejection;
 - explicit restart resynchronization and fail-closed error handling.
 
 The production driver still constructs Ritz vectors and residuals in complex
 FP64, preconditions and orthogonalizes corrections, and treats its basis
-vectors as canonical. The resident formation and preconditioning graphs are
-currently fixed-density-tested primitives, not yet the production iteration
-path. They therefore prove the next numerical boundary without yet removing
-normal-iteration full-vector traffic.
+vectors as canonical. The resident formation, preconditioning, and
+orthogonalization graphs are currently fixed-density-tested primitives, not
+yet the production iteration path. They therefore prove the next numerical
+boundary without yet removing normal-iteration full-vector traffic.
 
 ## Buffer ownership
 
@@ -48,6 +50,8 @@ Davidson state is reset at the start of each eigensolve and has capacity
 | `applied_ritz` | `[roots, npw_padded]` | complex FP32 | iteration |
 | `residual` | `[roots, npw_padded]` | complex FP32 | iteration |
 | `correction` | `[roots, npw_padded]` | complex FP32 | iteration |
+| `correction_work` | `[2, npw_padded]` | complex FP32 | active correction |
+| `accepted_corrections` | `[roots, npw_padded]` | complex FP32 | iteration |
 | `projected_partials` | `[subspace, subspace, chunks]` | complex FP32 | iteration |
 | `norm_partials` | `[roots, chunks]` | complex FP32 | iteration |
 
@@ -72,9 +76,11 @@ limit before allocation.
    `-r / safe(T - eigenvalue)`. The `0.25 Ry` denominator floor must exactly
    match the CPU reference path.
 7. Metal orthogonalizes corrections against the resident basis and earlier
-   accepted corrections using two-pass modified Gram-Schmidt. Dot-product
-   partials finish in CPU FP64; only compact overlap coefficients and norms
-   cross the boundary.
+   accepted corrections using two-pass block modified Gram-Schmidt.
+   Dot-product partials finish in CPU FP64; only compact overlap coefficients
+   and norms cross the boundary. A correction is rejected when its final norm
+   is at most `max(1e-11, 1e-6 * initial_norm)`, preventing normalized FP32
+   roundoff from creating a spurious direction.
 8. Metal normalizes accepted corrections, applies the Hamiltonian, and appends
    both blocks to the resident journals.
 9. On subspace restart, Metal replaces the journal with resident Ritz vectors
@@ -150,8 +156,7 @@ reuse timings from an earlier source revision.
 ## Delivery sequence
 
 1. Add resident Ritz/residual construction and fixed-density tests. **Done.**
-2. Add resident preconditioning and two-pass orthogonalization.
-   **Preconditioning done; orthogonalization remains.**
+2. Add resident preconditioning and two-pass orthogonalization. **Done.**
 3. Replace host restart resynchronization with a device-local restart.
 4. Add transfer accounting and assert the normal-iteration residency invariant.
 5. Integrate the stateful driver into SCF behind the Metal backend.

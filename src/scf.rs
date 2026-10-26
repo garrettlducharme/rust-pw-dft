@@ -349,12 +349,40 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
             context.resident_preconditioner_updates() as f64,
         );
         final_terms.insert(
+            "metal_resident_orthogonalization_calls".into(),
+            context.resident_orthogonalization_calls() as f64,
+        );
+        final_terms.insert(
+            "metal_resident_orthogonalization_passes".into(),
+            context.resident_orthogonalization_passes() as f64,
+        );
+        final_terms.insert(
+            "metal_resident_corrections_accepted".into(),
+            context.resident_corrections_accepted() as f64,
+        );
+        final_terms.insert(
+            "metal_resident_corrections_rejected".into(),
+            context.resident_corrections_rejected() as f64,
+        );
+        final_terms.insert(
             "metal_resident_compact_upload_bytes".into(),
             context.resident_coefficient_upload_bytes() as f64,
         );
         final_terms.insert(
-            "metal_resident_full_vector_download_bytes".into(),
+            "metal_resident_compact_download_bytes".into(),
+            context.resident_reduction_download_bytes() as f64,
+        );
+        final_terms.insert(
+            "metal_resident_validation_vector_download_bytes".into(),
             context.resident_vector_download_bytes() as f64,
+        );
+        final_terms.insert(
+            "metal_full_vector_upload_bytes".into(),
+            context.full_vector_upload_bytes() as f64,
+        );
+        final_terms.insert(
+            "metal_full_vector_download_bytes".into(),
+            context.full_vector_download_bytes() as f64,
         );
     }
     Ok(ScfResult {

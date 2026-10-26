@@ -1134,23 +1134,34 @@ mod tests {
 
         #[cfg(all(feature = "metal", target_os = "macos"))]
         {
-            let wavefunctions: Vec<Vec<Complex64>> = (0..3)
-                .map(|state| {
-                    let mut values: Vec<_> = (0..hamiltonian.dimension())
-                        .map(|i| {
-                            Complex64::new(
-                                ((i + 3 * state) as f64 * 0.17).sin(),
-                                ((2 * i + state) as f64 * 0.09).cos(),
-                            )
-                        })
-                        .collect();
-                    let norm = values.iter().map(Complex64::norm_sqr).sum::<f64>().sqrt();
-                    for value in &mut values {
-                        *value /= norm;
+            let mut wavefunctions: Vec<Vec<Complex64>> = Vec::new();
+            for state in 0..3 {
+                let mut values: Vec<_> = (0..hamiltonian.dimension())
+                    .map(|i| {
+                        Complex64::new(
+                            ((i + 3 * state) as f64 * 0.17).sin(),
+                            ((2 * i + state) as f64 * 0.09).cos(),
+                        )
+                    })
+                    .collect();
+                for _ in 0..2 {
+                    for basis in &wavefunctions {
+                        let overlap: Complex64 = basis
+                            .iter()
+                            .zip(&values)
+                            .map(|(left, right)| left.conj() * right)
+                            .sum();
+                        for (value, &basis_value) in values.iter_mut().zip(basis) {
+                            *value -= overlap * basis_value;
+                        }
                     }
-                    values
-                })
-                .collect();
+                }
+                let norm = values.iter().map(Complex64::norm_sqr).sum::<f64>().sqrt();
+                for value in &mut values {
+                    *value /= norm;
+                }
+                wavefunctions.push(values);
+            }
             let cpu: Vec<_> = wavefunctions
                 .iter()
                 .map(|orbital| {
@@ -1329,20 +1340,25 @@ mod tests {
                 .precondition_resident_residuals(&[true, false])
                 .unwrap();
             let resident_corrections = persistent_context.read_resident_corrections(2).unwrap();
-            let expected_correction: Vec<_> = resident_vectors.residuals[0]
-                .iter()
-                .zip(hamiltonian.kinetic_ry())
-                .map(|(&residual, &kinetic)| {
-                    let denominator = kinetic - ritz_eigenvalues[0];
-                    let safe_denominator = if denominator.abs() < 0.25 {
-                        0.25_f64.copysign(denominator)
-                    } else {
-                        denominator
-                    };
-                    -residual / safe_denominator
+            let expected_preconditioned: Vec<Vec<Complex64>> = (0..2)
+                .map(|root| {
+                    resident_vectors.residuals[root]
+                        .iter()
+                        .zip(hamiltonian.kinetic_ry())
+                        .map(|(&residual, &kinetic)| {
+                            let denominator = kinetic - ritz_eigenvalues[root];
+                            let safe_denominator = if denominator.abs() < 0.25 {
+                                0.25_f64.copysign(denominator)
+                            } else {
+                                denominator
+                            };
+                            -residual / safe_denominator
+                        })
+                        .collect()
                 })
                 .collect();
-            let correction_error = relative_l2(&resident_corrections[0], &expected_correction);
+            let correction_error =
+                relative_l2(&resident_corrections[0], &expected_preconditioned[0]);
             let masked_correction_norm = resident_corrections[1]
                 .iter()
                 .map(Complex64::norm_sqr)
@@ -1354,6 +1370,16 @@ mod tests {
             assert!(correction_error < 2.0e-5);
             assert_eq!(masked_correction_norm, 0.0);
             assert_eq!(persistent_context.resident_preconditioner_updates(), 1);
+            assert!(
+                persistent_context
+                    .orthonormalize_resident_corrections(&[false, false])
+                    .is_err()
+            );
+            assert!(
+                persistent_context
+                    .orthonormalize_resident_corrections(&[true])
+                    .is_err()
+            );
             assert_eq!(
                 persistent_context.resident_coefficient_upload_bytes(),
                 (2 * wavefunctions.len() + 2) * std::mem::size_of::<Complex32>()
@@ -1363,6 +1389,110 @@ mod tests {
                 persistent_context.resident_vector_download_bytes(),
                 4 * 2 * hamiltonian.dimension() * std::mem::size_of::<Complex32>()
             );
+
+            let vector_downloads_before_orthogonalization =
+                persistent_context.resident_vector_download_bytes();
+            let full_uploads_before_orthogonalization =
+                persistent_context.full_vector_upload_bytes();
+            let full_downloads_before_orthogonalization =
+                persistent_context.full_vector_download_bytes();
+            persistent_context
+                .precondition_resident_residuals(&[true, true])
+                .unwrap();
+            let accepted_count = persistent_context
+                .orthonormalize_resident_corrections(&[true, true])
+                .unwrap();
+            assert_eq!(accepted_count, 2);
+            assert_eq!(
+                persistent_context.resident_vector_download_bytes(),
+                vector_downloads_before_orthogonalization
+            );
+            assert_eq!(
+                persistent_context.full_vector_upload_bytes(),
+                full_uploads_before_orthogonalization
+            );
+            assert_eq!(
+                persistent_context.full_vector_download_bytes(),
+                full_downloads_before_orthogonalization
+            );
+            let accepted_corrections = persistent_context
+                .read_resident_accepted_corrections(accepted_count)
+                .unwrap();
+            let mut cpu_accepted: Vec<Vec<Complex64>> = Vec::new();
+            for raw in &expected_preconditioned {
+                let mut candidate = raw.clone();
+                for _ in 0..2 {
+                    for vector in wavefunctions.iter().chain(&cpu_accepted) {
+                        let overlap: Complex64 = vector
+                            .iter()
+                            .zip(&candidate)
+                            .map(|(left, right)| left.conj() * right)
+                            .sum();
+                        for (value, &basis_value) in candidate.iter_mut().zip(vector) {
+                            *value -= overlap * basis_value;
+                        }
+                    }
+                }
+                let norm = candidate
+                    .iter()
+                    .map(Complex64::norm_sqr)
+                    .sum::<f64>()
+                    .sqrt();
+                assert!(norm > 1.0e-11);
+                for value in &mut candidate {
+                    *value /= norm;
+                }
+                cpu_accepted.push(candidate);
+            }
+            let maximum_correction_error = accepted_corrections
+                .iter()
+                .zip(&cpu_accepted)
+                .map(|(actual, expected)| relative_l2(actual, expected))
+                .fold(0.0_f64, f64::max);
+            let combined_basis: Vec<&Vec<Complex64>> =
+                wavefunctions.iter().chain(&accepted_corrections).collect();
+            let mut maximum_orthonormality_error = 0.0_f64;
+            for left in 0..combined_basis.len() {
+                for right in 0..combined_basis.len() {
+                    let overlap: Complex64 = combined_basis[left]
+                        .iter()
+                        .zip(combined_basis[right])
+                        .map(|(a, b)| a.conj() * b)
+                        .sum();
+                    let expected = if left == right {
+                        Complex64::new(1.0, 0.0)
+                    } else {
+                        Complex64::default()
+                    };
+                    maximum_orthonormality_error =
+                        maximum_orthonormality_error.max((overlap - expected).norm());
+                }
+            }
+            eprintln!(
+                "silicon resident correction/vector and orthonormality errors: {maximum_correction_error:e} / {maximum_orthonormality_error:e}"
+            );
+            assert!(maximum_correction_error < 2.0e-5);
+            assert!(maximum_orthonormality_error < 2.0e-5);
+            assert_eq!(persistent_context.resident_orthogonalization_calls(), 1);
+            assert_eq!(persistent_context.resident_orthogonalization_passes(), 4);
+            assert_eq!(persistent_context.resident_corrections_accepted(), 2);
+            assert_eq!(persistent_context.resident_corrections_rejected(), 0);
+            assert!(persistent_context.resident_reduction_download_bytes() > 0);
+
+            let dependent_coefficients = vec![ritz_coefficients[0].clone(); 2];
+            let dependent_eigenvalues = [ritz_eigenvalues[0]; 2];
+            persistent_context
+                .form_resident_ritz_residuals(&dependent_coefficients, &dependent_eigenvalues)
+                .unwrap();
+            persistent_context
+                .precondition_resident_residuals(&[true, true])
+                .unwrap();
+            let dependent_accepted = persistent_context
+                .orthonormalize_resident_corrections(&[true, true])
+                .unwrap();
+            assert_eq!(dependent_accepted, 1);
+            assert_eq!(persistent_context.resident_corrections_rejected(), 1);
+
             let resynced_projection = persistent_context
                 .resident_cross_gram(&wavefunctions[..2], &persistent_full[..2])
                 .unwrap();
@@ -1386,7 +1516,14 @@ mod tests {
                     .precondition_resident_residuals(&[true, false])
                     .is_err()
             );
+            assert!(
+                persistent_context
+                    .orthonormalize_resident_corrections(&[true, false])
+                    .is_err()
+            );
 
+            let gram_calls_before = persistent_context.gram_reduction_calls();
+            let gram_pairs_before = persistent_context.gram_reduction_pairs();
             let metal_gram = persistent_context
                 .cross_gram(&wavefunctions, &wavefunctions)
                 .unwrap();
@@ -1420,11 +1557,16 @@ mod tests {
                     );
                 }
             }
-            assert_eq!(persistent_context.gram_reduction_calls(), 4);
             assert_eq!(
-                persistent_context.gram_reduction_pairs(),
-                2 * wavefunctions.len() * wavefunctions.len() + 2 * wavefunctions.len() + 4
+                persistent_context.gram_reduction_calls() - gram_calls_before,
+                2
             );
+            assert_eq!(
+                persistent_context.gram_reduction_pairs() - gram_pairs_before,
+                wavefunctions.len() * wavefunctions.len() + 2 * wavefunctions.len()
+            );
+            let norm_calls_before = persistent_context.norm_reduction_calls();
+            let norm_vectors_before = persistent_context.norm_reduction_vectors();
             let metal_norms = persistent_context.residual_norms(&wavefunctions).unwrap();
             let mut maximum_norm_relative_error = 0.0_f64;
             for (vector, &metal_norm) in wavefunctions.iter().zip(&metal_norms) {
@@ -1436,10 +1578,13 @@ mod tests {
                 "silicon Metal direct-norm maximum relative error: {maximum_norm_relative_error:e}"
             );
             assert!(maximum_norm_relative_error < 1.0e-5);
-            assert_eq!(persistent_context.norm_reduction_calls(), 2);
             assert_eq!(
-                persistent_context.norm_reduction_vectors(),
-                wavefunctions.len() + 2
+                persistent_context.norm_reduction_calls() - norm_calls_before,
+                1
+            );
+            assert_eq!(
+                persistent_context.norm_reduction_vectors() - norm_vectors_before,
+                wavefunctions.len()
             );
 
             persistent_context.begin_resident_davidson().unwrap();

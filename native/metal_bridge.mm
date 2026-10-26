@@ -3,6 +3,7 @@
 #import <MetalPerformanceShadersGraph/MetalPerformanceShadersGraph.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -105,6 +106,26 @@ struct CachedResidentPreconditionGraph {
     MPSShape *root_shape;
 };
 
+struct CachedCorrectionUpdateGraph {
+    MPSGraph *graph;
+    MPSGraphTensor *candidate;
+    MPSGraphTensor *exclusion;
+    MPSGraphTensor *coefficients;
+    MPSGraphTensor *output;
+    MPSShape *candidate_shape;
+    MPSShape *exclusion_shape;
+    MPSShape *coefficient_shape;
+};
+
+struct CachedCorrectionScaleGraph {
+    MPSGraph *graph;
+    MPSGraphTensor *candidate;
+    MPSGraphTensor *scale;
+    MPSGraphTensor *output;
+    MPSShape *candidate_shape;
+    MPSShape *scale_shape;
+};
+
 struct ResidentHamiltonian {
     id<MTLDevice> device;
     id<MTLCommandQueue> queue;
@@ -119,7 +140,11 @@ struct ResidentHamiltonian {
     size_t reduction_dimension;
     size_t resident_count;
     size_t resident_ritz_count;
+    size_t resident_accepted_correction_count;
     bool resident_recording;
+    bool resident_corrections_ready;
+    bool resident_correction_work_valid;
+    bool resident_correction_work_is_a;
     uint64_t peak_device_allocated_bytes;
     id<MTLBuffer> grid_input;
     id<MTLBuffer> compact_input;
@@ -142,6 +167,10 @@ struct ResidentHamiltonian {
     id<MTLBuffer> resident_eigenvalues_real;
     id<MTLBuffer> resident_active_mask;
     id<MTLBuffer> resident_correction;
+    id<MTLBuffer> resident_correction_work_a;
+    id<MTLBuffer> resident_correction_work_b;
+    id<MTLBuffer> resident_accepted_corrections;
+    id<MTLBuffer> resident_orthogonalization_coefficients;
 };
 
 std::mutex cache_mutex;
@@ -154,6 +183,10 @@ std::unordered_map<std::string, CachedPartialNormGraph> partial_norm_graph_cache
 std::unordered_map<std::string, CachedResidentRitzGraph> resident_ritz_graph_cache;
 std::unordered_map<std::string, CachedResidentPreconditionGraph>
     resident_precondition_graph_cache;
+std::unordered_map<std::string, CachedCorrectionUpdateGraph>
+    correction_update_graph_cache;
+std::unordered_map<std::string, CachedCorrectionScaleGraph>
+    correction_scale_graph_cache;
 
 id<MTLDevice> shared_device() {
     static id<MTLDevice> device = MTLCreateSystemDefaultDevice();
@@ -568,6 +601,71 @@ CachedResidentPreconditionGraph resident_precondition_graph_for(
     resident_precondition_graph_cache.emplace(key, cached);
     return cached;
 }
+
+CachedCorrectionUpdateGraph correction_update_graph_for(
+    size_t reduction_dimension, size_t exclusion_count) {
+    std::string key = std::to_string(exclusion_count) + ":" +
+                      std::to_string(reduction_dimension);
+    std::lock_guard<std::mutex> lock(cache_mutex);
+    auto found = correction_update_graph_cache.find(key);
+    if (found != correction_update_graph_cache.end()) return found->second;
+
+    MPSShape *candidate_shape = @[@1, @(reduction_dimension)];
+    MPSShape *exclusion_shape = @[@(exclusion_count), @(reduction_dimension)];
+    MPSShape *coefficient_shape = @[@1, @(exclusion_count)];
+    MPSGraph *graph = [[MPSGraph alloc] init];
+    MPSGraphTensor *candidate = [graph placeholderWithShape:candidate_shape
+                                                  dataType:MPSDataTypeComplexFloat32
+                                                      name:@"correction_candidate"];
+    MPSGraphTensor *exclusion = [graph placeholderWithShape:exclusion_shape
+                                                  dataType:MPSDataTypeComplexFloat32
+                                                      name:@"orthogonalization_exclusion"];
+    MPSGraphTensor *coefficients = [graph placeholderWithShape:coefficient_shape
+                                                     dataType:MPSDataTypeComplexFloat32
+                                                         name:@"orthogonalization_coefficients"];
+    MPSGraphTensor *projection = [graph matrixMultiplicationWithPrimaryTensor:coefficients
+                                                              secondaryTensor:exclusion
+                                                                         name:@"orthogonalization_projection"];
+    MPSGraphTensor *output = [graph subtractionWithPrimaryTensor:candidate
+                                                 secondaryTensor:projection
+                                                            name:@"orthogonalized_correction"];
+    CachedCorrectionUpdateGraph cached{
+        graph, candidate, exclusion, coefficients, output,
+        candidate_shape, exclusion_shape, coefficient_shape};
+    correction_update_graph_cache.emplace(key, cached);
+    return cached;
+}
+
+CachedCorrectionScaleGraph correction_scale_graph_for(size_t reduction_dimension) {
+    std::string key = std::to_string(reduction_dimension);
+    std::lock_guard<std::mutex> lock(cache_mutex);
+    auto found = correction_scale_graph_cache.find(key);
+    if (found != correction_scale_graph_cache.end()) return found->second;
+
+    MPSShape *candidate_shape = @[@1, @(reduction_dimension)];
+    MPSShape *scale_shape = @[@1, @1];
+    MPSGraph *graph = [[MPSGraph alloc] init];
+    MPSGraphTensor *candidate = [graph placeholderWithShape:candidate_shape
+                                                  dataType:MPSDataTypeComplexFloat32
+                                                      name:@"correction_to_normalize"];
+    MPSGraphTensor *scale = [graph placeholderWithShape:scale_shape
+                                              dataType:MPSDataTypeComplexFloat32
+                                                  name:@"correction_inverse_norm"];
+    MPSGraphTensor *output = [graph multiplicationWithPrimaryTensor:candidate
+                                                   secondaryTensor:scale
+                                                              name:@"normalized_correction"];
+    CachedCorrectionScaleGraph cached{
+        graph, candidate, scale, output, candidate_shape, scale_shape};
+    correction_scale_graph_cache.emplace(key, cached);
+    return cached;
+}
+
+void invalidate_resident_corrections(ResidentHamiltonian *context) {
+    context->resident_accepted_correction_count = 0;
+    context->resident_corrections_ready = false;
+    context->resident_correction_work_valid = false;
+    context->resident_correction_work_is_a = true;
+}
 }  // namespace
 
 extern "C" int rpd_metal_device_name(char *buffer, size_t capacity) {
@@ -853,6 +951,7 @@ extern "C" void *rpd_metal_hamiltonian_create(
         const size_t eigenvalue_bytes = max_batch * complex_bytes;
         const size_t compact_kinetic_bytes = reduction_dimension * sizeof(float);
         const size_t root_scalar_bytes = max_batch * sizeof(float);
+        const size_t reduction_row_bytes = reduction_dimension * complex_bytes;
         const uint64_t project_limit = std::min((uint64_t)(12ULL << 30),
                                                 device.recommendedMaxWorkingSetSize);
         uint64_t total = 0;
@@ -863,7 +962,8 @@ extern "C" void *rpd_metal_hamiltonian_create(
             coefficient_bytes, eigenvalue_bytes,
             reduction_bytes, reduction_bytes, reduction_bytes,
             compact_kinetic_bytes, root_scalar_bytes, root_scalar_bytes,
-            reduction_bytes};
+            reduction_bytes, reduction_row_bytes, reduction_row_bytes,
+            reduction_bytes, eigenvalue_bytes};
         for (size_t bytes : allocations) {
             if (bytes > project_limit - total) {
                 copy_message(error_buffer, error_capacity,
@@ -886,7 +986,11 @@ extern "C" void *rpd_metal_hamiltonian_create(
         context->reduction_dimension = reduction_dimension;
         context->resident_count = 0;
         context->resident_ritz_count = 0;
+        context->resident_accepted_correction_count = 0;
         context->resident_recording = false;
+        context->resident_corrections_ready = false;
+        context->resident_correction_work_valid = false;
+        context->resident_correction_work_is_a = true;
         context->peak_device_allocated_bytes = device.currentAllocatedSize;
         context->grid_input = [device newBufferWithLength:grid_batch_bytes
                                                options:MTLResourceStorageModeShared];
@@ -939,6 +1043,18 @@ extern "C" void *rpd_metal_hamiltonian_create(
                                                             options:MTLResourceStorageModeShared];
         context->resident_correction = [device newBufferWithLength:reduction_bytes
                                                            options:MTLResourceStorageModeShared];
+        context->resident_correction_work_a =
+            [device newBufferWithLength:reduction_row_bytes
+                                options:MTLResourceStorageModeShared];
+        context->resident_correction_work_b =
+            [device newBufferWithLength:reduction_row_bytes
+                                options:MTLResourceStorageModeShared];
+        context->resident_accepted_corrections =
+            [device newBufferWithLength:reduction_bytes
+                                options:MTLResourceStorageModeShared];
+        context->resident_orthogonalization_coefficients =
+            [device newBufferWithLength:eigenvalue_bytes
+                                options:MTLResourceStorageModeShared];
         if (context->grid_input == nil || context->compact_input == nil ||
             context->potential == nil || context->kinetic == nil ||
             context->basis_indices == nil ||
@@ -950,7 +1066,11 @@ extern "C" void *rpd_metal_hamiltonian_create(
             context->resident_ritz == nil || context->resident_applied_ritz == nil ||
             context->resident_residual == nil || context->resident_kinetic == nil ||
             context->resident_eigenvalues_real == nil ||
-            context->resident_active_mask == nil || context->resident_correction == nil) {
+            context->resident_active_mask == nil || context->resident_correction == nil ||
+            context->resident_correction_work_a == nil ||
+            context->resident_correction_work_b == nil ||
+            context->resident_accepted_corrections == nil ||
+            context->resident_orthogonalization_coefficients == nil) {
             delete context;
             copy_message(error_buffer, error_capacity,
                          @"failed to allocate resident Metal buffers");
@@ -1055,6 +1175,7 @@ extern "C" int rpd_metal_hamiltonian_apply(
                     context->resident_recording = false;
                     context->resident_count = 0;
                     context->resident_ritz_count = 0;
+                    invalidate_resident_corrections(context);
                 } else {
                     const size_t resident_row_bytes =
                         context->reduction_dimension * complex_bytes;
@@ -1080,6 +1201,7 @@ extern "C" int rpd_metal_hamiltonian_apply(
                     }
                     context->resident_count += batch;
                     context->resident_ritz_count = 0;
+                    invalidate_resident_corrections(context);
                 }
             }
             context->peak_device_allocated_bytes = std::max(
@@ -1113,6 +1235,7 @@ extern "C" int rpd_metal_hamiltonian_partial_gram(
         context->resident_recording = false;
         context->resident_count = 0;
         context->resident_ritz_count = 0;
+        invalidate_resident_corrections(context);
         const size_t complex_bytes = 2 * sizeof(float);
         const size_t reduction_row_bytes = context->reduction_dimension * complex_bytes;
         const size_t compact_row_bytes = context->dimension * complex_bytes;
@@ -1174,6 +1297,7 @@ extern "C" int rpd_metal_hamiltonian_resident_begin(
     }
     context->resident_count = 0;
     context->resident_ritz_count = 0;
+    invalidate_resident_corrections(context);
     context->resident_recording = true;
     return 0;
 }
@@ -1217,6 +1341,7 @@ extern "C" int rpd_metal_hamiltonian_resident_sync(
     }
     context->resident_count = batch;
     context->resident_ritz_count = 0;
+    invalidate_resident_corrections(context);
     context->resident_recording = true;
     return 0;
 }
@@ -1286,6 +1411,7 @@ extern "C" int rpd_metal_hamiltonian_resident_form_ritz_residuals(
                     roots * subspace * complex_bytes);
         std::memcpy(context->ritz_eigenvalues.contents, eigenvalues_interleaved,
                     roots * complex_bytes);
+        invalidate_resident_corrections(context);
         float *real_eigenvalues =
             static_cast<float *>(context->resident_eigenvalues_real.contents);
         for (size_t root = 0; root < roots; ++root) {
@@ -1406,10 +1532,15 @@ extern "C" int rpd_metal_hamiltonian_resident_precondition(
                                resultsDictionary:@{
                                    cached.correction: correction_data
                                }];
+            context->resident_accepted_correction_count = 0;
+            context->resident_corrections_ready = true;
+            context->resident_correction_work_valid = false;
+            context->resident_correction_work_is_a = true;
             context->peak_device_allocated_bytes = std::max(
                 context->peak_device_allocated_bytes,
                 static_cast<uint64_t>(context->device.currentAllocatedSize));
         } @catch (NSException *exception) {
+            invalidate_resident_corrections(context);
             copy_message(error_buffer, error_capacity, exception.reason);
             return 3;
         }
@@ -1424,7 +1555,8 @@ extern "C" int rpd_metal_hamiltonian_resident_read_corrections(
     char *error_buffer, size_t error_capacity) {
     ResidentHamiltonian *context = static_cast<ResidentHamiltonian *>(opaque_context);
     if (!context || !correction_output_interleaved || roots == 0 ||
-        roots != context->resident_ritz_count) {
+        roots != context->resident_ritz_count ||
+        !context->resident_corrections_ready) {
         copy_message(error_buffer, error_capacity,
                      @"resident corrections are unavailable or out of sync");
         return 2;
@@ -1436,6 +1568,354 @@ extern "C" int rpd_metal_hamiltonian_resident_read_corrections(
         std::memcpy(correction_output_interleaved + root * context->dimension * 2,
                     static_cast<const char *>(context->resident_correction.contents) +
                         root * resident_row_bytes,
+                    compact_row_bytes);
+    }
+    return 0;
+}
+
+extern "C" int rpd_metal_hamiltonian_resident_orthogonalization_begin(
+    void *opaque_context,
+    size_t roots,
+    char *error_buffer, size_t error_capacity) {
+    ResidentHamiltonian *context = static_cast<ResidentHamiltonian *>(opaque_context);
+    if (!context || roots == 0 || roots != context->resident_ritz_count ||
+        !context->resident_corrections_ready) {
+        copy_message(error_buffer, error_capacity,
+                     @"resident orthogonalization is unavailable or out of sync");
+        return 2;
+    }
+    context->resident_accepted_correction_count = 0;
+    context->resident_correction_work_valid = false;
+    context->resident_correction_work_is_a = true;
+    return 0;
+}
+
+extern "C" int rpd_metal_hamiltonian_resident_correction_begin(
+    void *opaque_context,
+    size_t root,
+    char *error_buffer, size_t error_capacity) {
+    @autoreleasepool {
+        ResidentHamiltonian *context = static_cast<ResidentHamiltonian *>(opaque_context);
+        if (!context || root >= context->resident_ritz_count ||
+            !context->resident_corrections_ready) {
+            copy_message(error_buffer, error_capacity,
+                         @"resident correction root is unavailable or out of sync");
+            return 2;
+        }
+        const size_t row_bytes =
+            context->reduction_dimension * 2 * sizeof(float);
+        id<MTLCommandBuffer> command_buffer = [context->queue commandBuffer];
+        id<MTLBlitCommandEncoder> encoder = [command_buffer blitCommandEncoder];
+        if (command_buffer == nil || encoder == nil) {
+            copy_message(error_buffer, error_capacity,
+                         @"failed to create resident correction copy command");
+            return 3;
+        }
+        [encoder copyFromBuffer:context->resident_correction
+                   sourceOffset:root * row_bytes
+                       toBuffer:context->resident_correction_work_a
+              destinationOffset:0
+                           size:row_bytes];
+        [encoder endEncoding];
+        [command_buffer commit];
+        [command_buffer waitUntilCompleted];
+        if (command_buffer.status == MTLCommandBufferStatusError) {
+            copy_message(error_buffer, error_capacity,
+                         command_buffer.error.localizedDescription);
+            return 3;
+        }
+        context->resident_correction_work_valid = true;
+        context->resident_correction_work_is_a = true;
+        return 0;
+    }
+}
+
+extern "C" int rpd_metal_hamiltonian_resident_correction_partial_gram(
+    void *opaque_context,
+    int against_accepted,
+    float *partial_output_interleaved,
+    size_t exclusion_count,
+    char *error_buffer, size_t error_capacity) {
+    @autoreleasepool {
+        ResidentHamiltonian *context = static_cast<ResidentHamiltonian *>(opaque_context);
+        const size_t expected_count = against_accepted
+            ? (context ? context->resident_accepted_correction_count : 0)
+            : (context ? context->resident_count : 0);
+        if (!context || !partial_output_interleaved ||
+            !context->resident_correction_work_valid || exclusion_count == 0 ||
+            exclusion_count != expected_count ||
+            (against_accepted != 0 && against_accepted != 1)) {
+            copy_message(error_buffer, error_capacity,
+                         @"resident correction projection is out of sync");
+            return 2;
+        }
+        id<MTLBuffer> exclusion = against_accepted
+            ? context->resident_accepted_corrections
+            : context->reduction_left;
+        id<MTLBuffer> candidate = context->resident_correction_work_is_a
+            ? context->resident_correction_work_a
+            : context->resident_correction_work_b;
+        CachedPartialGramGraph cached = partial_gram_graph_for(
+            context->reduction_chunks, exclusion_count, 1);
+        MPSGraphTensorData *left_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:exclusion
+                        shape:cached.left_shape
+                     dataType:MPSDataTypeComplexFloat32];
+        MPSGraphTensorData *right_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:candidate
+                        shape:cached.right_shape
+                     dataType:MPSDataTypeComplexFloat32];
+        @try {
+            NSDictionary *result = [cached.graph runWithMTLCommandQueue:context->queue
+                                                                  feeds:@{
+                                                                      cached.left: left_data,
+                                                                      cached.right: right_data
+                                                                  }
+                                                          targetTensors:@[cached.output]
+                                                       targetOperations:nil];
+            MPSGraphTensorData *output = result[cached.output];
+            [[output mpsndarray] readBytes:partial_output_interleaved strideBytes:nil];
+            context->peak_device_allocated_bytes = std::max(
+                context->peak_device_allocated_bytes,
+                static_cast<uint64_t>(context->device.currentAllocatedSize));
+        } @catch (NSException *exception) {
+            copy_message(error_buffer, error_capacity, exception.reason);
+            return 3;
+        }
+        return 0;
+    }
+}
+
+extern "C" int rpd_metal_hamiltonian_resident_correction_subtract(
+    void *opaque_context,
+    int against_accepted,
+    const float *coefficients_interleaved,
+    size_t exclusion_count,
+    char *error_buffer, size_t error_capacity) {
+    @autoreleasepool {
+        ResidentHamiltonian *context = static_cast<ResidentHamiltonian *>(opaque_context);
+        const size_t expected_count = against_accepted
+            ? (context ? context->resident_accepted_correction_count : 0)
+            : (context ? context->resident_count : 0);
+        if (!context || !coefficients_interleaved ||
+            !context->resident_correction_work_valid || exclusion_count == 0 ||
+            exclusion_count != expected_count ||
+            (against_accepted != 0 && against_accepted != 1)) {
+            copy_message(error_buffer, error_capacity,
+                         @"resident correction update is out of sync");
+            return 2;
+        }
+        const size_t complex_bytes = 2 * sizeof(float);
+        std::memcpy(context->resident_orthogonalization_coefficients.contents,
+                    coefficients_interleaved,
+                    exclusion_count * complex_bytes);
+        id<MTLBuffer> exclusion = against_accepted
+            ? context->resident_accepted_corrections
+            : context->reduction_left;
+        id<MTLBuffer> candidate = context->resident_correction_work_is_a
+            ? context->resident_correction_work_a
+            : context->resident_correction_work_b;
+        id<MTLBuffer> output_buffer = context->resident_correction_work_is_a
+            ? context->resident_correction_work_b
+            : context->resident_correction_work_a;
+        CachedCorrectionUpdateGraph cached = correction_update_graph_for(
+            context->reduction_dimension, exclusion_count);
+        MPSGraphTensorData *candidate_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:candidate
+                        shape:cached.candidate_shape
+                     dataType:MPSDataTypeComplexFloat32];
+        MPSGraphTensorData *exclusion_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:exclusion
+                        shape:cached.exclusion_shape
+                     dataType:MPSDataTypeComplexFloat32];
+        MPSGraphTensorData *coefficient_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:context->resident_orthogonalization_coefficients
+                        shape:cached.coefficient_shape
+                     dataType:MPSDataTypeComplexFloat32];
+        MPSGraphTensorData *output_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:output_buffer
+                        shape:cached.candidate_shape
+                     dataType:MPSDataTypeComplexFloat32];
+        @try {
+            [cached.graph runWithMTLCommandQueue:context->queue
+                                           feeds:@{
+                                               cached.candidate: candidate_data,
+                                               cached.exclusion: exclusion_data,
+                                               cached.coefficients: coefficient_data
+                                           }
+                                targetOperations:nil
+                               resultsDictionary:@{cached.output: output_data}];
+            context->resident_correction_work_is_a =
+                !context->resident_correction_work_is_a;
+            context->peak_device_allocated_bytes = std::max(
+                context->peak_device_allocated_bytes,
+                static_cast<uint64_t>(context->device.currentAllocatedSize));
+        } @catch (NSException *exception) {
+            context->resident_correction_work_valid = false;
+            copy_message(error_buffer, error_capacity, exception.reason);
+            return 3;
+        }
+        return 0;
+    }
+}
+
+extern "C" int rpd_metal_hamiltonian_resident_correction_partial_norm(
+    void *opaque_context,
+    float *partial_output_interleaved,
+    char *error_buffer, size_t error_capacity) {
+    @autoreleasepool {
+        ResidentHamiltonian *context = static_cast<ResidentHamiltonian *>(opaque_context);
+        if (!context || !partial_output_interleaved ||
+            !context->resident_correction_work_valid) {
+            copy_message(error_buffer, error_capacity,
+                         @"resident correction norm is unavailable");
+            return 2;
+        }
+        id<MTLBuffer> candidate = context->resident_correction_work_is_a
+            ? context->resident_correction_work_a
+            : context->resident_correction_work_b;
+        CachedPartialNormGraph cached =
+            partial_norm_graph_for(context->reduction_chunks, 1);
+        MPSGraphTensorData *input_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:candidate
+                        shape:cached.input_shape
+                     dataType:MPSDataTypeComplexFloat32];
+        @try {
+            NSDictionary *result = [cached.graph runWithMTLCommandQueue:context->queue
+                                                                  feeds:@{cached.input: input_data}
+                                                          targetTensors:@[cached.output]
+                                                       targetOperations:nil];
+            MPSGraphTensorData *output = result[cached.output];
+            [[output mpsndarray] readBytes:partial_output_interleaved strideBytes:nil];
+        } @catch (NSException *exception) {
+            copy_message(error_buffer, error_capacity, exception.reason);
+            return 3;
+        }
+        return 0;
+    }
+}
+
+extern "C" int rpd_metal_hamiltonian_resident_correction_normalize(
+    void *opaque_context,
+    float inverse_norm,
+    char *error_buffer, size_t error_capacity) {
+    @autoreleasepool {
+        ResidentHamiltonian *context = static_cast<ResidentHamiltonian *>(opaque_context);
+        if (!context || !context->resident_correction_work_valid ||
+            !std::isfinite(inverse_norm) || inverse_norm <= 0.0f) {
+            copy_message(error_buffer, error_capacity,
+                         @"resident correction normalization is invalid");
+            return 2;
+        }
+        float scale_values[2] = {inverse_norm, 0.0f};
+        std::memcpy(context->resident_orthogonalization_coefficients.contents,
+                    scale_values, sizeof(scale_values));
+        id<MTLBuffer> candidate = context->resident_correction_work_is_a
+            ? context->resident_correction_work_a
+            : context->resident_correction_work_b;
+        id<MTLBuffer> output_buffer = context->resident_correction_work_is_a
+            ? context->resident_correction_work_b
+            : context->resident_correction_work_a;
+        CachedCorrectionScaleGraph cached =
+            correction_scale_graph_for(context->reduction_dimension);
+        MPSGraphTensorData *candidate_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:candidate
+                        shape:cached.candidate_shape
+                     dataType:MPSDataTypeComplexFloat32];
+        MPSGraphTensorData *scale_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:context->resident_orthogonalization_coefficients
+                        shape:cached.scale_shape
+                     dataType:MPSDataTypeComplexFloat32];
+        MPSGraphTensorData *output_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:output_buffer
+                        shape:cached.candidate_shape
+                     dataType:MPSDataTypeComplexFloat32];
+        @try {
+            [cached.graph runWithMTLCommandQueue:context->queue
+                                           feeds:@{
+                                               cached.candidate: candidate_data,
+                                               cached.scale: scale_data
+                                           }
+                                targetOperations:nil
+                               resultsDictionary:@{cached.output: output_data}];
+            context->resident_correction_work_is_a =
+                !context->resident_correction_work_is_a;
+        } @catch (NSException *exception) {
+            context->resident_correction_work_valid = false;
+            copy_message(error_buffer, error_capacity, exception.reason);
+            return 3;
+        }
+        return 0;
+    }
+}
+
+extern "C" int rpd_metal_hamiltonian_resident_correction_accept(
+    void *opaque_context,
+    char *error_buffer, size_t error_capacity) {
+    @autoreleasepool {
+        ResidentHamiltonian *context = static_cast<ResidentHamiltonian *>(opaque_context);
+        if (!context || !context->resident_correction_work_valid ||
+            context->resident_accepted_correction_count >= context->max_batch) {
+            copy_message(error_buffer, error_capacity,
+                         @"resident correction cannot be accepted");
+            return 2;
+        }
+        id<MTLBuffer> candidate = context->resident_correction_work_is_a
+            ? context->resident_correction_work_a
+            : context->resident_correction_work_b;
+        const size_t row_bytes =
+            context->reduction_dimension * 2 * sizeof(float);
+        id<MTLCommandBuffer> command_buffer = [context->queue commandBuffer];
+        id<MTLBlitCommandEncoder> encoder = [command_buffer blitCommandEncoder];
+        if (command_buffer == nil || encoder == nil) {
+            copy_message(error_buffer, error_capacity,
+                         @"failed to create accepted-correction copy command");
+            return 3;
+        }
+        [encoder copyFromBuffer:candidate
+                   sourceOffset:0
+                       toBuffer:context->resident_accepted_corrections
+              destinationOffset:context->resident_accepted_correction_count * row_bytes
+                           size:row_bytes];
+        [encoder endEncoding];
+        [command_buffer commit];
+        [command_buffer waitUntilCompleted];
+        if (command_buffer.status == MTLCommandBufferStatusError) {
+            copy_message(error_buffer, error_capacity,
+                         command_buffer.error.localizedDescription);
+            return 3;
+        }
+        context->resident_accepted_correction_count += 1;
+        context->resident_correction_work_valid = false;
+        return 0;
+    }
+}
+
+extern "C" size_t rpd_metal_hamiltonian_resident_accepted_correction_count(
+    void *opaque_context) {
+    ResidentHamiltonian *context = static_cast<ResidentHamiltonian *>(opaque_context);
+    return context ? context->resident_accepted_correction_count : 0;
+}
+
+extern "C" int rpd_metal_hamiltonian_resident_read_accepted_corrections(
+    void *opaque_context,
+    float *correction_output_interleaved,
+    size_t accepted_count,
+    char *error_buffer, size_t error_capacity) {
+    ResidentHamiltonian *context = static_cast<ResidentHamiltonian *>(opaque_context);
+    if (!context || !correction_output_interleaved || accepted_count == 0 ||
+        accepted_count != context->resident_accepted_correction_count) {
+        copy_message(error_buffer, error_capacity,
+                     @"resident accepted corrections are unavailable or out of sync");
+        return 2;
+    }
+    const size_t complex_bytes = 2 * sizeof(float);
+    const size_t resident_row_bytes = context->reduction_dimension * complex_bytes;
+    const size_t compact_row_bytes = context->dimension * complex_bytes;
+    for (size_t correction = 0; correction < accepted_count; ++correction) {
+        std::memcpy(correction_output_interleaved + correction * context->dimension * 2,
+                    static_cast<const char *>(context->resident_accepted_corrections.contents) +
+                        correction * resident_row_bytes,
                     compact_row_bytes);
     }
     return 0;

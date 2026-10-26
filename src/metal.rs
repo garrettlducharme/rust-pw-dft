@@ -147,6 +147,59 @@ mod imp {
             error_buffer: *mut c_char,
             error_capacity: usize,
         ) -> c_int;
+        fn rpd_metal_hamiltonian_resident_orthogonalization_begin(
+            context: *mut c_void,
+            roots: usize,
+            error_buffer: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
+        fn rpd_metal_hamiltonian_resident_correction_begin(
+            context: *mut c_void,
+            root: usize,
+            error_buffer: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
+        fn rpd_metal_hamiltonian_resident_correction_partial_gram(
+            context: *mut c_void,
+            against_accepted: c_int,
+            partial_output_interleaved: *mut f32,
+            exclusion_count: usize,
+            error_buffer: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
+        fn rpd_metal_hamiltonian_resident_correction_subtract(
+            context: *mut c_void,
+            against_accepted: c_int,
+            coefficients_interleaved: *const f32,
+            exclusion_count: usize,
+            error_buffer: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
+        fn rpd_metal_hamiltonian_resident_correction_partial_norm(
+            context: *mut c_void,
+            partial_output_interleaved: *mut f32,
+            error_buffer: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
+        fn rpd_metal_hamiltonian_resident_correction_normalize(
+            context: *mut c_void,
+            inverse_norm: f32,
+            error_buffer: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
+        fn rpd_metal_hamiltonian_resident_correction_accept(
+            context: *mut c_void,
+            error_buffer: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
+        fn rpd_metal_hamiltonian_resident_accepted_correction_count(context: *mut c_void) -> usize;
+        fn rpd_metal_hamiltonian_resident_read_accepted_corrections(
+            context: *mut c_void,
+            correction_output_interleaved: *mut f32,
+            accepted_count: usize,
+            error_buffer: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
         fn rpd_metal_hamiltonian_partial_norms(
             context: *mut c_void,
             input_interleaved: *const f32,
@@ -174,8 +227,15 @@ mod imp {
         norm_reduction_vectors: usize,
         resident_ritz_updates: usize,
         resident_preconditioner_updates: usize,
+        resident_orthogonalization_calls: usize,
+        resident_orthogonalization_passes: usize,
+        resident_corrections_accepted: usize,
+        resident_corrections_rejected: usize,
         resident_coefficient_upload_bytes: usize,
+        resident_reduction_download_bytes: usize,
         resident_vector_download_bytes: usize,
+        full_vector_upload_bytes: usize,
+        full_vector_download_bytes: usize,
         _not_send_or_sync: PhantomData<Rc<()>>,
     }
 
@@ -250,7 +310,9 @@ mod imp {
                     + max_batch)
                 + std::mem::size_of_val(basis_indices)
                 + std::mem::size_of::<f32>()
-                    * (reduction_dimension + 2 * max_batch + 2 * reduction_dimension * max_batch);
+                    * (5 * reduction_dimension
+                        + 4 * max_batch
+                        + 4 * reduction_dimension * max_batch);
             Ok(Self {
                 raw,
                 shape,
@@ -267,8 +329,15 @@ mod imp {
                 norm_reduction_vectors: 0,
                 resident_ritz_updates: 0,
                 resident_preconditioner_updates: 0,
+                resident_orthogonalization_calls: 0,
+                resident_orthogonalization_passes: 0,
+                resident_corrections_accepted: 0,
+                resident_corrections_rejected: 0,
                 resident_coefficient_upload_bytes: 0,
+                resident_reduction_download_bytes: 0,
                 resident_vector_download_bytes: 0,
+                full_vector_upload_bytes: 0,
+                full_vector_download_bytes: 0,
                 _not_send_or_sync: PhantomData,
             })
         }
@@ -314,6 +383,10 @@ mod imp {
                 let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
                 bail!("resident Metal Hamiltonian failed ({status}): {message}");
             }
+            self.full_vector_upload_bytes +=
+                (grid_input.len() + compact_input.len()) * std::mem::size_of::<Complex32>();
+            self.full_vector_download_bytes +=
+                compact_output.len() * std::mem::size_of::<Complex32>();
             Ok(compact_output)
         }
 
@@ -384,6 +457,8 @@ mod imp {
                     bail!("resident Metal projection resync failed ({status}): {message}");
                 }
                 self.resident_projection_resyncs += 1;
+                self.full_vector_upload_bytes +=
+                    (basis_values.len() + applied_values.len()) * std::mem::size_of::<Complex32>();
             }
 
             let pair_count = basis.len() * basis.len();
@@ -405,6 +480,8 @@ mod imp {
             self.gram_reduction_calls += 1;
             self.gram_reduction_pairs += pair_count;
             self.resident_projection_calls += 1;
+            self.resident_reduction_download_bytes +=
+                partials.len() * std::mem::size_of::<Complex32>();
             Ok((0..pair_count)
                 .map(|pair| {
                     partials[pair * self.reduction_chunks..(pair + 1) * self.reduction_chunks]
@@ -505,8 +582,9 @@ mod imp {
                 let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
                 bail!("resident Metal Ritz download failed ({status}): {message}");
             }
-            self.resident_vector_download_bytes +=
-                3 * value_count * std::mem::size_of::<Complex32>();
+            let download_bytes = 3 * value_count * std::mem::size_of::<Complex32>();
+            self.resident_vector_download_bytes += download_bytes;
+            self.full_vector_download_bytes += download_bytes;
             let unpack = |values: Vec<Complex32>| {
                 values
                     .chunks_exact(self.dimension)
@@ -565,6 +643,8 @@ mod imp {
             }
             self.norm_reduction_calls += 1;
             self.norm_reduction_vectors += roots;
+            self.resident_reduction_download_bytes +=
+                partials.len() * std::mem::size_of::<Complex32>();
             Ok(norms)
         }
 
@@ -626,7 +706,268 @@ mod imp {
                 let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
                 bail!("resident Metal correction download failed ({status}): {message}");
             }
-            self.resident_vector_download_bytes += value_count * std::mem::size_of::<Complex32>();
+            let download_bytes = value_count * std::mem::size_of::<Complex32>();
+            self.resident_vector_download_bytes += download_bytes;
+            self.full_vector_download_bytes += download_bytes;
+            Ok(corrections
+                .chunks_exact(self.dimension)
+                .map(|row| {
+                    row.iter()
+                        .map(|value| num_complex::Complex64::new(value.re as f64, value.im as f64))
+                        .collect()
+                })
+                .collect())
+        }
+
+        fn resident_correction_projection(
+            &mut self,
+            against_accepted: bool,
+            exclusion_count: usize,
+        ) -> Result<Vec<num_complex::Complex64>> {
+            let mut partials = vec![Complex32::default(); exclusion_count * self.reduction_chunks];
+            let mut error = vec![0_i8; 2048];
+            let status = unsafe {
+                rpd_metal_hamiltonian_resident_correction_partial_gram(
+                    self.raw.as_ptr(),
+                    i32::from(against_accepted),
+                    partials.as_mut_ptr().cast::<f32>(),
+                    exclusion_count,
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            if status != 0 {
+                let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
+                bail!("resident correction projection failed ({status}): {message}");
+            }
+            self.gram_reduction_calls += 1;
+            self.gram_reduction_pairs += exclusion_count;
+            self.resident_reduction_download_bytes +=
+                partials.len() * std::mem::size_of::<Complex32>();
+            Ok((0..exclusion_count)
+                .map(|exclusion| {
+                    partials
+                        [exclusion * self.reduction_chunks..(exclusion + 1) * self.reduction_chunks]
+                        .iter()
+                        .fold(num_complex::Complex64::default(), |sum, value| {
+                            sum + num_complex::Complex64::new(value.re as f64, value.im as f64)
+                        })
+                })
+                .collect())
+        }
+
+        fn subtract_resident_correction_projection(
+            &mut self,
+            against_accepted: bool,
+            coefficients: &[num_complex::Complex64],
+        ) -> Result<()> {
+            if coefficients.is_empty()
+                || coefficients
+                    .iter()
+                    .any(|value| !value.re.is_finite() || !value.im.is_finite())
+            {
+                bail!("resident correction coefficients are invalid");
+            }
+            let coefficient_values: Vec<_> = coefficients
+                .iter()
+                .map(|value| Complex32::new(value.re as f32, value.im as f32))
+                .collect();
+            let mut error = vec![0_i8; 2048];
+            let status = unsafe {
+                rpd_metal_hamiltonian_resident_correction_subtract(
+                    self.raw.as_ptr(),
+                    i32::from(against_accepted),
+                    coefficient_values.as_ptr().cast::<f32>(),
+                    coefficient_values.len(),
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            if status != 0 {
+                let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
+                bail!("resident correction update failed ({status}): {message}");
+            }
+            self.resident_coefficient_upload_bytes +=
+                std::mem::size_of_val(coefficient_values.as_slice());
+            Ok(())
+        }
+
+        fn resident_correction_norm(&mut self) -> Result<f64> {
+            let mut partials = vec![Complex32::default(); self.reduction_chunks];
+            let mut error = vec![0_i8; 2048];
+            let status = unsafe {
+                rpd_metal_hamiltonian_resident_correction_partial_norm(
+                    self.raw.as_ptr(),
+                    partials.as_mut_ptr().cast::<f32>(),
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            if status != 0 {
+                let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
+                bail!("resident correction norm failed ({status}): {message}");
+            }
+            let sum = partials
+                .iter()
+                .fold(num_complex::Complex64::default(), |sum, value| {
+                    sum + num_complex::Complex64::new(value.re as f64, value.im as f64)
+                });
+            if !sum.re.is_finite()
+                || !sum.im.is_finite()
+                || sum.im.abs() > 1.0e-6 * sum.re.abs().max(1.0e-20)
+            {
+                bail!("resident correction norm returned an invalid complex sum");
+            }
+            self.norm_reduction_calls += 1;
+            self.norm_reduction_vectors += 1;
+            self.resident_reduction_download_bytes +=
+                partials.len() * std::mem::size_of::<Complex32>();
+            Ok(sum.re.max(0.0).sqrt())
+        }
+
+        /// Two-pass block modified Gram-Schmidt for resident preconditioned
+        /// corrections. Only overlap partials, FP64-accumulated coefficients,
+        /// and normalization scalars cross the CPU/GPU boundary.
+        pub fn orthonormalize_resident_corrections(
+            &mut self,
+            active_roots: &[bool],
+        ) -> Result<usize> {
+            if active_roots.is_empty() || active_roots.len() > self.max_batch {
+                bail!("resident orthogonalization root count is invalid");
+            }
+            let active_count = active_roots.iter().filter(|&&active| active).count();
+            if active_count == 0 {
+                bail!("resident orthogonalization requires an active root");
+            }
+            let resident_count = unsafe { rpd_metal_hamiltonian_resident_count(self.raw.as_ptr()) };
+            if resident_count == 0 || resident_count + active_count > self.max_batch {
+                bail!("resident correction block exceeds the Davidson subspace capacity");
+            }
+            let mut error = vec![0_i8; 2048];
+            let status = unsafe {
+                rpd_metal_hamiltonian_resident_orthogonalization_begin(
+                    self.raw.as_ptr(),
+                    active_roots.len(),
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            if status != 0 {
+                let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
+                bail!("resident orthogonalization begin failed ({status}): {message}");
+            }
+            self.resident_orthogonalization_calls += 1;
+
+            let mut accepted = 0_usize;
+            for (root, &active) in active_roots.iter().enumerate() {
+                if !active {
+                    continue;
+                }
+                let mut error = vec![0_i8; 2048];
+                let status = unsafe {
+                    rpd_metal_hamiltonian_resident_correction_begin(
+                        self.raw.as_ptr(),
+                        root,
+                        error.as_mut_ptr(),
+                        error.len(),
+                    )
+                };
+                if status != 0 {
+                    let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
+                    bail!("resident correction initialization failed ({status}): {message}");
+                }
+
+                let initial_norm = self.resident_correction_norm()?;
+                if initial_norm <= 1.0e-11 {
+                    self.resident_corrections_rejected += 1;
+                    continue;
+                }
+
+                for _ in 0..2 {
+                    let basis_coefficients =
+                        self.resident_correction_projection(false, resident_count)?;
+                    self.subtract_resident_correction_projection(false, &basis_coefficients)?;
+                    if accepted > 0 {
+                        let accepted_coefficients =
+                            self.resident_correction_projection(true, accepted)?;
+                        self.subtract_resident_correction_projection(true, &accepted_coefficients)?;
+                    }
+                    self.resident_orthogonalization_passes += 1;
+                }
+
+                let norm = self.resident_correction_norm()?;
+                let rank_threshold = (1.0e-6 * initial_norm).max(1.0e-11);
+                if norm <= rank_threshold {
+                    self.resident_corrections_rejected += 1;
+                    continue;
+                }
+                let inverse_norm = (1.0 / norm) as f32;
+                let mut error = vec![0_i8; 2048];
+                let status = unsafe {
+                    rpd_metal_hamiltonian_resident_correction_normalize(
+                        self.raw.as_ptr(),
+                        inverse_norm,
+                        error.as_mut_ptr(),
+                        error.len(),
+                    )
+                };
+                if status != 0 {
+                    let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
+                    bail!("resident correction normalization failed ({status}): {message}");
+                }
+                self.resident_coefficient_upload_bytes += std::mem::size_of::<f32>();
+                let mut error = vec![0_i8; 2048];
+                let status = unsafe {
+                    rpd_metal_hamiltonian_resident_correction_accept(
+                        self.raw.as_ptr(),
+                        error.as_mut_ptr(),
+                        error.len(),
+                    )
+                };
+                if status != 0 {
+                    let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
+                    bail!("resident correction acceptance failed ({status}): {message}");
+                }
+                accepted += 1;
+                self.resident_corrections_accepted += 1;
+            }
+            let native_accepted = unsafe {
+                rpd_metal_hamiltonian_resident_accepted_correction_count(self.raw.as_ptr())
+            };
+            if native_accepted != accepted {
+                bail!("resident correction acceptance count is out of sync");
+            }
+            Ok(accepted)
+        }
+
+        /// Download accepted resident corrections for fixed-density validation
+        /// or final output. Normal Davidson iterations must not call this.
+        pub fn read_resident_accepted_corrections(
+            &mut self,
+            accepted_count: usize,
+        ) -> Result<Vec<Vec<num_complex::Complex64>>> {
+            if accepted_count == 0 || accepted_count > self.max_batch {
+                bail!("resident accepted-correction download count is invalid");
+            }
+            let value_count = accepted_count * self.dimension;
+            let mut corrections = vec![Complex32::default(); value_count];
+            let mut error = vec![0_i8; 2048];
+            let status = unsafe {
+                rpd_metal_hamiltonian_resident_read_accepted_corrections(
+                    self.raw.as_ptr(),
+                    corrections.as_mut_ptr().cast::<f32>(),
+                    accepted_count,
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            if status != 0 {
+                let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
+                bail!("resident accepted-correction download failed ({status}): {message}");
+            }
+            let download_bytes = value_count * std::mem::size_of::<Complex32>();
+            self.resident_vector_download_bytes += download_bytes;
+            self.full_vector_download_bytes += download_bytes;
             Ok(corrections
                 .chunks_exact(self.dimension)
                 .map(|row| {
@@ -688,6 +1029,9 @@ mod imp {
             }
             self.norm_reduction_calls += 1;
             self.norm_reduction_vectors += vectors.len();
+            self.full_vector_upload_bytes += values.len() * std::mem::size_of::<Complex32>();
+            self.resident_reduction_download_bytes +=
+                partials.len() * std::mem::size_of::<Complex32>();
             Ok(norms)
         }
 
@@ -743,6 +1087,10 @@ mod imp {
             }
             self.gram_reduction_calls += 1;
             self.gram_reduction_pairs += pair_count;
+            self.full_vector_upload_bytes +=
+                (left_values.len() + right_values.len()) * std::mem::size_of::<Complex32>();
+            self.resident_reduction_download_bytes +=
+                partials.len() * std::mem::size_of::<Complex32>();
             Ok((0..pair_count)
                 .map(|pair| {
                     partials[pair * self.reduction_chunks..(pair + 1) * self.reduction_chunks]
@@ -786,12 +1134,40 @@ mod imp {
             self.resident_preconditioner_updates
         }
 
+        pub fn resident_orthogonalization_calls(&self) -> usize {
+            self.resident_orthogonalization_calls
+        }
+
+        pub fn resident_orthogonalization_passes(&self) -> usize {
+            self.resident_orthogonalization_passes
+        }
+
+        pub fn resident_corrections_accepted(&self) -> usize {
+            self.resident_corrections_accepted
+        }
+
+        pub fn resident_corrections_rejected(&self) -> usize {
+            self.resident_corrections_rejected
+        }
+
         pub fn resident_coefficient_upload_bytes(&self) -> usize {
             self.resident_coefficient_upload_bytes
         }
 
+        pub fn resident_reduction_download_bytes(&self) -> usize {
+            self.resident_reduction_download_bytes
+        }
+
         pub fn resident_vector_download_bytes(&self) -> usize {
             self.resident_vector_download_bytes
+        }
+
+        pub fn full_vector_upload_bytes(&self) -> usize {
+            self.full_vector_upload_bytes
+        }
+
+        pub fn full_vector_download_bytes(&self) -> usize {
+            self.full_vector_download_bytes
         }
 
         pub fn projector_count(&self) -> usize {
@@ -1001,6 +1377,18 @@ mod imp {
         ) -> Result<Self> {
             bail!("binary was built without the macOS-only `metal` feature")
         }
+        pub fn orthonormalize_resident_corrections(
+            &mut self,
+            _active_roots: &[bool],
+        ) -> Result<usize> {
+            bail!("binary was built without the macOS-only `metal` feature")
+        }
+        pub fn read_resident_accepted_corrections(
+            &mut self,
+            _accepted_count: usize,
+        ) -> Result<Vec<Vec<num_complex::Complex64>>> {
+            bail!("binary was built without the macOS-only `metal` feature")
+        }
         pub fn apply(
             &mut self,
             _grid_input: &[Complex32],
@@ -1082,10 +1470,31 @@ mod imp {
         pub fn resident_preconditioner_updates(&self) -> usize {
             0
         }
+        pub fn resident_orthogonalization_calls(&self) -> usize {
+            0
+        }
+        pub fn resident_orthogonalization_passes(&self) -> usize {
+            0
+        }
+        pub fn resident_corrections_accepted(&self) -> usize {
+            0
+        }
+        pub fn resident_corrections_rejected(&self) -> usize {
+            0
+        }
         pub fn resident_coefficient_upload_bytes(&self) -> usize {
             0
         }
+        pub fn resident_reduction_download_bytes(&self) -> usize {
+            0
+        }
         pub fn resident_vector_download_bytes(&self) -> usize {
+            0
+        }
+        pub fn full_vector_upload_bytes(&self) -> usize {
+            0
+        }
+        pub fn full_vector_download_bytes(&self) -> usize {
             0
         }
         pub fn projector_count(&self) -> usize {
