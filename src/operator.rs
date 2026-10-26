@@ -724,6 +724,7 @@ pub fn hartree_xc_potential(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::eigensolver::{DavidsonOptions, block_davidson, projected_hermitian_eigensolve};
     use crate::input::SimulationInput;
     use std::path::Path;
 
@@ -794,6 +795,32 @@ mod tests {
         let integrated =
             starting_density.iter().sum::<f64>() * lattice.volume / starting_density.len() as f64;
         assert!((integrated - 8.0).abs() < 1.0e-12);
+
+        let electronic =
+            hartree_xc_potential(hamiltonian.fft(), &lattice, &starting_density).unwrap();
+        let dense_matrix = hamiltonian.dense_matrix_fft(&electronic.real_ry).unwrap();
+        let dense_eigenpairs =
+            projected_hermitian_eigensolve(&dense_matrix, hamiltonian.dimension()).unwrap();
+        let davidson = block_davidson(
+            hamiltonian.kinetic_ry(),
+            None,
+            &DavidsonOptions {
+                roots: 4,
+                residual_tolerance: 1.0e-10,
+                max_iterations: 80,
+                max_subspace: 32,
+            },
+            |orbital| hamiltonian.apply_fft(orbital, &electronic.real_ry),
+        )
+        .unwrap();
+        assert!(davidson.converged);
+        for (davidson_value, dense_value) in davidson
+            .eigenvalues
+            .iter()
+            .zip(&dense_eigenpairs.eigenvalues)
+        {
+            assert!((davidson_value - dense_value).abs() < 1.0e-10);
+        }
 
         let ewald_a = ewald_energy_ry(&lattice, &input.atoms, pseudo.valence_charge, 0.6).unwrap();
         let ewald_b = ewald_energy_ry(&lattice, &input.atoms, pseudo.valence_charge, 0.8).unwrap();

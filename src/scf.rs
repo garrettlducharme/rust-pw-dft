@@ -1,5 +1,5 @@
 use crate::backend::{BackendKind, PrecisionPolicy};
-use crate::eigensolver::projected_hermitian_eigensolve;
+use crate::eigensolver::{DavidsonOptions, block_davidson};
 use crate::input::SimulationInput;
 use crate::lattice::Lattice;
 use crate::operator::{
@@ -161,6 +161,10 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
     let mut completed_iterations = 0;
     let mut final_density_residual = f64::INFINITY;
     let mut final_energy_change = f64::INFINITY;
+    let mut previous_orbitals: Option<Vec<Vec<num_complex::Complex64>>> = None;
+    let mut davidson_iterations = 0_usize;
+    let mut hamiltonian_applications = 0_usize;
+    let mut eigensolver_stop_reason = None;
 
     for iteration in 1..=input.scf_options.max_iterations {
         completed_iterations = iteration;
@@ -172,36 +176,41 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
             potential_started.elapsed().as_secs_f64(),
         );
 
-        let hamiltonian_started = Instant::now();
-        let dense = hamiltonian.dense_matrix_fft(&potential.real_ry)?;
-        add_timing(
-            &mut timings,
-            "hamiltonian_seconds",
-            hamiltonian_started.elapsed().as_secs_f64(),
-        );
-
         let eigensolve_started = Instant::now();
-        let eigenpairs = projected_hermitian_eigensolve(&dense, hamiltonian.dimension())?;
+        let davidson_options = DavidsonOptions {
+            roots: occupied_states,
+            residual_tolerance: input.scf_options.orbital_residual_tolerance.min(1.0e-10),
+            max_iterations: 80,
+            max_subspace: (occupied_states * 8)
+                .max(occupied_states + 4)
+                .min(hamiltonian.dimension()),
+        };
+        let eigenpairs = block_davidson(
+            hamiltonian.kinetic_ry(),
+            previous_orbitals.as_deref(),
+            &davidson_options,
+            |orbital| hamiltonian.apply_fft(orbital, &potential.real_ry),
+        )?;
         add_timing(
             &mut timings,
             "eigensolve_seconds",
             eigensolve_started.elapsed().as_secs_f64(),
         );
-        let eigenvalues = eigenpairs.eigenvalues[..occupied_states].to_vec();
-        let orbitals = eigenpairs.eigenvectors[..occupied_states].to_vec();
-
-        let mut orbital_residuals = Vec::with_capacity(occupied_states);
-        for (&eigenvalue, orbital) in eigenvalues.iter().zip(&orbitals) {
-            let applied = hamiltonian.apply_fft(orbital, &potential.real_ry)?;
-            orbital_residuals.push(
-                applied
-                    .iter()
-                    .zip(orbital)
-                    .map(|(hpsi, psi)| (*hpsi - eigenvalue * psi).norm_sqr())
-                    .sum::<f64>()
-                    .sqrt(),
-            );
+        davidson_iterations += eigenpairs.iterations;
+        hamiltonian_applications += eigenpairs.hamiltonian_applications;
+        if !eigenpairs.converged {
+            final_eigenvalues = eigenpairs.eigenvalues;
+            final_residuals = eigenpairs.residual_norms;
+            eigensolver_stop_reason = Some(format!(
+                "block Davidson did not converge in {} iterations (maximum residual {:.3e} Ry)",
+                eigenpairs.iterations,
+                final_residuals.iter().copied().fold(0.0_f64, f64::max)
+            ));
+            break;
         }
+        let eigenvalues = eigenpairs.eigenvalues;
+        let orbitals = eigenpairs.eigenvectors;
+        let orbital_residuals = eigenpairs.residual_norms;
 
         let density_started = Instant::now();
         let output_density = density_from_orbitals(
@@ -231,6 +240,7 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
         final_energy = Some(total_energy_ry);
         final_eigenvalues = eigenvalues;
         final_residuals = orbital_residuals;
+        previous_orbitals = Some(orbitals);
         final_terms = BTreeMap::from([
             ("band_energy_ry".into(), band_energy_ry),
             ("hartree_ry".into(), potential.hartree_energy_ry),
@@ -246,7 +256,6 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
             && final_energy_change <= input.scf_options.energy_tolerance_ry
             && maximum_orbital_residual <= input.scf_options.orbital_residual_tolerance
         {
-            density = output_density;
             converged = true;
             break;
         }
@@ -255,17 +264,27 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
             *current = (1.0 - beta) * *current + beta * output;
         }
     }
-    let _ = density;
     timings.insert(
         "total_seconds".into(),
         total_started.elapsed().as_secs_f64(),
     );
-    let stop_reason = (!converged).then(|| {
-        format!(
+    let stop_reason = if converged {
+        None
+    } else if let Some(reason) = eigensolver_stop_reason {
+        Some(format!(
+            "{reason}; no scientific acceptance claim is allowed"
+        ))
+    } else {
+        Some(format!(
             "CPU SCF did not converge in {} iterations (density residual {:.3e}, energy change {:.3e} Ry); no scientific acceptance claim is allowed",
             input.scf_options.max_iterations, final_density_residual, final_energy_change
-        )
-    });
+        ))
+    };
+    final_terms.insert("davidson_iterations".into(), davidson_iterations as f64);
+    final_terms.insert(
+        "hamiltonian_applications".into(),
+        hamiltonian_applications as f64,
+    );
     final_terms.insert(
         "maximum_orbital_residual_ry".into(),
         final_residuals.iter().copied().fold(0.0_f64, f64::max),
@@ -287,7 +306,7 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
         provenance: Provenance {
             requested_backend,
             actual_backend: BackendKind::CpuF64,
-            actual_device: "Apple CPU (rustfft/f64 + faer dense-reference eigensolve)".into(),
+            actual_device: "Apple CPU (rustfft/f64 + block-Davidson/faer-f64)".into(),
             precision_policy: PrecisionPolicy::cpu_f64(),
             input_sha256: sha256(input_path)?,
             pseudopotential_sha256: pseudo_hashes,
