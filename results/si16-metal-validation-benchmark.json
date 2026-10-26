@@ -5,9 +5,9 @@
   "converged": true,
   "iterations": 55,
   "repetitions": 5,
-  "min_seconds": 3.167620042,
-  "median_seconds": 3.178267375,
-  "max_seconds": 3.198399917,
+  "min_seconds": 3.124761875,
+  "median_seconds": 3.130488708,
+  "max_seconds": 3.1864603750000002,
   "provenance": {
     "requested_backend": "metal-mixed",
     "actual_backend": "metal-mixed",
@@ -22,7 +22,7 @@
     "pseudopotential_sha256": {
       "Si": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d"
     },
-    "git_revision": "f54f55a93a44dd1f83de9aff2f266c5d85daa65c"
+    "git_revision": "daee64790d37738ca97a993e419cc701c4762d01"
   },
-  "stop_reason": "Metal uses persistent operator buffers and GPU cross-Gram partial reductions, but the Davidson basis and correction vectors remain host FP64 and are staged by block; a fully resident eigensolver is required for a production performance claim"
+  "stop_reason": "Metal uses persistent operator buffers plus GPU cross-Gram and direct residual-norm partial reductions, but the canonical Davidson basis, orthogonalization, residual construction, and correction vectors remain host FP64 and are staged by block; a fully resident eigensolver is required for a production performance claim"
 }

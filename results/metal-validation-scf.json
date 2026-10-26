@@ -14,11 +14,13 @@
     "hartree_ry": 1.6451471721304907,
     "highest_occupied_eigenvalue_ev": 7.127296717556428,
     "integral_rho_vxc_ry": -6.564951015908633,
-    "maximum_orbital_residual_ry": 5.151286870862335e-6,
+    "maximum_orbital_residual_ry": 5.151287020343748e-6,
     "metal_gram_reduction_calls": 121.0,
     "metal_gram_reduction_pairs": 15674.0,
-    "metal_peak_device_allocated_bytes": 5734400.0,
-    "metal_persistent_buffer_bytes": 1179376.0,
+    "metal_norm_reduction_calls": 121.0,
+    "metal_norm_reduction_vectors": 484.0,
+    "metal_peak_device_allocated_bytes": 5799936.0,
+    "metal_persistent_buffer_bytes": 1244912.0,
     "metal_projector_count": 8.0,
     "metal_resident_projection_calls": 121.0,
     "metal_resident_projection_resyncs": 1.0,
@@ -33,17 +35,17 @@
   ],
   "electron_count": 8.000000000000018,
   "residuals": [
-    2.7914622391224354e-6,
-    5.128029078626097e-6,
-    5.151286870862335e-6,
-    5.1073167989436256e-6
+    2.791462274080545e-6,
+    5.128029041059518e-6,
+    5.151287020343748e-6,
+    5.107316956496933e-6
   ],
   "timings": {
-    "density_seconds": 0.002890247999999999,
-    "eigensolve_seconds": 0.30354158600000003,
-    "potential_seconds": 0.0024872909999999995,
-    "setup_seconds": 0.050509459,
-    "total_seconds": 0.360165208
+    "density_seconds": 0.0032586319999999996,
+    "eigensolve_seconds": 0.290988671,
+    "potential_seconds": 0.0029252520000000006,
+    "setup_seconds": 0.057150875,
+    "total_seconds": 0.356263959
   },
   "provenance": {
     "requested_backend": "metal-mixed",
@@ -59,6 +61,6 @@
     "pseudopotential_sha256": {
       "Si": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d"
     },
-    "git_revision": "f54f55a93a44dd1f83de9aff2f266c5d85daa65c"
+    "git_revision": "daee64790d37738ca97a993e419cc701c4762d01"
   }
 }

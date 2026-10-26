@@ -27,6 +27,8 @@ machine-readable evidence rather than feature presence alone.
 - rectangular, chunked complex-FP32 cross-Gram partials on Metal with final
   accumulation in CPU complex FP64, used for every Davidson Rayleigh-Ritz
   projection;
+- direct complex-FP32 residual-norm partials on Metal with CPU-FP64 final
+  accumulation and fail-closed backend result validation;
 - a persistent compact-FP32 Davidson journal: Hamiltonian inputs and outputs
   append to caller-owned MTLBuffers, normal projections require no host-vector
   upload, and subspace restarts resynchronize explicitly;
@@ -37,8 +39,9 @@ machine-readable evidence rather than feature presence alone.
   orbital reuse, batched Hamiltonian application, and CPU-FP64 `faer`
   Rayleigh-Ritz solves;
 - a complete mixed-precision Metal validation SCF: Hamiltonian applications
-  run in complex FP32 on the Apple GPU while reductions, projected solves,
-  density construction, convergence, and energy assembly remain CPU FP64;
+  and reduction partials run in complex FP32 on the Apple GPU while final
+  reduction sums, projected solves, density construction, convergence, and
+  energy assembly remain CPU FP64;
 - `run`, `compare`, and `bench` command surfaces that refuse scientific or
   performance claims for incomplete/non-converged results.
 
@@ -58,15 +61,17 @@ accepted CPU result, its errors are `0.00996 meV/atom`, `0.00252 meV` for the
 worst occupied eigenvalue, and `5.8e-14` electrons. The measured Metal FFT
 round-trip error is `1.75e-7`; the complete fixed-density silicon Hamiltonian
 through the persistent compact-projector context differs from CPU by
-`1.34e-7` in relative L2 norm. With GPU cross-Gram reductions enabled, the
-fixed-density occupied-eigenvalue error is `0.00342 meV`.
+`1.34e-7` in relative L2 norm. With GPU cross-Gram and direct norm reductions
+enabled, the fixed-density occupied-eigenvalue error is `0.00342 meV`; the
+direct-norm test's maximum relative error is `6.66e-16`.
 
 On the pinned 16-atom silicon supercell, five warmed runs give median wall
-times of `22.249 s` CPU and `3.178 s` Metal, an observed `7.000x` speedup.
-Persistent Metal buffers occupy 71.0 MB and measured peak device allocation is
-122.7 MB on this workload, well below the 12 GiB project cap. The run executes
-165 resident GPU cross-Gram calls covering 2,404,854 vector pairs; only one
-subspace restart requires a host resynchronization.
+times of `21.837 s` CPU and `3.130 s` Metal, an observed `6.976x` speedup.
+Persistent Metal buffers occupy 74.2 MB and measured peak device allocation is
+125.8 MB on this workload, well below the 12 GiB project cap. The run executes
+165 resident GPU cross-Gram calls covering 2,404,854 vector pairs and 165 GPU
+norm reductions covering 5,280 residual vectors; only one subspace restart
+requires a host resynchronization.
 
 Metal remains marked ineligible for a production performance claim because
 the canonical Davidson basis, orthogonalization, residual construction, and
@@ -93,10 +98,10 @@ cargo run --release --features metal -- bench examples/si16.toml --backend metal
 ```
 
 The CPU scientific milestone, persistent Metal operator accuracy milestone,
-integrated Rayleigh-Ritz reduction milestone, and larger-workload numeric speed
-threshold are accepted. The next bounded milestone is a GPU-resident Davidson
-basis with GPU orthogonalization, residual/norm evaluation, and correction
-updates; only that path may turn the observed speedup into a production
-performance acceptance claim. Its buffer contract, dataflow, transfer
-accounting, and fail-closed gates are specified in
+integrated Rayleigh-Ritz and direct residual-norm reduction milestones, and
+larger-workload numeric speed threshold are accepted. The next bounded
+milestone is GPU-resident Ritz/residual construction, orthogonalization,
+preconditioning, and correction updates; only that path may turn the observed
+speedup into a production performance acceptance claim. Its buffer contract,
+dataflow, transfer accounting, and fail-closed gates are specified in
 [`docs/resident-davidson.md`](docs/resident-davidson.md).
