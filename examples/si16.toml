@@ -1,0 +1,70 @@
+cutoff_ry = 12.0
+xc = "lda-pz"
+k_points = "gamma"
+spin_components = 1
+pseudopotentials = { Si = "../../dft studies/checkouts/q-e-7.6/EPW/examples/sic/pp/Si.pz-vbc.UPF" }
+
+[cell]
+lattice_bohr = [
+  [0.0, 10.25, 10.25],
+  [10.25, 0.0, 10.25],
+  [10.25, 10.25, 0.0],
+]
+fixed = true
+
+[[atoms]]
+element = "Si"
+fractional = [0.0, 0.0, 0.0]
+[[atoms]]
+element = "Si"
+fractional = [0.125, 0.125, 0.125]
+[[atoms]]
+element = "Si"
+fractional = [0.0, 0.0, 0.5]
+[[atoms]]
+element = "Si"
+fractional = [0.125, 0.125, 0.625]
+[[atoms]]
+element = "Si"
+fractional = [0.0, 0.5, 0.0]
+[[atoms]]
+element = "Si"
+fractional = [0.125, 0.625, 0.125]
+[[atoms]]
+element = "Si"
+fractional = [0.0, 0.5, 0.5]
+[[atoms]]
+element = "Si"
+fractional = [0.125, 0.625, 0.625]
+[[atoms]]
+element = "Si"
+fractional = [0.5, 0.0, 0.0]
+[[atoms]]
+element = "Si"
+fractional = [0.625, 0.125, 0.125]
+[[atoms]]
+element = "Si"
+fractional = [0.5, 0.0, 0.5]
+[[atoms]]
+element = "Si"
+fractional = [0.625, 0.125, 0.625]
+[[atoms]]
+element = "Si"
+fractional = [0.5, 0.5, 0.0]
+[[atoms]]
+element = "Si"
+fractional = [0.625, 0.625, 0.125]
+[[atoms]]
+element = "Si"
+fractional = [0.5, 0.5, 0.5]
+[[atoms]]
+element = "Si"
+fractional = [0.625, 0.625, 0.625]
+
+[scf_options]
+max_iterations = 80
+energy_tolerance_ry = 1.0e-8
+density_tolerance = 1.0e-8
+orbital_residual_tolerance = 1.0e-8
+mixing_beta = 0.3
+seed = 99400983
