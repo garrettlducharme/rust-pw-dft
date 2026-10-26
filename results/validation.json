@@ -1,6 +1,6 @@
 {
-  "schema_version": 4,
-  "source_revision": "948d3d6b3dd4c6d887e03abc0ab905c3799079ab",
+  "schema_version": 5,
+  "source_revision": "02f5e39e52374e98f311270bcbc2fbcaa20619d2",
   "tests": {
     "cpu_passed": 17,
     "metal_feature_passed": 20,
@@ -30,25 +30,27 @@
   },
   "metal": {
     "device": "Apple M5 Pro",
-    "architecture": "persistent MPSGraph buffers, compact separable projectors, on-device compact output gather, and chunked FP32 overlap partials; host-FP64 Davidson basis staged by block",
+    "architecture": "persistent MPSGraph Hamiltonian, compact separable projectors, on-device compact output gather, and integrated rectangular FP32 cross-Gram partials with CPU-FP64 final sums; host-FP64 Davidson basis staged by block",
     "fft_roundtrip_relative_l2": 1.7528988478321696e-7,
     "fft_roundtrip_relative_l2_gate": 1e-5,
     "fixed_density_local_kinetic_relative_l2": 9.364917040762578e-8,
     "fixed_density_legacy_dense_hamiltonian_relative_l2": 1.0252054904136722e-7,
     "fixed_density_persistent_compact_hamiltonian_relative_l2": 1.3434963476124747e-7,
     "partial_gram_maximum_absolute_error": 6.853431053961487e-8,
-    "fixed_density_occupied_eigenvalue_error_mev": 0.0035761492398059835,
+    "fixed_density_occupied_eigenvalue_error_mev": 0.0034194397954189254,
     "si2_scf": {
       "accepted": true,
       "iterations": 49,
-      "total_energy_ry": -14.529470173085315,
-      "cpu_energy_error_mev_atom": 0.012454602329263823,
-      "maximum_occupied_eigenvalue_error_mev": 0.0010629786916221218,
-      "electron_count_error": 3.375077994860476e-14,
-      "maximum_orbital_residual_ry": 5.252382347016987e-6,
+      "total_energy_ry": -14.529469806420746,
+      "cpu_energy_error_mev_atom": 0.00996023951521601,
+      "maximum_occupied_eigenvalue_error_mev": 0.0025192847052216863,
+      "electron_count_error": 5.773159728050814e-14,
+      "maximum_orbital_residual_ry": 5.151286870862335e-6,
       "energy_tolerance_ry": 5e-7,
-      "persistent_buffer_bytes": 200448,
-      "peak_device_allocated_bytes": 4161536
+      "persistent_buffer_bytes": 1136112,
+      "peak_device_allocated_bytes": 5685248,
+      "gram_reduction_calls": 121,
+      "gram_reduction_pairs": 15674
     },
     "behavior": "fail-closed; no CPU Hamiltonian fallback"
   },
@@ -57,35 +59,38 @@
     "cold_processes": 1,
     "warmed_repetitions": 5,
     "cpu_seconds": {
-      "min": 22.23640175,
-      "median": 22.361167583,
-      "max": 22.620249333,
+      "min": 21.958478958,
+      "median": 22.140804042,
+      "max": 22.333103125,
       "scf_iterations": 47
     },
     "metal_seconds": {
-      "min": 4.998938208,
-      "median": 5.124237042,
-      "max": 5.335745166,
-      "scf_iterations": 49
+      "min": 3.184512709,
+      "median": 3.203302209,
+      "max": 3.220711958,
+      "scf_iterations": 55
     },
-    "median_speedup": 4.3638042892473985,
+    "median_speedup": 6.911868627253833,
     "numeric_1_20x_gate_passed": true,
     "scientific_parity": {
-      "energy_error_mev_atom": 0.007593363905174137,
-      "maximum_occupied_eigenvalue_error_mev": 0.005660264622791327,
-      "electron_count_error": 2.9132252166164108e-12,
+      "energy_error_mev_atom": 0.0078085381107714045,
+      "maximum_occupied_eigenvalue_error_mev": 0.006083974263102326,
+      "electron_count_error": 2.7995383788947947e-12,
       "accepted": true
     },
-    "persistent_buffer_bytes": 9824256,
-    "peak_device_allocated_bytes": 70991872,
+    "gram_reduction_calls": 165,
+    "gram_reduction_pairs": 2404854,
+    "persistent_buffer_bytes": 68028288,
+    "peak_device_allocated_bytes": 119652352,
     "project_memory_limit_bytes": 12884901888,
     "production_claim_accepted": false,
-    "reason": "the Davidson basis and correction vectors remain host FP64; the validated GPU partial-reduction primitive is not yet integrated into Davidson"
+    "reason": "the Davidson basis, orthogonalization, residual construction, and correction vectors remain host FP64 even though Rayleigh-Ritz cross-Gram reductions are integrated on Metal"
   },
   "go_no_go": {
     "cpu_educational_solver": "go",
     "persistent_metal_operator": "go for the pinned silicon workloads",
-    "gpu_resident_davidson_integration": "go as the next bounded milestone",
+    "gpu_cross_gram_davidson_integration": "go for the pinned silicon workloads",
+    "gpu_resident_basis_and_updates": "go as the next bounded milestone",
     "production_science_or_scope_expansion": "no-go until the resident eigensolver repeats both gates"
   }
 }

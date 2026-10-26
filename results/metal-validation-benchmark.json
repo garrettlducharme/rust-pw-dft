@@ -5,16 +5,16 @@
   "converged": true,
   "iterations": 49,
   "repetitions": 5,
-  "min_seconds": 0.11090975,
-  "median_seconds": 0.115925875,
-  "max_seconds": 0.117483,
+  "min_seconds": 0.117488542,
+  "median_seconds": 0.1195325,
+  "max_seconds": 0.123769917,
   "provenance": {
     "requested_backend": "metal-mixed",
     "actual_backend": "metal-mixed",
-    "actual_device": "Apple M5 Pro (persistent MPSGraph buffers; compact separable projectors)",
+    "actual_device": "Apple M5 Pro (persistent MPSGraph Hamiltonian; GPU cross-Gram partials)",
     "precision_policy": {
       "storage": "complex-f64-host+persistent-complex-f32-metal-block-buffers",
-      "reductions": "f64-cpu",
+      "reductions": "complex-f32-metal-partials+complex-f64-cpu-final",
       "eigensolve": "f64-cpu",
       "energy": "f64-cpu"
     },
@@ -22,7 +22,7 @@
     "pseudopotential_sha256": {
       "Si": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d"
     },
-    "git_revision": "948d3d6b3dd4c6d887e03abc0ab905c3799079ab"
+    "git_revision": "02f5e39e52374e98f311270bcbc2fbcaa20619d2"
   },
-  "stop_reason": "Metal uses persistent operator buffers and compact projectors, but the Davidson basis remains host FP64 and is staged by block; a fully resident eigensolver is required for a production performance claim"
+  "stop_reason": "Metal uses persistent operator buffers and GPU cross-Gram partial reductions, but the Davidson basis and correction vectors remain host FP64 and are staged by block; a fully resident eigensolver is required for a production performance claim"
 }

@@ -20,8 +20,9 @@ GPL DFT implementations.
   plane-wave-squared dense validation matrix in production SCF;
 - on-device real/imaginary gather of FFT output into the compact plane-wave
   basis, so a Hamiltonian application returns only compact `H|psi>` blocks;
-- chunked complex-FP32 overlap partials on Metal with final accumulation in
-  CPU complex FP64 (validated as a primitive, not yet wired into Davidson);
+- rectangular, chunked complex-FP32 cross-Gram partials on Metal with final
+  accumulation in CPU complex FP64, used for every Davidson Rayleigh-Ritz
+  projection;
 - complete CPU-FP64 silicon SCF with atomic-density initialization, local and
   separable nonlocal pseudopotentials, Hartree and LDA-PZ potentials, Ewald
   energy, linear density mixing, and dual convergence checks;
@@ -45,24 +46,26 @@ The result is in `results/cpu-scf.json` and the normalized QE reference is in
 
 ## Metal result and boundary
 
-The two-atom Metal SCF converges to `-14.5294701731 Ry`. Relative to the
-accepted CPU result, its errors are `0.01245 meV/atom`, `0.00106 meV` for the
-worst occupied eigenvalue, and `3.4e-14` electrons. The measured Metal FFT
+The two-atom Metal SCF converges to `-14.5294698064 Ry`. Relative to the
+accepted CPU result, its errors are `0.00996 meV/atom`, `0.00252 meV` for the
+worst occupied eigenvalue, and `5.8e-14` electrons. The measured Metal FFT
 round-trip error is `1.75e-7`; the complete fixed-density silicon Hamiltonian
 through the persistent compact-projector context differs from CPU by
-`1.34e-7` in relative L2 norm.
+`1.34e-7` in relative L2 norm. With GPU cross-Gram reductions enabled, the
+fixed-density occupied-eigenvalue error is `0.00342 meV`.
 
 On the pinned 16-atom silicon supercell, five warmed runs give median wall
-times of `22.361 s` CPU and `5.124 s` Metal, an observed `4.364x` speedup.
-Persistent Metal buffers occupy 9.82 MB and measured peak device allocation is
-71.0 MB on this workload, well below the 12 GiB project cap.
+times of `22.141 s` CPU and `3.203 s` Metal, an observed `6.912x` speedup.
+Persistent Metal buffers occupy 68.0 MB and measured peak device allocation is
+119.7 MB on this workload, well below the 12 GiB project cap. The run executes
+165 GPU cross-Gram calls covering 2,404,854 vector pairs.
 
 Metal remains marked ineligible for a production performance claim because
-the Davidson basis and correction vectors still live in host FP64 and are
-staged into the persistent buffers by block. There is no silent CPU
-Hamiltonian fallback; the actual device, effective mixed-precision convergence
-tolerances, memory measurements, and precision policy are recorded in every
-result.
+the Davidson basis, orthogonalization, residual construction, and correction
+vectors still live in host FP64 and are staged into persistent buffers by
+block. There is no silent CPU Hamiltonian or reduction fallback; the actual
+device, effective mixed-precision convergence tolerances, reduction counts,
+memory measurements, and precision policy are recorded in every result.
 
 ## Commands
 
@@ -81,7 +84,8 @@ cargo run --release --features metal -- bench examples/si16.toml --backend metal
 ```
 
 The CPU scientific milestone, persistent Metal operator accuracy milestone,
-and larger-workload numeric speed threshold are accepted. The next bounded
-milestone is a GPU-resident Davidson basis with blockwise GPU overlap/norm
-partial reductions and CPU-FP64 final accumulation; only that path may turn
-the observed speedup into a production performance acceptance claim.
+integrated Rayleigh-Ritz reduction milestone, and larger-workload numeric speed
+threshold are accepted. The next bounded milestone is a GPU-resident Davidson
+basis with GPU orthogonalization, residual/norm evaluation, and correction
+updates; only that path may turn the observed speedup into a production
+performance acceptance claim.
