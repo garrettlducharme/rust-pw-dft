@@ -1,6 +1,6 @@
 {
-  "schema_version": 5,
-  "source_revision": "02f5e39e52374e98f311270bcbc2fbcaa20619d2",
+  "schema_version": 6,
+  "source_revision": "f54f55a93a44dd1f83de9aff2f266c5d85daa65c",
   "tests": {
     "cpu_passed": 17,
     "metal_feature_passed": 20,
@@ -30,7 +30,7 @@
   },
   "metal": {
     "device": "Apple M5 Pro",
-    "architecture": "persistent MPSGraph Hamiltonian, compact separable projectors, on-device compact output gather, and integrated rectangular FP32 cross-Gram partials with CPU-FP64 final sums; host-FP64 Davidson basis staged by block",
+    "architecture": "persistent MPSGraph Hamiltonian with caller-owned compact output, compact separable projectors, on-device compact gather, resident compact-FP32 Davidson basis/applied-basis journal, and rectangular FP32 cross-Gram partials with CPU-FP64 final sums; host-FP64 basis remains canonical",
     "fft_roundtrip_relative_l2": 1.7528988478321696e-7,
     "fft_roundtrip_relative_l2_gate": 1e-5,
     "fixed_density_local_kinetic_relative_l2": 9.364917040762578e-8,
@@ -47,10 +47,12 @@
       "electron_count_error": 5.773159728050814e-14,
       "maximum_orbital_residual_ry": 5.151286870862335e-6,
       "energy_tolerance_ry": 5e-7,
-      "persistent_buffer_bytes": 1136112,
-      "peak_device_allocated_bytes": 5685248,
+      "persistent_buffer_bytes": 1179376,
+      "peak_device_allocated_bytes": 5734400,
       "gram_reduction_calls": 121,
-      "gram_reduction_pairs": 15674
+      "gram_reduction_pairs": 15674,
+      "resident_projection_calls": 121,
+      "resident_projection_resyncs": 1
     },
     "behavior": "fail-closed; no CPU Hamiltonian fallback"
   },
@@ -59,18 +61,18 @@
     "cold_processes": 1,
     "warmed_repetitions": 5,
     "cpu_seconds": {
-      "min": 21.958478958,
-      "median": 22.140804042,
-      "max": 22.333103125,
+      "min": 22.080644209,
+      "median": 22.249336375,
+      "max": 22.395266791,
       "scf_iterations": 47
     },
     "metal_seconds": {
-      "min": 3.184512709,
-      "median": 3.203302209,
-      "max": 3.220711958,
+      "min": 3.167620042,
+      "median": 3.178267375,
+      "max": 3.198399917,
       "scf_iterations": 55
     },
-    "median_speedup": 6.911868627253833,
+    "median_speedup": 7.000460864309756,
     "numeric_1_20x_gate_passed": true,
     "scientific_parity": {
       "energy_error_mev_atom": 0.0078085381107714045,
@@ -80,16 +82,19 @@
     },
     "gram_reduction_calls": 165,
     "gram_reduction_pairs": 2404854,
-    "persistent_buffer_bytes": 68028288,
-    "peak_device_allocated_bytes": 119652352,
+    "resident_projection_calls": 165,
+    "resident_projection_resyncs": 1,
+    "persistent_buffer_bytes": 71016320,
+    "peak_device_allocated_bytes": 122650624,
     "project_memory_limit_bytes": 12884901888,
     "production_claim_accepted": false,
-    "reason": "the Davidson basis, orthogonalization, residual construction, and correction vectors remain host FP64 even though Rayleigh-Ritz cross-Gram reductions are integrated on Metal"
+    "reason": "the compact FP32 projection journal is resident, but the canonical Davidson basis, orthogonalization, residual construction, and correction vectors remain host FP64"
   },
   "go_no_go": {
     "cpu_educational_solver": "go",
     "persistent_metal_operator": "go for the pinned silicon workloads",
     "gpu_cross_gram_davidson_integration": "go for the pinned silicon workloads",
+    "resident_projection_journal": "go for the pinned silicon workloads",
     "gpu_resident_basis_and_updates": "go as the next bounded milestone",
     "production_science_or_scope_expansion": "no-go until the resident eigensolver repeats both gates"
   }

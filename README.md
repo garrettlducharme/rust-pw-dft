@@ -23,6 +23,9 @@ GPL DFT implementations.
 - rectangular, chunked complex-FP32 cross-Gram partials on Metal with final
   accumulation in CPU complex FP64, used for every Davidson Rayleigh-Ritz
   projection;
+- a persistent compact-FP32 Davidson journal: Hamiltonian inputs and outputs
+  append to caller-owned MTLBuffers, normal projections require no host-vector
+  upload, and subspace restarts resynchronize explicitly;
 - complete CPU-FP64 silicon SCF with atomic-density initialization, local and
   separable nonlocal pseudopotentials, Hartree and LDA-PZ potentials, Ewald
   energy, linear density mixing, and dual convergence checks;
@@ -55,17 +58,19 @@ through the persistent compact-projector context differs from CPU by
 fixed-density occupied-eigenvalue error is `0.00342 meV`.
 
 On the pinned 16-atom silicon supercell, five warmed runs give median wall
-times of `22.141 s` CPU and `3.203 s` Metal, an observed `6.912x` speedup.
-Persistent Metal buffers occupy 68.0 MB and measured peak device allocation is
-119.7 MB on this workload, well below the 12 GiB project cap. The run executes
-165 GPU cross-Gram calls covering 2,404,854 vector pairs.
+times of `22.249 s` CPU and `3.178 s` Metal, an observed `7.000x` speedup.
+Persistent Metal buffers occupy 71.0 MB and measured peak device allocation is
+122.7 MB on this workload, well below the 12 GiB project cap. The run executes
+165 resident GPU cross-Gram calls covering 2,404,854 vector pairs; only one
+subspace restart requires a host resynchronization.
 
 Metal remains marked ineligible for a production performance claim because
-the Davidson basis, orthogonalization, residual construction, and correction
-vectors still live in host FP64 and are staged into persistent buffers by
-block. There is no silent CPU Hamiltonian or reduction fallback; the actual
-device, effective mixed-precision convergence tolerances, reduction counts,
-memory measurements, and precision policy are recorded in every result.
+the canonical Davidson basis, orthogonalization, residual construction, and
+correction vectors still live in host FP64. The compact FP32 projection journal
+is resident, but correction blocks are still produced and staged by the CPU.
+There is no silent CPU Hamiltonian or reduction fallback; the actual device,
+effective mixed-precision convergence tolerances, resident/resynchronization
+counts, memory measurements, and precision policy are recorded in every result.
 
 ## Commands
 

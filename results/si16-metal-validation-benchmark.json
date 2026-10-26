@@ -5,15 +5,15 @@
   "converged": true,
   "iterations": 55,
   "repetitions": 5,
-  "min_seconds": 3.184512709,
-  "median_seconds": 3.203302209,
-  "max_seconds": 3.220711958,
+  "min_seconds": 3.167620042,
+  "median_seconds": 3.178267375,
+  "max_seconds": 3.198399917,
   "provenance": {
     "requested_backend": "metal-mixed",
     "actual_backend": "metal-mixed",
-    "actual_device": "Apple M5 Pro (persistent MPSGraph Hamiltonian; GPU cross-Gram partials)",
+    "actual_device": "Apple M5 Pro (persistent MPSGraph Hamiltonian; resident GPU Davidson journal)",
     "precision_policy": {
-      "storage": "complex-f64-host+persistent-complex-f32-metal-block-buffers",
+      "storage": "complex-f64-host-canonical+persistent-complex-f32-metal-hamiltonian+journal",
       "reductions": "complex-f32-metal-partials+complex-f64-cpu-final",
       "eigensolve": "f64-cpu",
       "energy": "f64-cpu"
@@ -22,7 +22,7 @@
     "pseudopotential_sha256": {
       "Si": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d"
     },
-    "git_revision": "02f5e39e52374e98f311270bcbc2fbcaa20619d2"
+    "git_revision": "f54f55a93a44dd1f83de9aff2f266c5d85daa65c"
   },
   "stop_reason": "Metal uses persistent operator buffers and GPU cross-Gram partial reductions, but the Davidson basis and correction vectors remain host FP64 and are staged by block; a fully resident eigensolver is required for a production performance claim"
 }

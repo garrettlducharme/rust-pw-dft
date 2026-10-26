@@ -17,9 +17,11 @@
     "maximum_orbital_residual_ry": 5.151286870862335e-6,
     "metal_gram_reduction_calls": 121.0,
     "metal_gram_reduction_pairs": 15674.0,
-    "metal_peak_device_allocated_bytes": 5685248.0,
-    "metal_persistent_buffer_bytes": 1136112.0,
+    "metal_peak_device_allocated_bytes": 5734400.0,
+    "metal_persistent_buffer_bytes": 1179376.0,
     "metal_projector_count": 8.0,
+    "metal_resident_projection_calls": 121.0,
+    "metal_resident_projection_resyncs": 1.0,
     "orbital_residual_tolerance_ry": 0.00001,
     "xc_ry": -5.032840833575711
   },
@@ -37,18 +39,18 @@
     5.1073167989436256e-6
   ],
   "timings": {
-    "density_seconds": 0.0026316220000000006,
-    "eigensolve_seconds": 0.19890704199999998,
-    "potential_seconds": 0.002275418,
-    "setup_seconds": 0.053074,
-    "total_seconds": 0.257598792
+    "density_seconds": 0.002890247999999999,
+    "eigensolve_seconds": 0.30354158600000003,
+    "potential_seconds": 0.0024872909999999995,
+    "setup_seconds": 0.050509459,
+    "total_seconds": 0.360165208
   },
   "provenance": {
     "requested_backend": "metal-mixed",
     "actual_backend": "metal-mixed",
-    "actual_device": "Apple M5 Pro (persistent MPSGraph Hamiltonian; GPU cross-Gram partials)",
+    "actual_device": "Apple M5 Pro (persistent MPSGraph Hamiltonian; resident GPU Davidson journal)",
     "precision_policy": {
-      "storage": "complex-f64-host+persistent-complex-f32-metal-block-buffers",
+      "storage": "complex-f64-host-canonical+persistent-complex-f32-metal-hamiltonian+journal",
       "reductions": "complex-f32-metal-partials+complex-f64-cpu-final",
       "eigensolve": "f64-cpu",
       "energy": "f64-cpu"
@@ -57,6 +59,6 @@
     "pseudopotential_sha256": {
       "Si": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d"
     },
-    "git_revision": "02f5e39e52374e98f311270bcbc2fbcaa20619d2"
+    "git_revision": "f54f55a93a44dd1f83de9aff2f266c5d85daa65c"
   }
 }
