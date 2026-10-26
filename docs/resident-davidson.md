@@ -27,14 +27,17 @@ The implementation already provides:
   preconditioning with active-root masking;
 - resident two-pass block modified Gram-Schmidt correction orthogonalization,
   normalization, device-local row copies, and rank rejection;
+- custom Metal compact-to-grid scatter, resident correction Hamiltonian
+  application, and device-local basis/H-basis journal append;
 - explicit restart resynchronization and fail-closed error handling.
 
 The production driver still constructs Ritz vectors and residuals in complex
 FP64, preconditions and orthogonalizes corrections, and treats its basis
 vectors as canonical. The resident formation, preconditioning, and
-orthogonalization graphs are currently fixed-density-tested primitives, not
-yet the production iteration path. They therefore prove the next numerical
-boundary without yet removing normal-iteration full-vector traffic.
+orthogonalization, Hamiltonian, and append paths are currently fixed-density-
+tested primitives, not yet the production iteration path. They therefore
+prove the next numerical boundary without yet removing normal-iteration
+full-vector traffic from the production driver.
 
 ## Buffer ownership
 
@@ -82,7 +85,8 @@ limit before allocation.
    is at most `max(1e-11, 1e-6 * initial_norm)`, preventing normalized FP32
    roundoff from creating a spurious direction.
 8. Metal normalizes accepted corrections, applies the Hamiltonian, and appends
-   both blocks to the resident journals.
+   both blocks to the resident journals. A custom compact-to-grid scatter
+   kernel supplies FFT input without staging a full vector on the host.
 9. On subspace restart, Metal replaces the journal with resident Ritz vectors
    and their Hamiltonian images. A host resynchronization is an error in the
    final resident mode, not a normal restart mechanism.
@@ -157,10 +161,11 @@ reuse timings from an earlier source revision.
 
 1. Add resident Ritz/residual construction and fixed-density tests. **Done.**
 2. Add resident preconditioning and two-pass orthogonalization. **Done.**
-3. Replace host restart resynchronization with a device-local restart.
-4. Add transfer accounting and assert the normal-iteration residency invariant.
-5. Integrate the stateful driver into SCF behind the Metal backend.
-6. Regenerate Si2 and Si16 scientific and benchmark evidence at the committed
+3. Add resident Hamiltonian application and correction append. **Done.**
+4. Replace host restart resynchronization with a device-local restart.
+5. Add transfer accounting and assert the normal-iteration residency invariant.
+6. Integrate the stateful driver into SCF behind the Metal backend.
+7. Regenerate Si2 and Si16 scientific and benchmark evidence at the committed
    revision.
 
 Scope expansion to PBE, k-points, forces, additional elements, or PAW remains

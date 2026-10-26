@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -129,6 +130,7 @@ struct CachedCorrectionScaleGraph {
 struct ResidentHamiltonian {
     id<MTLDevice> device;
     id<MTLCommandQueue> queue;
+    id<MTLComputePipelineState> compact_scatter_pipeline;
     size_t nx;
     size_t ny;
     size_t nz;
@@ -142,6 +144,7 @@ struct ResidentHamiltonian {
     size_t resident_ritz_count;
     size_t resident_accepted_correction_count;
     bool resident_recording;
+    bool potential_initialized;
     bool resident_corrections_ready;
     bool resident_correction_work_valid;
     bool resident_correction_work_is_a;
@@ -196,6 +199,52 @@ id<MTLDevice> shared_device() {
 id<MTLCommandQueue> shared_queue() {
     static id<MTLCommandQueue> queue = [shared_device() newCommandQueue];
     return queue;
+}
+
+id<MTLComputePipelineState> make_compact_scatter_pipeline(
+    id<MTLDevice> device, NSString **error_message) {
+    NSString *source = [NSString stringWithUTF8String:R"metal(
+#include <metal_stdlib>
+using namespace metal;
+
+kernel void scatter_compact_to_grid(
+    device const float2 *compact [[buffer(0)]],
+    device float2 *grid [[buffer(1)]],
+    device const int *basis_indices [[buffer(2)]],
+    constant uint &dimension [[buffer(3)]],
+    constant uint &grid_count [[buffer(4)]],
+    constant uint &row_stride [[buffer(5)]],
+    constant uint &batch [[buffer(6)]],
+    uint gid [[thread_position_in_grid]]) {
+    const uint value_count = batch * dimension;
+    if (gid >= value_count) return;
+    const uint state = gid / dimension;
+    const uint basis = gid - state * dimension;
+    const int grid_index = basis_indices[basis];
+    grid[state * grid_count + uint(grid_index)] =
+        compact[state * row_stride + basis];
+}
+)metal"];
+    NSError *library_error = nil;
+    id<MTLLibrary> library = [device newLibraryWithSource:source
+                                                  options:nil
+                                                    error:&library_error];
+    if (library == nil) {
+        if (error_message) *error_message = library_error.localizedDescription;
+        return nil;
+    }
+    id<MTLFunction> function = [library newFunctionWithName:@"scatter_compact_to_grid"];
+    if (function == nil) {
+        if (error_message) *error_message = @"Metal scatter function is unavailable";
+        return nil;
+    }
+    NSError *pipeline_error = nil;
+    id<MTLComputePipelineState> pipeline =
+        [device newComputePipelineStateWithFunction:function error:&pipeline_error];
+    if (pipeline == nil && error_message) {
+        *error_message = pipeline_error.localizedDescription;
+    }
+    return pipeline;
 }
 
 CachedGraph graph_for(size_t nx, size_t ny, size_t nz, size_t batch) {
@@ -920,6 +969,13 @@ extern "C" void *rpd_metal_hamiltonian_create(
             return nullptr;
         }
         const size_t grid_count = nx * ny * nz;
+        if (grid_count > std::numeric_limits<uint32_t>::max() ||
+            dimension > std::numeric_limits<uint32_t>::max() ||
+            max_batch > std::numeric_limits<uint32_t>::max()) {
+            copy_message(error_buffer, error_capacity,
+                         @"resident-Hamiltonian dimensions exceed Metal uint limits");
+            return nullptr;
+        }
         constexpr size_t reduction_chunk_size = 256;
         const size_t reduction_chunks =
             (dimension + reduction_chunk_size - 1) / reduction_chunk_size;
@@ -975,6 +1031,15 @@ extern "C" void *rpd_metal_hamiltonian_create(
         ResidentHamiltonian *context = new ResidentHamiltonian{};
         context->device = device;
         context->queue = queue;
+        NSString *scatter_error = nil;
+        context->compact_scatter_pipeline =
+            make_compact_scatter_pipeline(device, &scatter_error);
+        if (context->compact_scatter_pipeline == nil) {
+            delete context;
+            copy_message(error_buffer, error_capacity,
+                         scatter_error ?: @"failed to create compact scatter pipeline");
+            return nullptr;
+        }
         context->nx = nx;
         context->ny = ny;
         context->nz = nz;
@@ -988,6 +1053,7 @@ extern "C" void *rpd_metal_hamiltonian_create(
         context->resident_ritz_count = 0;
         context->resident_accepted_correction_count = 0;
         context->resident_recording = false;
+        context->potential_initialized = false;
         context->resident_corrections_ready = false;
         context->resident_correction_work_valid = false;
         context->resident_correction_work_is_a = true;
@@ -1116,6 +1182,7 @@ extern "C" int rpd_metal_hamiltonian_apply(
         std::memcpy(context->grid_input.contents, grid_input_interleaved, grid_batch_bytes);
         std::memcpy(context->compact_input.contents, compact_input_interleaved, compact_batch_bytes);
         std::memcpy(context->potential.contents, potential_interleaved, grid_bytes);
+        context->potential_initialized = true;
 
         CachedResidentGraph cached = resident_graph_for(
             context->nx, context->ny, context->nz, context->dimension,
@@ -1895,6 +1962,205 @@ extern "C" size_t rpd_metal_hamiltonian_resident_accepted_correction_count(
     void *opaque_context) {
     ResidentHamiltonian *context = static_cast<ResidentHamiltonian *>(opaque_context);
     return context ? context->resident_accepted_correction_count : 0;
+}
+
+extern "C" int rpd_metal_hamiltonian_resident_apply_accepted_corrections(
+    void *opaque_context,
+    size_t accepted_count,
+    char *error_buffer, size_t error_capacity) {
+    @autoreleasepool {
+        ResidentHamiltonian *context = static_cast<ResidentHamiltonian *>(opaque_context);
+        if (!context || accepted_count == 0 ||
+            accepted_count != context->resident_accepted_correction_count ||
+            !context->resident_corrections_ready ||
+            !context->potential_initialized ||
+            context->resident_count + accepted_count > context->max_batch) {
+            copy_message(error_buffer, error_capacity,
+                         @"resident correction Hamiltonian application is out of sync");
+            return 2;
+        }
+        const size_t complex_bytes = 2 * sizeof(float);
+        const size_t grid_batch_bytes =
+            context->grid_count * accepted_count * complex_bytes;
+        const size_t resident_row_bytes =
+            context->reduction_dimension * complex_bytes;
+        const size_t compact_row_bytes = context->dimension * complex_bytes;
+
+        id<MTLCommandBuffer> scatter_command = [context->queue commandBuffer];
+        id<MTLBlitCommandEncoder> clear_encoder =
+            [scatter_command blitCommandEncoder];
+        if (scatter_command == nil || clear_encoder == nil) {
+            copy_message(error_buffer, error_capacity,
+                         @"failed to create resident scatter command");
+            return 3;
+        }
+        [clear_encoder fillBuffer:context->grid_input
+                            range:NSMakeRange(0, grid_batch_bytes)
+                            value:0];
+        [clear_encoder endEncoding];
+        id<MTLComputeCommandEncoder> scatter_encoder =
+            [scatter_command computeCommandEncoder];
+        if (scatter_encoder == nil) {
+            copy_message(error_buffer, error_capacity,
+                         @"failed to create resident scatter encoder");
+            return 3;
+        }
+        const uint32_t dimension = static_cast<uint32_t>(context->dimension);
+        const uint32_t grid_count = static_cast<uint32_t>(context->grid_count);
+        const uint32_t row_stride =
+            static_cast<uint32_t>(context->reduction_dimension);
+        const uint32_t batch = static_cast<uint32_t>(accepted_count);
+        [scatter_encoder setComputePipelineState:context->compact_scatter_pipeline];
+        [scatter_encoder setBuffer:context->resident_accepted_corrections
+                            offset:0 atIndex:0];
+        [scatter_encoder setBuffer:context->grid_input offset:0 atIndex:1];
+        [scatter_encoder setBuffer:context->basis_indices offset:0 atIndex:2];
+        [scatter_encoder setBytes:&dimension length:sizeof(dimension) atIndex:3];
+        [scatter_encoder setBytes:&grid_count length:sizeof(grid_count) atIndex:4];
+        [scatter_encoder setBytes:&row_stride length:sizeof(row_stride) atIndex:5];
+        [scatter_encoder setBytes:&batch length:sizeof(batch) atIndex:6];
+        const NSUInteger value_count = accepted_count * context->dimension;
+        const NSUInteger thread_count = std::min(
+            value_count, context->compact_scatter_pipeline.maxTotalThreadsPerThreadgroup);
+        [scatter_encoder dispatchThreads:MTLSizeMake(value_count, 1, 1)
+                   threadsPerThreadgroup:MTLSizeMake(thread_count, 1, 1)];
+        [scatter_encoder endEncoding];
+        [scatter_command commit];
+        [scatter_command waitUntilCompleted];
+        if (scatter_command.status == MTLCommandBufferStatusError) {
+            copy_message(error_buffer, error_capacity,
+                         scatter_command.error.localizedDescription);
+            return 3;
+        }
+
+        CachedResidentGraph cached = resident_graph_for(
+            context->nx, context->ny, context->nz, context->dimension,
+            context->projector_count, accepted_count);
+        MPSGraphTensorData *grid_input_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:context->grid_input shape:cached.grid_shape
+                     dataType:MPSDataTypeComplexFloat32];
+        MPSGraphTensorData *compact_input_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:context->resident_accepted_corrections
+                        shape:cached.compact_shape
+                     dataType:MPSDataTypeComplexFloat32
+                     rowBytes:resident_row_bytes];
+        MPSGraphTensorData *potential_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:context->potential shape:cached.potential_shape
+                     dataType:MPSDataTypeComplexFloat32];
+        MPSGraphTensorData *kinetic_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:context->kinetic shape:cached.potential_shape
+                     dataType:MPSDataTypeComplexFloat32];
+        MPSGraphTensorData *indices_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:context->basis_indices shape:cached.indices_shape
+                     dataType:MPSDataTypeInt32];
+        MPSGraphTensorData *projector_conjugate_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:context->projector_conjugate
+                        shape:cached.projector_conjugate_shape
+                     dataType:MPSDataTypeComplexFloat32];
+        MPSGraphTensorData *d_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:context->d_transpose shape:cached.d_shape
+                     dataType:MPSDataTypeComplexFloat32];
+        MPSGraphTensorData *projector_transpose_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:context->projector_transpose
+                        shape:cached.projector_transpose_shape
+                     dataType:MPSDataTypeComplexFloat32];
+        MPSGraphTensorData *output_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:context->hamiltonian_output
+                        shape:cached.compact_shape
+                     dataType:MPSDataTypeComplexFloat32];
+        @try {
+            [cached.graph runWithMTLCommandQueue:context->queue
+                                           feeds:@{
+                                               cached.grid_input: grid_input_data,
+                                               cached.compact_input: compact_input_data,
+                                               cached.potential: potential_data,
+                                               cached.kinetic: kinetic_data,
+                                               cached.basis_indices: indices_data,
+                                               cached.projector_conjugate: projector_conjugate_data,
+                                               cached.d_transpose: d_data,
+                                               cached.projector_transpose: projector_transpose_data
+                                           }
+                                targetOperations:nil
+                               resultsDictionary:@{cached.hamiltonian_output: output_data}];
+        } @catch (NSException *exception) {
+            copy_message(error_buffer, error_capacity, exception.reason);
+            return 3;
+        }
+
+        id<MTLCommandBuffer> append_command = [context->queue commandBuffer];
+        id<MTLBlitCommandEncoder> append_encoder =
+            [append_command blitCommandEncoder];
+        if (append_command == nil || append_encoder == nil) {
+            copy_message(error_buffer, error_capacity,
+                         @"failed to create resident append command");
+            return 3;
+        }
+        [append_encoder fillBuffer:context->reduction_right
+                             range:NSMakeRange(
+                                 context->resident_count * resident_row_bytes,
+                                 accepted_count * resident_row_bytes)
+                             value:0];
+        for (size_t correction = 0; correction < accepted_count; ++correction) {
+            const size_t destination = context->resident_count + correction;
+            [append_encoder copyFromBuffer:context->resident_accepted_corrections
+                              sourceOffset:correction * resident_row_bytes
+                                  toBuffer:context->reduction_left
+                         destinationOffset:destination * resident_row_bytes
+                                      size:resident_row_bytes];
+            [append_encoder copyFromBuffer:context->hamiltonian_output
+                              sourceOffset:correction * compact_row_bytes
+                                  toBuffer:context->reduction_right
+                         destinationOffset:destination * resident_row_bytes
+                                      size:compact_row_bytes];
+        }
+        [append_encoder endEncoding];
+        [append_command commit];
+        [append_command waitUntilCompleted];
+        if (append_command.status == MTLCommandBufferStatusError) {
+            copy_message(error_buffer, error_capacity,
+                         append_command.error.localizedDescription);
+            return 3;
+        }
+        context->resident_count += accepted_count;
+        context->resident_ritz_count = 0;
+        context->resident_recording = true;
+        invalidate_resident_corrections(context);
+        context->peak_device_allocated_bytes = std::max(
+            context->peak_device_allocated_bytes,
+            static_cast<uint64_t>(context->device.currentAllocatedSize));
+        return 0;
+    }
+}
+
+extern "C" int rpd_metal_hamiltonian_resident_read_journal_tail(
+    void *opaque_context,
+    float *basis_output_interleaved,
+    float *applied_output_interleaved,
+    size_t tail_count,
+    char *error_buffer, size_t error_capacity) {
+    ResidentHamiltonian *context = static_cast<ResidentHamiltonian *>(opaque_context);
+    if (!context || !basis_output_interleaved || !applied_output_interleaved ||
+        tail_count == 0 || tail_count > context->resident_count) {
+        copy_message(error_buffer, error_capacity,
+                     @"resident journal tail is unavailable");
+        return 2;
+    }
+    const size_t complex_bytes = 2 * sizeof(float);
+    const size_t resident_row_bytes = context->reduction_dimension * complex_bytes;
+    const size_t compact_row_bytes = context->dimension * complex_bytes;
+    const size_t first = context->resident_count - tail_count;
+    for (size_t row = 0; row < tail_count; ++row) {
+        const size_t resident_row = first + row;
+        std::memcpy(basis_output_interleaved + row * context->dimension * 2,
+                    static_cast<const char *>(context->reduction_left.contents) +
+                        resident_row * resident_row_bytes,
+                    compact_row_bytes);
+        std::memcpy(applied_output_interleaved + row * context->dimension * 2,
+                    static_cast<const char *>(context->reduction_right.contents) +
+                        resident_row * resident_row_bytes,
+                    compact_row_bytes);
+    }
+    return 0;
 }
 
 extern "C" int rpd_metal_hamiltonian_resident_read_accepted_corrections(

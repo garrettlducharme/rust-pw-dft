@@ -8,6 +8,12 @@ pub struct ResidentRitzVectors {
     pub residuals: Vec<Vec<num_complex::Complex64>>,
 }
 
+#[derive(Debug)]
+pub struct ResidentJournalVectors {
+    pub basis: Vec<Vec<num_complex::Complex64>>,
+    pub applied_basis: Vec<Vec<num_complex::Complex64>>,
+}
+
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod imp {
     use super::*;
@@ -193,6 +199,20 @@ mod imp {
             error_capacity: usize,
         ) -> c_int;
         fn rpd_metal_hamiltonian_resident_accepted_correction_count(context: *mut c_void) -> usize;
+        fn rpd_metal_hamiltonian_resident_apply_accepted_corrections(
+            context: *mut c_void,
+            accepted_count: usize,
+            error_buffer: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
+        fn rpd_metal_hamiltonian_resident_read_journal_tail(
+            context: *mut c_void,
+            basis_output_interleaved: *mut f32,
+            applied_output_interleaved: *mut f32,
+            tail_count: usize,
+            error_buffer: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
         fn rpd_metal_hamiltonian_resident_read_accepted_corrections(
             context: *mut c_void,
             correction_output_interleaved: *mut f32,
@@ -231,6 +251,8 @@ mod imp {
         resident_orthogonalization_passes: usize,
         resident_corrections_accepted: usize,
         resident_corrections_rejected: usize,
+        resident_correction_hamiltonian_applications: usize,
+        resident_corrections_appended: usize,
         resident_coefficient_upload_bytes: usize,
         resident_reduction_download_bytes: usize,
         resident_vector_download_bytes: usize,
@@ -333,6 +355,8 @@ mod imp {
                 resident_orthogonalization_passes: 0,
                 resident_corrections_accepted: 0,
                 resident_corrections_rejected: 0,
+                resident_correction_hamiltonian_applications: 0,
+                resident_corrections_appended: 0,
                 resident_coefficient_upload_bytes: 0,
                 resident_reduction_download_bytes: 0,
                 resident_vector_download_bytes: 0,
@@ -978,6 +1002,79 @@ mod imp {
                 .collect())
         }
 
+        /// Scatter accepted compact corrections into FFT grids, apply the
+        /// persistent Hamiltonian, and append both correction and H-correction
+        /// rows to the resident Davidson journal without full-vector transfer.
+        pub fn apply_resident_accepted_corrections(&mut self, accepted_count: usize) -> Result<()> {
+            if accepted_count == 0 || accepted_count > self.max_batch {
+                bail!("resident correction application count is invalid");
+            }
+            let mut error = vec![0_i8; 2048];
+            let status = unsafe {
+                rpd_metal_hamiltonian_resident_apply_accepted_corrections(
+                    self.raw.as_ptr(),
+                    accepted_count,
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            if status != 0 {
+                let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
+                bail!("resident correction Hamiltonian failed ({status}): {message}");
+            }
+            self.resident_correction_hamiltonian_applications += 1;
+            self.resident_corrections_appended += accepted_count;
+            Ok(())
+        }
+
+        /// Download the compact tail of the resident basis/H-basis journals
+        /// for fixed-density validation or final output.
+        pub fn read_resident_journal_tail(
+            &mut self,
+            tail_count: usize,
+        ) -> Result<ResidentJournalVectors> {
+            if tail_count == 0 || tail_count > self.max_batch {
+                bail!("resident journal-tail count is invalid");
+            }
+            let value_count = tail_count * self.dimension;
+            let mut basis = vec![Complex32::default(); value_count];
+            let mut applied_basis = vec![Complex32::default(); value_count];
+            let mut error = vec![0_i8; 2048];
+            let status = unsafe {
+                rpd_metal_hamiltonian_resident_read_journal_tail(
+                    self.raw.as_ptr(),
+                    basis.as_mut_ptr().cast::<f32>(),
+                    applied_basis.as_mut_ptr().cast::<f32>(),
+                    tail_count,
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            if status != 0 {
+                let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
+                bail!("resident journal-tail download failed ({status}): {message}");
+            }
+            let download_bytes = 2 * value_count * std::mem::size_of::<Complex32>();
+            self.resident_vector_download_bytes += download_bytes;
+            self.full_vector_download_bytes += download_bytes;
+            let unpack = |values: Vec<Complex32>| {
+                values
+                    .chunks_exact(self.dimension)
+                    .map(|row| {
+                        row.iter()
+                            .map(|value| {
+                                num_complex::Complex64::new(value.re as f64, value.im as f64)
+                            })
+                            .collect()
+                    })
+                    .collect()
+            };
+            Ok(ResidentJournalVectors {
+                basis: unpack(basis),
+                applied_basis: unpack(applied_basis),
+            })
+        }
+
         /// Return direct residual norms from chunked complex-FP32 Metal
         /// partials with final complex-FP64 accumulation on the CPU.
         pub fn residual_norms(
@@ -1148,6 +1245,14 @@ mod imp {
 
         pub fn resident_corrections_rejected(&self) -> usize {
             self.resident_corrections_rejected
+        }
+
+        pub fn resident_correction_hamiltonian_applications(&self) -> usize {
+            self.resident_correction_hamiltonian_applications
+        }
+
+        pub fn resident_corrections_appended(&self) -> usize {
+            self.resident_corrections_appended
         }
 
         pub fn resident_coefficient_upload_bytes(&self) -> usize {
@@ -1377,6 +1482,18 @@ mod imp {
         ) -> Result<Self> {
             bail!("binary was built without the macOS-only `metal` feature")
         }
+        pub fn apply_resident_accepted_corrections(
+            &mut self,
+            _accepted_count: usize,
+        ) -> Result<()> {
+            bail!("binary was built without the macOS-only `metal` feature")
+        }
+        pub fn read_resident_journal_tail(
+            &mut self,
+            _tail_count: usize,
+        ) -> Result<ResidentJournalVectors> {
+            bail!("binary was built without the macOS-only `metal` feature")
+        }
         pub fn orthonormalize_resident_corrections(
             &mut self,
             _active_roots: &[bool],
@@ -1480,6 +1597,12 @@ mod imp {
             0
         }
         pub fn resident_corrections_rejected(&self) -> usize {
+            0
+        }
+        pub fn resident_correction_hamiltonian_applications(&self) -> usize {
+            0
+        }
+        pub fn resident_corrections_appended(&self) -> usize {
             0
         }
         pub fn resident_coefficient_upload_bytes(&self) -> usize {

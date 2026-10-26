@@ -1493,6 +1493,68 @@ mod tests {
             assert_eq!(dependent_accepted, 1);
             assert_eq!(persistent_context.resident_corrections_rejected(), 1);
 
+            persistent_context
+                .form_resident_ritz_residuals(&ritz_coefficients, &ritz_eigenvalues)
+                .unwrap();
+            persistent_context
+                .precondition_resident_residuals(&[true, true])
+                .unwrap();
+            let append_count = persistent_context
+                .orthonormalize_resident_corrections(&[true, true])
+                .unwrap();
+            assert_eq!(append_count, 2);
+            let cpu_applied_corrections: Vec<_> = accepted_corrections
+                .iter()
+                .map(|correction| {
+                    hamiltonian
+                        .apply_fft(correction, &electronic.real_ry)
+                        .unwrap()
+                })
+                .collect();
+            let uploads_before_append = persistent_context.full_vector_upload_bytes();
+            let downloads_before_append = persistent_context.full_vector_download_bytes();
+            persistent_context
+                .apply_resident_accepted_corrections(append_count)
+                .unwrap();
+            assert_eq!(
+                persistent_context.full_vector_upload_bytes(),
+                uploads_before_append
+            );
+            assert_eq!(
+                persistent_context.full_vector_download_bytes(),
+                downloads_before_append
+            );
+            assert_eq!(
+                persistent_context.resident_correction_hamiltonian_applications(),
+                1
+            );
+            assert_eq!(persistent_context.resident_corrections_appended(), 2);
+            assert!(
+                persistent_context
+                    .apply_resident_accepted_corrections(append_count)
+                    .is_err()
+            );
+            let journal_tail = persistent_context
+                .read_resident_journal_tail(append_count)
+                .unwrap();
+            let maximum_appended_basis_error = journal_tail
+                .basis
+                .iter()
+                .zip(&accepted_corrections)
+                .map(|(actual, expected)| relative_l2(actual, expected))
+                .fold(0.0_f64, f64::max);
+            let maximum_appended_hamiltonian_error = journal_tail
+                .applied_basis
+                .iter()
+                .zip(&cpu_applied_corrections)
+                .map(|(actual, expected)| relative_l2(actual, expected))
+                .fold(0.0_f64, f64::max);
+            eprintln!(
+                "silicon resident correction append basis/H errors: {maximum_appended_basis_error:e} / {maximum_appended_hamiltonian_error:e}"
+            );
+            assert!(maximum_appended_basis_error < 2.0e-5);
+            assert!(maximum_appended_hamiltonian_error < 2.0e-5);
+
             let resynced_projection = persistent_context
                 .resident_cross_gram(&wavefunctions[..2], &persistent_full[..2])
                 .unwrap();
