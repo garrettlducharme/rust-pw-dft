@@ -1199,6 +1199,7 @@ mod tests {
                 .create_metal_hamiltonian_context(32.min(hamiltonian.dimension()))
                 .unwrap();
             assert!(persistent_context.projector_count() > 0);
+            persistent_context.begin_resident_davidson().unwrap();
             let persistent_full = hamiltonian
                 .apply_hamiltonian_metal_persistent(
                     &mut persistent_context,
@@ -1217,6 +1218,47 @@ mod tests {
                 "silicon persistent compact-projector Metal error: {persistent_relative_l2:e}"
             );
             assert!(persistent_relative_l2 < 1.0e-5);
+
+            let resident_projection = persistent_context
+                .resident_cross_gram(&wavefunctions, &persistent_full)
+                .unwrap();
+            let mut maximum_resident_projection_error = 0.0_f64;
+            for left in 0..wavefunctions.len() {
+                for right in 0..wavefunctions.len() {
+                    let cpu_projection: Complex64 = wavefunctions[left]
+                        .iter()
+                        .zip(&persistent_full[right])
+                        .map(|(a, b)| a.conj() * b)
+                        .sum();
+                    maximum_resident_projection_error = maximum_resident_projection_error.max(
+                        (resident_projection[left * wavefunctions.len() + right] - cpu_projection)
+                            .norm(),
+                    );
+                }
+            }
+            eprintln!(
+                "silicon resident Metal projection maximum absolute error: {maximum_resident_projection_error:e}"
+            );
+            assert!(maximum_resident_projection_error < 1.0e-5);
+            assert_eq!(persistent_context.resident_projection_calls(), 1);
+            assert_eq!(persistent_context.resident_projection_resyncs(), 0);
+            let resynced_projection = persistent_context
+                .resident_cross_gram(&wavefunctions[..2], &persistent_full[..2])
+                .unwrap();
+            for left in 0..2 {
+                for right in 0..2 {
+                    let cpu_projection: Complex64 = wavefunctions[left]
+                        .iter()
+                        .zip(&persistent_full[right])
+                        .map(|(a, b)| a.conj() * b)
+                        .sum();
+                    assert!(
+                        (resynced_projection[left * 2 + right] - cpu_projection).norm() < 1.0e-5
+                    );
+                }
+            }
+            assert_eq!(persistent_context.resident_projection_calls(), 2);
+            assert_eq!(persistent_context.resident_projection_resyncs(), 1);
 
             let metal_gram = persistent_context
                 .cross_gram(&wavefunctions, &wavefunctions)
@@ -1251,12 +1293,13 @@ mod tests {
                     );
                 }
             }
-            assert_eq!(persistent_context.gram_reduction_calls(), 2);
+            assert_eq!(persistent_context.gram_reduction_calls(), 4);
             assert_eq!(
                 persistent_context.gram_reduction_pairs(),
-                wavefunctions.len() * wavefunctions.len() + 2 * wavefunctions.len()
+                2 * wavefunctions.len() * wavefunctions.len() + 2 * wavefunctions.len() + 4
             );
 
+            persistent_context.begin_resident_davidson().unwrap();
             let context = std::cell::RefCell::new(&mut persistent_context);
             let metal_davidson = block_davidson_batched_with_gram(
                 hamiltonian.kinetic_ry(),
@@ -1277,7 +1320,7 @@ mod tests {
                 },
                 |left, right| {
                     let mut context = context.borrow_mut();
-                    context.cross_gram(left, right)
+                    context.resident_cross_gram(left, right)
                 },
             )
             .unwrap();
@@ -1292,6 +1335,7 @@ mod tests {
                 "silicon Metal fixed-density occupied eigenvalue error: {maximum_eigenvalue_error_mev:e} meV"
             );
             assert!(maximum_eigenvalue_error_mev < 5.0);
+            assert!(context.borrow().resident_projection_calls() > 2);
         }
 
         let ewald_a = ewald_energy_ry(&lattice, &input.atoms, pseudo.valence_charge, 0.6).unwrap();

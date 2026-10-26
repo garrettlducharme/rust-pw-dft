@@ -84,7 +84,9 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
             let device = crate::metal::device_name()
                 .context("Metal backend unavailable (no CPU Hamiltonian fallback)")?;
             (
-                format!("{device} (persistent MPSGraph Hamiltonian; GPU cross-Gram partials)"),
+                format!(
+                    "{device} (persistent MPSGraph Hamiltonian; resident GPU Davidson journal)"
+                ),
                 PrecisionPolicy::metal_validation(),
                 1.0e-5,
                 1.0e-5,
@@ -164,6 +166,9 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
                 let context = metal_context
                     .as_mut()
                     .context("persistent Metal Hamiltonian context is missing")?;
+                context
+                    .begin_resident_davidson()
+                    .context("failed to initialize resident Davidson journal")?;
                 let context = std::cell::RefCell::new(context);
                 block_davidson_batched_with_gram(
                     hamiltonian.kinetic_ry(),
@@ -179,7 +184,7 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
                     },
                     |left, right| {
                         let mut context = context.borrow_mut();
-                        context.cross_gram(left, right)
+                        context.resident_cross_gram(left, right)
                     },
                 )
             }
@@ -314,6 +319,14 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
         final_terms.insert(
             "metal_gram_reduction_pairs".into(),
             context.gram_reduction_pairs() as f64,
+        );
+        final_terms.insert(
+            "metal_resident_projection_calls".into(),
+            context.resident_projection_calls() as f64,
+        );
+        final_terms.insert(
+            "metal_resident_projection_resyncs".into(),
+            context.resident_projection_resyncs() as f64,
         );
     }
     Ok(ScfResult {

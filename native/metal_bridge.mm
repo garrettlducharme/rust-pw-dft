@@ -83,6 +83,8 @@ struct ResidentHamiltonian {
     size_t max_batch;
     size_t reduction_chunks;
     size_t reduction_dimension;
+    size_t resident_count;
+    bool resident_recording;
     uint64_t peak_device_allocated_bytes;
     id<MTLBuffer> grid_input;
     id<MTLBuffer> compact_input;
@@ -92,6 +94,7 @@ struct ResidentHamiltonian {
     id<MTLBuffer> projector_conjugate;
     id<MTLBuffer> d_transpose;
     id<MTLBuffer> projector_transpose;
+    id<MTLBuffer> hamiltonian_output;
     id<MTLBuffer> reduction_left;
     id<MTLBuffer> reduction_right;
 };
@@ -633,7 +636,8 @@ extern "C" void *rpd_metal_hamiltonian_create(
         uint64_t total = 0;
         const size_t allocations[] = {
             grid_batch_bytes, compact_batch_bytes, grid_bytes, grid_bytes, index_bytes,
-            projector_bytes, d_bytes, projector_bytes, reduction_bytes, reduction_bytes};
+            projector_bytes, d_bytes, projector_bytes, compact_batch_bytes,
+            reduction_bytes, reduction_bytes};
         for (size_t bytes : allocations) {
             if (bytes > project_limit - total) {
                 copy_message(error_buffer, error_capacity,
@@ -654,6 +658,8 @@ extern "C" void *rpd_metal_hamiltonian_create(
         context->max_batch = max_batch;
         context->reduction_chunks = reduction_chunks;
         context->reduction_dimension = reduction_dimension;
+        context->resident_count = 0;
+        context->resident_recording = false;
         context->peak_device_allocated_bytes = device.currentAllocatedSize;
         context->grid_input = [device newBufferWithLength:grid_batch_bytes
                                                options:MTLResourceStorageModeShared];
@@ -678,6 +684,9 @@ extern "C" void *rpd_metal_hamiltonian_create(
             [device newBufferWithBytes:projector_transpose_interleaved
                                 length:projector_bytes
                                options:MTLResourceStorageModeShared];
+        context->hamiltonian_output =
+            [device newBufferWithLength:compact_batch_bytes
+                                options:MTLResourceStorageModeShared];
         context->reduction_left = [device newBufferWithLength:reduction_bytes
                                                        options:MTLResourceStorageModeShared];
         context->reduction_right = [device newBufferWithLength:reduction_bytes
@@ -686,7 +695,8 @@ extern "C" void *rpd_metal_hamiltonian_create(
             context->potential == nil || context->kinetic == nil ||
             context->basis_indices == nil ||
             context->projector_conjugate == nil || context->d_transpose == nil ||
-            context->projector_transpose == nil || context->reduction_left == nil ||
+            context->projector_transpose == nil || context->hamiltonian_output == nil ||
+            context->reduction_left == nil ||
             context->reduction_right == nil) {
             delete context;
             copy_message(error_buffer, error_capacity,
@@ -750,22 +760,60 @@ extern "C" int rpd_metal_hamiltonian_apply(
             initWithMTLBuffer:context->projector_transpose
                         shape:cached.projector_transpose_shape
                      dataType:MPSDataTypeComplexFloat32];
+        MPSGraphTensorData *output_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:context->hamiltonian_output
+                        shape:cached.compact_shape
+                     dataType:MPSDataTypeComplexFloat32];
         @try {
-            NSDictionary *result = [cached.graph runWithMTLCommandQueue:context->queue
-                                                                  feeds:@{
-                                                                      cached.grid_input: grid_input_data,
-                                                                      cached.compact_input: compact_input_data,
-                                                                      cached.potential: potential_data,
-                                                                      cached.kinetic: kinetic_data,
-                                                                      cached.basis_indices: indices_data,
-                                                                      cached.projector_conjugate: projector_conjugate_data,
-                                                                      cached.d_transpose: d_data,
-                                                                      cached.projector_transpose: projector_transpose_data
-                                                                  }
-                                                          targetTensors:@[cached.hamiltonian_output]
-                                                       targetOperations:nil];
-            MPSGraphTensorData *output = result[cached.hamiltonian_output];
-            [[output mpsndarray] readBytes:compact_output_interleaved strideBytes:nil];
+            [cached.graph runWithMTLCommandQueue:context->queue
+                                           feeds:@{
+                                               cached.grid_input: grid_input_data,
+                                               cached.compact_input: compact_input_data,
+                                               cached.potential: potential_data,
+                                               cached.kinetic: kinetic_data,
+                                               cached.basis_indices: indices_data,
+                                               cached.projector_conjugate: projector_conjugate_data,
+                                               cached.d_transpose: d_data,
+                                               cached.projector_transpose: projector_transpose_data
+                                           }
+                                targetOperations:nil
+                               resultsDictionary:@{cached.hamiltonian_output: output_data}];
+            std::memcpy(compact_output_interleaved,
+                        context->hamiltonian_output.contents,
+                        compact_batch_bytes);
+            if (context->resident_recording) {
+                if (context->resident_count + batch > context->max_batch) {
+                    // A Davidson restart replaced the old subspace before this
+                    // correction block was applied. Defer a full synchronization
+                    // to the next projection rather than mixing both bases.
+                    context->resident_recording = false;
+                    context->resident_count = 0;
+                } else {
+                    const size_t resident_row_bytes =
+                        context->reduction_dimension * complex_bytes;
+                    const size_t compact_row_bytes = context->dimension * complex_bytes;
+                    for (size_t state = 0; state < batch; ++state) {
+                        const size_t resident_state = context->resident_count + state;
+                        char *basis_destination =
+                            static_cast<char *>(context->reduction_left.contents) +
+                            resident_state * resident_row_bytes;
+                        char *applied_destination =
+                            static_cast<char *>(context->reduction_right.contents) +
+                            resident_state * resident_row_bytes;
+                        std::memset(basis_destination, 0, resident_row_bytes);
+                        std::memset(applied_destination, 0, resident_row_bytes);
+                        std::memcpy(basis_destination,
+                                    static_cast<const char *>(context->compact_input.contents) +
+                                        state * compact_row_bytes,
+                                    compact_row_bytes);
+                        std::memcpy(applied_destination,
+                                    static_cast<const char *>(context->hamiltonian_output.contents) +
+                                        state * compact_row_bytes,
+                                    compact_row_bytes);
+                    }
+                    context->resident_count += batch;
+                }
+            }
             context->peak_device_allocated_bytes = std::max(
                 context->peak_device_allocated_bytes,
                 static_cast<uint64_t>(context->device.currentAllocatedSize));
@@ -794,6 +842,8 @@ extern "C" int rpd_metal_hamiltonian_partial_gram(
                          @"invalid partial-Gram arguments");
             return 2;
         }
+        context->resident_recording = false;
+        context->resident_count = 0;
         const size_t complex_bytes = 2 * sizeof(float);
         const size_t reduction_row_bytes = context->reduction_dimension * complex_bytes;
         const size_t compact_row_bytes = context->dimension * complex_bytes;
@@ -815,6 +865,106 @@ extern "C" int rpd_metal_hamiltonian_partial_gram(
         }
         CachedPartialGramGraph cached = partial_gram_graph_for(
             context->reduction_chunks, left_batch, right_batch);
+        MPSGraphTensorData *left_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:context->reduction_left
+                        shape:cached.left_shape
+                     dataType:MPSDataTypeComplexFloat32];
+        MPSGraphTensorData *right_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:context->reduction_right
+                        shape:cached.right_shape
+                     dataType:MPSDataTypeComplexFloat32];
+        @try {
+            NSDictionary *result = [cached.graph runWithMTLCommandQueue:context->queue
+                                                                  feeds:@{
+                                                                      cached.left: left_data,
+                                                                      cached.right: right_data
+                                                                  }
+                                                          targetTensors:@[cached.output]
+                                                       targetOperations:nil];
+            MPSGraphTensorData *output = result[cached.output];
+            [[output mpsndarray] readBytes:partial_output_interleaved strideBytes:nil];
+            context->peak_device_allocated_bytes = std::max(
+                context->peak_device_allocated_bytes,
+                static_cast<uint64_t>(context->device.currentAllocatedSize));
+        } @catch (NSException *exception) {
+            copy_message(error_buffer, error_capacity, exception.reason);
+            return 3;
+        }
+        return 0;
+    }
+}
+
+extern "C" int rpd_metal_hamiltonian_resident_begin(
+    void *opaque_context,
+    char *error_buffer, size_t error_capacity) {
+    ResidentHamiltonian *context = static_cast<ResidentHamiltonian *>(opaque_context);
+    if (!context) {
+        copy_message(error_buffer, error_capacity,
+                     @"invalid resident Davidson context");
+        return 2;
+    }
+    context->resident_count = 0;
+    context->resident_recording = true;
+    return 0;
+}
+
+extern "C" size_t rpd_metal_hamiltonian_resident_count(void *opaque_context) {
+    ResidentHamiltonian *context = static_cast<ResidentHamiltonian *>(opaque_context);
+    return context ? context->resident_count : 0;
+}
+
+extern "C" int rpd_metal_hamiltonian_resident_sync(
+    void *opaque_context,
+    const float *basis_interleaved,
+    const float *applied_interleaved,
+    size_t batch,
+    char *error_buffer, size_t error_capacity) {
+    ResidentHamiltonian *context = static_cast<ResidentHamiltonian *>(opaque_context);
+    if (!context || !basis_interleaved || !applied_interleaved || batch == 0 ||
+        batch > context->max_batch) {
+        copy_message(error_buffer, error_capacity,
+                     @"invalid resident Davidson synchronization arguments");
+        return 2;
+    }
+    const size_t complex_bytes = 2 * sizeof(float);
+    const size_t resident_row_bytes = context->reduction_dimension * complex_bytes;
+    const size_t compact_row_bytes = context->dimension * complex_bytes;
+    for (size_t state = 0; state < batch; ++state) {
+        char *basis_destination =
+            static_cast<char *>(context->reduction_left.contents) +
+            state * resident_row_bytes;
+        char *applied_destination =
+            static_cast<char *>(context->reduction_right.contents) +
+            state * resident_row_bytes;
+        std::memset(basis_destination, 0, resident_row_bytes);
+        std::memset(applied_destination, 0, resident_row_bytes);
+        std::memcpy(basis_destination,
+                    basis_interleaved + state * context->dimension * 2,
+                    compact_row_bytes);
+        std::memcpy(applied_destination,
+                    applied_interleaved + state * context->dimension * 2,
+                    compact_row_bytes);
+    }
+    context->resident_count = batch;
+    context->resident_recording = true;
+    return 0;
+}
+
+extern "C" int rpd_metal_hamiltonian_resident_partial_gram(
+    void *opaque_context,
+    float *partial_output_interleaved,
+    size_t subspace,
+    char *error_buffer, size_t error_capacity) {
+    @autoreleasepool {
+        ResidentHamiltonian *context = static_cast<ResidentHamiltonian *>(opaque_context);
+        if (!context || !partial_output_interleaved || subspace == 0 ||
+            subspace != context->resident_count) {
+            copy_message(error_buffer, error_capacity,
+                         @"resident Davidson projection is out of sync");
+            return 2;
+        }
+        CachedPartialGramGraph cached = partial_gram_graph_for(
+            context->reduction_chunks, subspace, subspace);
         MPSGraphTensorData *left_data = [[MPSGraphTensorData alloc]
             initWithMTLBuffer:context->reduction_left
                         shape:cached.left_shape

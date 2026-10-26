@@ -41,7 +41,8 @@ impl PrecisionPolicy {
     /// remains CPU-FP64. This is distinct from fully resident eigensolver state.
     pub fn metal_validation() -> Self {
         Self {
-            storage: "complex-f64-host+persistent-complex-f32-metal-block-buffers".into(),
+            storage: "complex-f64-host-canonical+persistent-complex-f32-metal-hamiltonian+journal"
+                .into(),
             reductions: "complex-f32-metal-partials+complex-f64-cpu-final".into(),
             eigensolve: "f64-cpu".into(),
             energy: "f64-cpu".into(),

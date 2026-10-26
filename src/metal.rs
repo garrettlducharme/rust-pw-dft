@@ -80,6 +80,27 @@ mod imp {
             error_buffer: *mut c_char,
             error_capacity: usize,
         ) -> c_int;
+        fn rpd_metal_hamiltonian_resident_begin(
+            context: *mut c_void,
+            error_buffer: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
+        fn rpd_metal_hamiltonian_resident_count(context: *mut c_void) -> usize;
+        fn rpd_metal_hamiltonian_resident_sync(
+            context: *mut c_void,
+            basis_interleaved: *const f32,
+            applied_interleaved: *const f32,
+            batch: usize,
+            error_buffer: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
+        fn rpd_metal_hamiltonian_resident_partial_gram(
+            context: *mut c_void,
+            partial_output_interleaved: *mut f32,
+            subspace: usize,
+            error_buffer: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
         fn rpd_metal_hamiltonian_reduction_chunks(context: *mut c_void) -> usize;
     }
 
@@ -93,6 +114,8 @@ mod imp {
         persistent_buffer_bytes: usize,
         gram_reduction_calls: usize,
         gram_reduction_pairs: usize,
+        resident_projection_calls: usize,
+        resident_projection_resyncs: usize,
         _not_send_or_sync: PhantomData<Rc<()>>,
     }
 
@@ -158,7 +181,7 @@ mod imp {
             let complex_bytes = std::mem::size_of::<Complex32>();
             let persistent_buffer_bytes = complex_bytes
                 * (grid_points * max_batch
-                    + dimension * max_batch
+                    + 2 * dimension * max_batch
                     + 2 * grid_points
                     + 2 * dimension * projector_count
                     + projector_count * projector_count
@@ -174,6 +197,8 @@ mod imp {
                 persistent_buffer_bytes,
                 gram_reduction_calls: 0,
                 gram_reduction_pairs: 0,
+                resident_projection_calls: 0,
+                resident_projection_resyncs: 0,
                 _not_send_or_sync: PhantomData,
             })
         }
@@ -220,6 +245,105 @@ mod imp {
                 bail!("resident Metal Hamiltonian failed ({status}): {message}");
             }
             Ok(compact_output)
+        }
+
+        /// Start a Davidson solve whose successive Hamiltonian batches will be
+        /// journaled in persistent compact-FP32 Metal buffers.
+        pub fn begin_resident_davidson(&mut self) -> Result<()> {
+            let mut error = vec![0_i8; 2048];
+            let status = unsafe {
+                rpd_metal_hamiltonian_resident_begin(
+                    self.raw.as_ptr(),
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            if status != 0 {
+                let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
+                bail!("failed to begin resident Metal Davidson solve ({status}): {message}");
+            }
+            Ok(())
+        }
+
+        /// Project a resident Davidson basis against its resident Hamiltonian
+        /// images. Normal append iterations require no host-vector upload;
+        /// subspace restarts are detected by a row-count mismatch and resynced.
+        pub fn resident_cross_gram(
+            &mut self,
+            basis: &[Vec<num_complex::Complex64>],
+            applied_basis: &[Vec<num_complex::Complex64>],
+        ) -> Result<Vec<num_complex::Complex64>> {
+            if basis.is_empty() || basis.len() != applied_basis.len() {
+                bail!("resident Metal projection requires equal nonempty batches");
+            }
+            if basis.len() > self.max_batch {
+                bail!("resident Metal projection exceeds the configured subspace");
+            }
+            if basis
+                .iter()
+                .chain(applied_basis)
+                .any(|vector| vector.len() != self.dimension)
+            {
+                bail!("resident Metal projection vector has the wrong dimension");
+            }
+            let resident_count = unsafe { rpd_metal_hamiltonian_resident_count(self.raw.as_ptr()) };
+            if resident_count != basis.len() {
+                let basis_values: Vec<_> = basis
+                    .iter()
+                    .flatten()
+                    .map(|value| Complex32::new(value.re as f32, value.im as f32))
+                    .collect();
+                let applied_values: Vec<_> = applied_basis
+                    .iter()
+                    .flatten()
+                    .map(|value| Complex32::new(value.re as f32, value.im as f32))
+                    .collect();
+                let mut error = vec![0_i8; 2048];
+                let status = unsafe {
+                    rpd_metal_hamiltonian_resident_sync(
+                        self.raw.as_ptr(),
+                        basis_values.as_ptr().cast::<f32>(),
+                        applied_values.as_ptr().cast::<f32>(),
+                        basis.len(),
+                        error.as_mut_ptr(),
+                        error.len(),
+                    )
+                };
+                if status != 0 {
+                    let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
+                    bail!("resident Metal projection resync failed ({status}): {message}");
+                }
+                self.resident_projection_resyncs += 1;
+            }
+
+            let pair_count = basis.len() * basis.len();
+            let mut partials = vec![Complex32::default(); pair_count * self.reduction_chunks];
+            let mut error = vec![0_i8; 2048];
+            let status = unsafe {
+                rpd_metal_hamiltonian_resident_partial_gram(
+                    self.raw.as_ptr(),
+                    partials.as_mut_ptr().cast::<f32>(),
+                    basis.len(),
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            if status != 0 {
+                let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
+                bail!("resident Metal projection failed ({status}): {message}");
+            }
+            self.gram_reduction_calls += 1;
+            self.gram_reduction_pairs += pair_count;
+            self.resident_projection_calls += 1;
+            Ok((0..pair_count)
+                .map(|pair| {
+                    partials[pair * self.reduction_chunks..(pair + 1) * self.reduction_chunks]
+                        .iter()
+                        .fold(num_complex::Complex64::default(), |sum, value| {
+                            sum + num_complex::Complex64::new(value.re as f64, value.im as f64)
+                        })
+                })
+                .collect())
         }
 
         /// Return the rectangular cross-Gram matrix `<left_i|right_j>`.
@@ -291,6 +415,14 @@ mod imp {
 
         pub fn gram_reduction_pairs(&self) -> usize {
             self.gram_reduction_pairs
+        }
+
+        pub fn resident_projection_calls(&self) -> usize {
+            self.resident_projection_calls
+        }
+
+        pub fn resident_projection_resyncs(&self) -> usize {
+            self.resident_projection_resyncs
         }
 
         pub fn projector_count(&self) -> usize {
@@ -516,10 +648,26 @@ mod imp {
         ) -> Result<Vec<num_complex::Complex64>> {
             bail!("binary was built without the macOS-only `metal` feature")
         }
+        pub fn begin_resident_davidson(&mut self) -> Result<()> {
+            bail!("binary was built without the macOS-only `metal` feature")
+        }
+        pub fn resident_cross_gram(
+            &mut self,
+            _basis: &[Vec<num_complex::Complex64>],
+            _applied_basis: &[Vec<num_complex::Complex64>],
+        ) -> Result<Vec<num_complex::Complex64>> {
+            bail!("binary was built without the macOS-only `metal` feature")
+        }
         pub fn gram_reduction_calls(&self) -> usize {
             0
         }
         pub fn gram_reduction_pairs(&self) -> usize {
+            0
+        }
+        pub fn resident_projection_calls(&self) -> usize {
+            0
+        }
+        pub fn resident_projection_resyncs(&self) -> usize {
             0
         }
         pub fn projector_count(&self) -> usize {
