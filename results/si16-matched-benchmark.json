@@ -1,0 +1,69 @@
+{
+  "accepted_for_performance_claim": true,
+  "convergence_profile": "matched-metal-compatible-v1",
+  "repetitions": 5,
+  "cpu": {
+    "accepted_for_performance_claim": false,
+    "requested_backend": "cpu-f64",
+    "actual_backend": "cpu-f64",
+    "converged": true,
+    "iterations": 48,
+    "repetitions": 5,
+    "min_seconds": 8.050495667,
+    "median_seconds": 8.071929375,
+    "max_seconds": 8.097127,
+    "provenance": {
+      "requested_backend": "cpu-f64",
+      "actual_backend": "cpu-f64",
+      "actual_device": "Apple CPU (rustfft/f64 + block-Davidson/faer-f64)",
+      "precision_policy": {
+        "storage": "complex-f64",
+        "reductions": "f64",
+        "eigensolve": "f64",
+        "energy": "f64"
+      },
+      "input_sha256": "037dca4dda4414718809378c8225ab18608a51852c822933b45a00d1cc577d36",
+      "pseudopotential_sha256": {
+        "Si": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d"
+      },
+      "git_revision": "487603d82f98d5352e64a3be6027b476af54ca65"
+    },
+    "stop_reason": null
+  },
+  "metal": {
+    "accepted_for_performance_claim": false,
+    "requested_backend": "metal-mixed",
+    "actual_backend": "metal-mixed",
+    "converged": true,
+    "iterations": 52,
+    "repetitions": 5,
+    "min_seconds": 6.220218541,
+    "median_seconds": 6.252389625,
+    "max_seconds": 6.255950917,
+    "provenance": {
+      "requested_backend": "metal-mixed",
+      "actual_backend": "metal-mixed",
+      "actual_device": "Apple M5 Pro (persistent MPSGraph Hamiltonian; fully resident GPU Davidson iterations)",
+      "precision_policy": {
+        "storage": "resident-complex-f32-metal-wavefunctions",
+        "reductions": "complex-f32-metal-partials+complex-f64-cpu-final",
+        "eigensolve": "projected-f64-cpu",
+        "energy": "f64-cpu"
+      },
+      "input_sha256": "037dca4dda4414718809378c8225ab18608a51852c822933b45a00d1cc577d36",
+      "pseudopotential_sha256": {
+        "Si": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d"
+      },
+      "git_revision": "487603d82f98d5352e64a3be6027b476af54ca65"
+    },
+    "stop_reason": null
+  },
+  "scientific_comparison": {
+    "accepted": true,
+    "total_energy_error_mev_atom": 0.009762298717713435,
+    "maximum_occupied_eigenvalue_error_mev": 0.008526411690952215,
+    "electron_count_error": 8.100187187665142e-13
+  },
+  "median_speedup": 1.2910150932892317,
+  "stop_reason": null
+}

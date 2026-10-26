@@ -7,6 +7,8 @@
     "band_energy_ry": 7.68482927057135,
     "davidson_iterations": 444.0,
     "density_residual": 9.38034678379456e-9,
+    "density_tolerance": 1e-8,
+    "eigensolver_tolerance_ry": 1e-10,
     "energy_change_ry": 3.552713678800501e-12,
     "energy_tolerance_ry": 1e-8,
     "ewald_ry": -134.5385657853964,
@@ -88,11 +90,11 @@
     4.800663622724251e-11
   ],
   "timings": {
-    "density_seconds": 0.31936545699999996,
-    "eigensolve_seconds": 21.133318582999987,
-    "potential_seconds": 0.026961248999999996,
-    "setup_seconds": 0.235307083,
-    "total_seconds": 21.71848125
+    "density_seconds": 0.324926206,
+    "eigensolve_seconds": 21.494513630000004,
+    "potential_seconds": 0.027469581999999992,
+    "setup_seconds": 0.230172416,
+    "total_seconds": 22.080271084
   },
   "provenance": {
     "requested_backend": "cpu-f64",
@@ -108,6 +110,6 @@
     "pseudopotential_sha256": {
       "Si": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d"
     },
-    "git_revision": "daee64790d37738ca97a993e419cc701c4762d01"
+    "git_revision": "487603d82f98d5352e64a3be6027b476af54ca65"
   }
 }

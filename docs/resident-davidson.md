@@ -174,7 +174,7 @@ tolerances differ, or if either scientific accuracy or speed misses its gate.
    **Done.**
 6. Integrate the stateful driver into SCF behind the Metal backend. **Done.**
 7. Regenerate Si2 and Si16 scientific and benchmark evidence at the committed
-   revision.
+   revision. **Done.**
 
 Scope expansion to PBE, k-points, forces, additional elements, or PAW remains
 blocked until this milestone passes both the scientific and performance gates.

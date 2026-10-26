@@ -21,16 +21,17 @@ path. CPU FP64 and an independent established code remain required references.
 
 ## Phase 1 — resident Apple-GPU eigensolver
 
-Status: in progress.
+Status: complete for the pinned validated silicon workloads.
 
 The current code has a persistent Metal Hamiltonian and a production resident
 Davidson driver. Basis and Hamiltonian journals, Ritz and residual formation,
 preconditioning, two-pass correction orthogonalization, correction Hamiltonian
 application, journal append, and subspace restart all remain on the GPU.
 Runtime transfer counters fail closed if a normal iteration uploads or
-downloads a full vector. Si2 accuracy and transfer gates pass; matched Si16
-scientific and performance evidence is the remaining Phase 1 gate. The
-complete implementation contract is in
+downloads a full vector. Si2 accuracy and transfer gates pass, and a matched
+five-warm-run Si16 comparison passes scientific parity and the `1.20x`
+end-to-end gate at `1.291x` on the Apple M5 Pro. The complete implementation
+contract is in
 [`docs/resident-davidson.md`](docs/resident-davidson.md).
 
 Exit criteria:
