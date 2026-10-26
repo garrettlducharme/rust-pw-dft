@@ -8,12 +8,14 @@
     "davidson_iterations": 409.0,
     "density_residual": 9.990346293313009e-9,
     "energy_change_ry": 8.704148513061227e-14,
+    "energy_tolerance_ry": 1e-8,
     "ewald_ry": -16.81732072317454,
     "hamiltonian_applications": 1525.0,
     "hartree_ry": 1.645144720617157,
     "highest_occupied_eigenvalue_ev": 7.1272941982717235,
     "integral_rho_vxc_ry": -6.564949669584992,
     "maximum_orbital_residual_ry": 8.760124477612133e-11,
+    "orbital_residual_tolerance_ry": 1e-8,
     "xc_ry": -5.032839809438145
   },
   "eigenvalues_ry": [
@@ -30,11 +32,11 @@
     3.4603854140672504e-11
   ],
   "timings": {
-    "density_seconds": 0.0024065379999999997,
-    "eigensolve_seconds": 0.06729596,
-    "potential_seconds": 0.002125166000000001,
-    "setup_seconds": 0.093783416,
-    "total_seconds": 0.167278209
+    "density_seconds": 0.0025602080000000004,
+    "eigensolve_seconds": 0.075887795,
+    "potential_seconds": 0.0023925870000000007,
+    "setup_seconds": 0.016716833,
+    "total_seconds": 0.100622625
   },
   "provenance": {
     "requested_backend": "cpu-f64",
@@ -50,6 +52,6 @@
     "pseudopotential_sha256": {
       "Si": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d"
     },
-    "git_revision": "26407da01103fe6accd1708ab4eda1edf94da84e"
+    "git_revision": "35327178b9bbe7408d93ee15c1fea65b269417fa"
   }
 }

@@ -10,11 +10,14 @@ GPL DFT implementations.
 - direct/reciprocal lattice construction and cutoff-safe G-vector enumeration;
 - FP64 multidimensional CPU FFT with Parseval and round-trip tests;
 - LDA-PZ exchange-correlation energy and potential;
-- strict parser for QE's legacy norm-conserving `Si.pz-vbc.UPF`, including
-  local potential, radial mesh, separable projectors, and `Dij`;
+- strict parser for QE's legacy `Si.pz-vbc.UPF` and scalar/non-relativistic
+  norm-conserving UPF v2 PZ files, including local potential, radial mesh,
+  separable projectors, and `Dij`;
 - explicit provenance and precision policy in JSON results;
-- cached MPSGraph complex-FP32 FFT, local/kinetic, and dense nonlocal operator
-  graphs behind the macOS-only `metal` feature;
+- a long-lived MPSGraph complex-FP32 context with persistent input, potential,
+  kinetic, and projector buffers behind the macOS-only `metal` feature;
+- compact separable `B D B-dagger` nonlocal application, avoiding the former
+  plane-wave-squared dense validation matrix in production SCF;
 - complete CPU-FP64 silicon SCF with atomic-density initialization, local and
   separable nonlocal pseudopotentials, Hartree and LDA-PZ potentials, Ewald
   energy, linear density mixing, and dual convergence checks;
@@ -38,19 +41,24 @@ The result is in `results/cpu-scf.json` and the normalized QE reference is in
 
 ## Metal result and boundary
 
-The two-atom Metal SCF converges to `-14.5294700166 Ry`. Relative to the
-accepted CPU result, its errors are `0.01139 meV/atom`, `0.00157 meV` for the
-worst occupied eigenvalue, and `5.8e-14` electrons. The measured Metal FFT
+The two-atom Metal SCF converges to `-14.5294701731 Ry`. Relative to the
+accepted CPU result, its errors are `0.01245 meV/atom`, `0.00106 meV` for the
+worst occupied eigenvalue, and `3.4e-14` electrons. The measured Metal FFT
 round-trip error is `1.75e-7`; the complete fixed-density silicon Hamiltonian
-differs from CPU by `1.03e-7` in relative L2 norm.
+through the persistent compact-projector context differs from CPU by
+`1.34e-7` in relative L2 norm.
 
 On the pinned 16-atom silicon supercell, five warmed runs give median wall
-times of `27.274 s` CPU and `11.565 s` Metal, an observed `2.358x` speedup.
+times of `24.540 s` CPU and `6.032 s` Metal, an observed `4.068x` speedup.
+Persistent Metal buffers occupy 9.24 MB and measured peak device allocation is
+66.8 MB on this workload, well below the 12 GiB project cap.
+
 Metal remains marked ineligible for a production performance claim because
-wavefunctions are repacked from host FP64 into shared Metal buffers for each
-batched Davidson application and the nonlocal operator is currently a dense
-validation matrix. There is no silent CPU Hamiltonian fallback; the actual
-device and transitional precision policy are recorded in every result.
+the Davidson basis and correction vectors still live in host FP64 and are
+staged into the persistent buffers by block. There is no silent CPU
+Hamiltonian fallback; the actual device, effective mixed-precision convergence
+tolerances, memory measurements, and precision policy are recorded in every
+result.
 
 ## Commands
 
@@ -63,8 +71,8 @@ cargo run --release --features metal -- run examples/si2.toml --backend metal --
 cargo run --release --features metal -- bench examples/si16.toml --backend metal --repetitions 5 --output benchmark-metal.json
 ```
 
-The CPU scientific milestone and transitional Metal accuracy milestone are
-accepted. The observed larger-workload speed threshold is also met. The next
-bounded milestone is a genuinely resident Metal backend with compact
-projector kernels and blockwise GPU reductions; only that path may turn the
-observed speedup into a production performance acceptance claim.
+The CPU scientific milestone, persistent Metal operator accuracy milestone,
+and larger-workload numeric speed threshold are accepted. The next bounded
+milestone is a GPU-resident Davidson basis with blockwise GPU overlap/norm
+partial reductions and CPU-FP64 final accumulation; only that path may turn
+the observed speedup into a production performance acceptance claim.

@@ -1,47 +1,52 @@
 {
   "converged": true,
-  "iterations": 50,
+  "iterations": 49,
   "atom_count": 2,
-  "total_energy_ry": -14.529470016571501,
+  "total_energy_ry": -14.529470173085315,
   "energy_terms": {
-    "band_energy_ry": 2.400887577762391,
-    "davidson_iterations": 122.0,
-    "density_residual": 5.944204112034981e-9,
-    "energy_change_ry": 3.844064622171572e-9,
+    "band_energy_ry": 2.4008874188593374,
+    "davidson_iterations": 121.0,
+    "density_residual": 8.489114900348719e-9,
+    "energy_change_ry": 2.8359222881135793e-7,
+    "energy_tolerance_ry": 5e-7,
     "ewald_ry": -16.81732072317454,
-    "hamiltonian_applications": 461.0,
-    "hartree_ry": 1.6451470423214805,
-    "highest_occupied_eigenvalue_ev": 7.127295767840229,
-    "integral_rho_vxc_ry": -6.564950969080273,
-    "maximum_orbital_residual_ry": 5.204491193243485e-6,
-    "xc_ry": -5.032840797918146
+    "hamiltonian_applications": 457.0,
+    "hartree_ry": 1.6451470385308804,
+    "highest_occupied_eigenvalue_ev": 7.127295261250414,
+    "integral_rho_vxc_ry": -6.564950963276653,
+    "maximum_orbital_residual_ry": 5.252382347016987e-6,
+    "metal_peak_device_allocated_bytes": 4243456.0,
+    "metal_persistent_buffer_bytes": 189552.0,
+    "metal_projector_count": 8.0,
+    "orbital_residual_tolerance_ry": 0.00001,
+    "xc_ry": -5.032840793515884
   },
   "eigenvalues_ry": [
-    -0.3710958568439652,
-    0.5238465171262399,
-    0.5238465517718348,
-    0.5238465768270858
+    -0.3710957917263551,
+    0.5238464576343818,
+    0.5238465039282209,
+    0.5238465395934212
   ],
-  "electron_count": 8.000000000000018,
+  "electron_count": 7.999999999999994,
   "residuals": [
-    2.7945378304365463e-6,
-    5.164238801991093e-6,
-    5.16549963956372e-6,
-    5.204491193243485e-6
+    2.8141995976645924e-6,
+    5.252382347016987e-6,
+    5.211906346169179e-6,
+    5.204012555857146e-6
   ],
   "timings": {
-    "density_seconds": 0.0024819209999999998,
-    "eigensolve_seconds": 0.13367708400000006,
-    "potential_seconds": 0.002154545,
-    "setup_seconds": 0.115145083,
-    "total_seconds": 0.254172167
+    "density_seconds": 0.0025625849999999996,
+    "eigensolve_seconds": 0.13838387200000005,
+    "potential_seconds": 0.0022218720000000006,
+    "setup_seconds": 0.051752417,
+    "total_seconds": 0.1957515
   },
   "provenance": {
     "requested_backend": "metal-mixed",
     "actual_backend": "metal-mixed",
-    "actual_device": "Apple M5 Pro (MPSGraph Hamiltonian validation; nonresident host round trips)",
+    "actual_device": "Apple M5 Pro (persistent MPSGraph buffers; compact separable projectors)",
     "precision_policy": {
-      "storage": "complex-f64-host+complex-f32-metal-per-application",
+      "storage": "complex-f64-host+persistent-complex-f32-metal-block-buffers",
       "reductions": "f64-cpu",
       "eigensolve": "f64-cpu",
       "energy": "f64-cpu"
@@ -50,6 +55,6 @@
     "pseudopotential_sha256": {
       "Si": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d"
     },
-    "git_revision": "26407da01103fe6accd1708ab4eda1edf94da84e"
+    "git_revision": "35327178b9bbe7408d93ee15c1fea65b269417fa"
   }
 }

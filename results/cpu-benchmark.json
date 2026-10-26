@@ -5,9 +5,9 @@
   "converged": true,
   "iterations": 49,
   "repetitions": 5,
-  "min_seconds": 0.168637958,
-  "median_seconds": 0.169138625,
-  "max_seconds": 0.171535,
+  "min_seconds": 0.110103917,
+  "median_seconds": 0.112485875,
+  "max_seconds": 0.117839542,
   "provenance": {
     "requested_backend": "cpu-f64",
     "actual_backend": "cpu-f64",
@@ -22,7 +22,7 @@
     "pseudopotential_sha256": {
       "Si": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d"
     },
-    "git_revision": "26407da01103fe6accd1708ab4eda1edf94da84e"
+    "git_revision": "35327178b9bbe7408d93ee15c1fea65b269417fa"
   },
   "stop_reason": null
 }

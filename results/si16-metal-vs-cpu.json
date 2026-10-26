@@ -1,6 +1,6 @@
 {
   "accepted": true,
-  "total_energy_error_mev_atom": 0.009670486021057306,
-  "maximum_occupied_eigenvalue_error_mev": 0.0022825623270945608,
-  "electron_count_error": 2.8421709430404007e-12
+  "total_energy_error_mev_atom": 0.007593363905174137,
+  "maximum_occupied_eigenvalue_error_mev": 0.005660264622791327,
+  "electron_count_error": 2.9132252166164108e-12
 }
