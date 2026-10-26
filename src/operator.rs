@@ -1029,6 +1029,8 @@ pub fn hartree_xc_potential(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    use crate::eigensolver::block_davidson_batched_with_gram;
     use crate::eigensolver::{DavidsonOptions, block_davidson, projected_hermitian_eigensolve};
     use crate::input::SimulationInput;
     use std::path::Path;
@@ -1194,7 +1196,7 @@ mod tests {
             assert!(full_relative_l2 < 1.0e-5);
 
             let mut persistent_context = hamiltonian
-                .create_metal_hamiltonian_context(wavefunctions.len())
+                .create_metal_hamiltonian_context(32.min(hamiltonian.dimension()))
                 .unwrap();
             assert!(persistent_context.projector_count() > 0);
             let persistent_full = hamiltonian
@@ -1217,7 +1219,7 @@ mod tests {
             assert!(persistent_relative_l2 < 1.0e-5);
 
             let metal_gram = persistent_context
-                .last_input_gram(wavefunctions.len())
+                .cross_gram(&wavefunctions, &wavefunctions)
                 .unwrap();
             let mut maximum_gram_error = 0.0_f64;
             for left in 0..wavefunctions.len() {
@@ -1233,8 +1235,30 @@ mod tests {
             }
             eprintln!("silicon Metal partial-Gram maximum absolute error: {maximum_gram_error:e}");
             assert!(maximum_gram_error < 1.0e-5);
+            let rectangular_gram = persistent_context
+                .cross_gram(&wavefunctions[..2], &wavefunctions)
+                .unwrap();
+            for left in 0..2 {
+                for right in 0..wavefunctions.len() {
+                    let cpu_overlap: Complex64 = wavefunctions[left]
+                        .iter()
+                        .zip(&wavefunctions[right])
+                        .map(|(a, b)| a.conj() * b)
+                        .sum();
+                    assert!(
+                        (rectangular_gram[left * wavefunctions.len() + right] - cpu_overlap).norm()
+                            < 1.0e-5
+                    );
+                }
+            }
+            assert_eq!(persistent_context.gram_reduction_calls(), 2);
+            assert_eq!(
+                persistent_context.gram_reduction_pairs(),
+                wavefunctions.len() * wavefunctions.len() + 2 * wavefunctions.len()
+            );
 
-            let metal_davidson = block_davidson(
+            let context = std::cell::RefCell::new(&mut persistent_context);
+            let metal_davidson = block_davidson_batched_with_gram(
                 hamiltonian.kinetic_ry(),
                 None,
                 &DavidsonOptions {
@@ -1243,13 +1267,17 @@ mod tests {
                     max_iterations: 80,
                     max_subspace: 32,
                 },
-                |orbital| {
-                    let mut batch = hamiltonian.apply_hamiltonian_metal_persistent(
-                        &mut persistent_context,
-                        &[orbital.to_vec()],
+                |orbitals| {
+                    let mut context = context.borrow_mut();
+                    hamiltonian.apply_hamiltonian_metal_persistent(
+                        &mut context,
+                        orbitals,
                         &electronic.real_ry,
-                    )?;
-                    Ok(batch.remove(0))
+                    )
+                },
+                |left, right| {
+                    let mut context = context.borrow_mut();
+                    context.cross_gram(left, right)
                 },
             )
             .unwrap();

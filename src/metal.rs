@@ -72,8 +72,11 @@ mod imp {
         fn rpd_metal_hamiltonian_peak_allocated_bytes(context: *mut c_void) -> u64;
         fn rpd_metal_hamiltonian_partial_gram(
             context: *mut c_void,
+            left_input_interleaved: *const f32,
+            right_input_interleaved: *const f32,
             partial_output_interleaved: *mut f32,
-            batch: usize,
+            left_batch: usize,
+            right_batch: usize,
             error_buffer: *mut c_char,
             error_capacity: usize,
         ) -> c_int;
@@ -88,7 +91,8 @@ mod imp {
         max_batch: usize,
         reduction_chunks: usize,
         persistent_buffer_bytes: usize,
-        last_batch: Option<usize>,
+        gram_reduction_calls: usize,
+        gram_reduction_pairs: usize,
         _not_send_or_sync: PhantomData<Rc<()>>,
     }
 
@@ -158,7 +162,7 @@ mod imp {
                     + 2 * grid_points
                     + 2 * dimension * projector_count
                     + projector_count * projector_count
-                    + reduction_dimension * max_batch)
+                    + 2 * reduction_dimension * max_batch)
                 + std::mem::size_of_val(basis_indices);
             Ok(Self {
                 raw,
@@ -168,7 +172,8 @@ mod imp {
                 max_batch,
                 reduction_chunks,
                 persistent_buffer_bytes,
-                last_batch: None,
+                gram_reduction_calls: 0,
+                gram_reduction_pairs: 0,
                 _not_send_or_sync: PhantomData,
             })
         }
@@ -214,24 +219,51 @@ mod imp {
                 let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
                 bail!("resident Metal Hamiltonian failed ({status}): {message}");
             }
-            self.last_batch = Some(batch);
             Ok(compact_output)
         }
 
-        /// Return `<psi_i|psi_j>` for the last uploaded block. Metal produces
-        /// one complex-FP32 partial per 256 coefficients; Rust performs the
-        /// final accumulation in complex FP64.
-        pub fn last_input_gram(&mut self, batch: usize) -> Result<Vec<num_complex::Complex64>> {
-            if self.last_batch != Some(batch) {
-                bail!("partial Gram request does not match the last Metal batch");
+        /// Return the rectangular cross-Gram matrix `<left_i|right_j>`.
+        /// Metal produces one complex-FP32 partial per 256 coefficients; Rust
+        /// performs the final accumulation in complex FP64.
+        pub fn cross_gram(
+            &mut self,
+            left: &[Vec<num_complex::Complex64>],
+            right: &[Vec<num_complex::Complex64>],
+        ) -> Result<Vec<num_complex::Complex64>> {
+            if left.is_empty() || right.is_empty() {
+                bail!("Metal cross-Gram batches must be nonempty");
             }
-            let mut partials = vec![Complex32::default(); batch * batch * self.reduction_chunks];
+            if left.len() > self.max_batch || right.len() > self.max_batch {
+                bail!("Metal cross-Gram batch exceeds the configured maximum");
+            }
+            if left
+                .iter()
+                .chain(right)
+                .any(|vector| vector.len() != self.dimension)
+            {
+                bail!("Metal cross-Gram vector has the wrong dimension");
+            }
+            let left_values: Vec<_> = left
+                .iter()
+                .flatten()
+                .map(|value| Complex32::new(value.re as f32, value.im as f32))
+                .collect();
+            let right_values: Vec<_> = right
+                .iter()
+                .flatten()
+                .map(|value| Complex32::new(value.re as f32, value.im as f32))
+                .collect();
+            let pair_count = left.len() * right.len();
+            let mut partials = vec![Complex32::default(); pair_count * self.reduction_chunks];
             let mut error = vec![0_i8; 2048];
             let status = unsafe {
                 rpd_metal_hamiltonian_partial_gram(
                     self.raw.as_ptr(),
+                    left_values.as_ptr().cast::<f32>(),
+                    right_values.as_ptr().cast::<f32>(),
                     partials.as_mut_ptr().cast::<f32>(),
-                    batch,
+                    left.len(),
+                    right.len(),
                     error.as_mut_ptr(),
                     error.len(),
                 )
@@ -240,7 +272,9 @@ mod imp {
                 let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
                 bail!("Metal partial Gram reduction failed ({status}): {message}");
             }
-            Ok((0..batch * batch)
+            self.gram_reduction_calls += 1;
+            self.gram_reduction_pairs += pair_count;
+            Ok((0..pair_count)
                 .map(|pair| {
                     partials[pair * self.reduction_chunks..(pair + 1) * self.reduction_chunks]
                         .iter()
@@ -249,6 +283,14 @@ mod imp {
                         })
                 })
                 .collect())
+        }
+
+        pub fn gram_reduction_calls(&self) -> usize {
+            self.gram_reduction_calls
+        }
+
+        pub fn gram_reduction_pairs(&self) -> usize {
+            self.gram_reduction_pairs
         }
 
         pub fn projector_count(&self) -> usize {
@@ -467,8 +509,18 @@ mod imp {
         ) -> Result<Vec<Complex32>> {
             bail!("binary was built without the macOS-only `metal` feature")
         }
-        pub fn last_input_gram(&mut self, _batch: usize) -> Result<Vec<num_complex::Complex64>> {
+        pub fn cross_gram(
+            &mut self,
+            _left: &[Vec<num_complex::Complex64>],
+            _right: &[Vec<num_complex::Complex64>],
+        ) -> Result<Vec<num_complex::Complex64>> {
             bail!("binary was built without the macOS-only `metal` feature")
+        }
+        pub fn gram_reduction_calls(&self) -> usize {
+            0
+        }
+        pub fn gram_reduction_pairs(&self) -> usize {
+            0
         }
         pub fn projector_count(&self) -> usize {
             0

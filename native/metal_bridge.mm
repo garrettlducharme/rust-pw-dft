@@ -64,9 +64,11 @@ struct CachedResidentGraph {
 
 struct CachedPartialGramGraph {
     MPSGraph *graph;
-    MPSGraphTensor *input;
+    MPSGraphTensor *left;
+    MPSGraphTensor *right;
     MPSGraphTensor *output;
-    MPSShape *input_shape;
+    MPSShape *left_shape;
+    MPSShape *right_shape;
 };
 
 struct ResidentHamiltonian {
@@ -90,7 +92,8 @@ struct ResidentHamiltonian {
     id<MTLBuffer> projector_conjugate;
     id<MTLBuffer> d_transpose;
     id<MTLBuffer> projector_transpose;
-    id<MTLBuffer> reduction_input;
+    id<MTLBuffer> reduction_left;
+    id<MTLBuffer> reduction_right;
 };
 
 std::mutex cache_mutex;
@@ -323,24 +326,32 @@ CachedResidentGraph resident_graph_for(size_t nx, size_t ny, size_t nz,
     return cached;
 }
 
-CachedPartialGramGraph partial_gram_graph_for(size_t chunks, size_t batch) {
+CachedPartialGramGraph partial_gram_graph_for(size_t chunks,
+                                              size_t left_batch,
+                                              size_t right_batch) {
     constexpr size_t chunk_size = 256;
-    std::string key = std::to_string(batch) + ":" + std::to_string(chunks);
+    std::string key = std::to_string(left_batch) + ":" +
+                      std::to_string(right_batch) + ":" + std::to_string(chunks);
     std::lock_guard<std::mutex> lock(cache_mutex);
     auto found = partial_gram_graph_cache.find(key);
     if (found != partial_gram_graph_cache.end()) return found->second;
 
-    MPSShape *input_shape = @[@(batch), @(chunks), @(chunk_size)];
+    MPSShape *left_shape = @[@(left_batch), @(chunks), @(chunk_size)];
+    MPSShape *right_shape = @[@(right_batch), @(chunks), @(chunk_size)];
     MPSGraph *graph = [[MPSGraph alloc] init];
-    MPSGraphTensor *input = [graph placeholderWithShape:input_shape
-                                               dataType:MPSDataTypeComplexFloat32
-                                                   name:@"overlap_vectors"];
-    MPSGraphTensor *conjugate = [graph conjugateWithTensor:input name:@"overlap_conjugate"];
+    MPSGraphTensor *left_input = [graph placeholderWithShape:left_shape
+                                                   dataType:MPSDataTypeComplexFloat32
+                                                       name:@"overlap_left_input"];
+    MPSGraphTensor *right_input = [graph placeholderWithShape:right_shape
+                                                    dataType:MPSDataTypeComplexFloat32
+                                                        name:@"overlap_right_input"];
+    MPSGraphTensor *conjugate = [graph conjugateWithTensor:left_input
+                                                      name:@"overlap_conjugate"];
     MPSGraphTensor *left = [graph reshapeTensor:conjugate
-                                      withShape:@[@(batch), @1, @(chunks), @(chunk_size)]
+                                      withShape:@[@(left_batch), @1, @(chunks), @(chunk_size)]
                                            name:@"overlap_left"];
-    MPSGraphTensor *right = [graph reshapeTensor:input
-                                       withShape:@[@1, @(batch), @(chunks), @(chunk_size)]
+    MPSGraphTensor *right = [graph reshapeTensor:right_input
+                                       withShape:@[@1, @(right_batch), @(chunks), @(chunk_size)]
                                             name:@"overlap_right"];
     MPSGraphTensor *products = [graph multiplicationWithPrimaryTensor:left
                                                        secondaryTensor:right
@@ -348,7 +359,8 @@ CachedPartialGramGraph partial_gram_graph_for(size_t chunks, size_t batch) {
     MPSGraphTensor *output = [graph reductionSumWithTensor:products
                                                        axis:3
                                                        name:@"overlap_partials"];
-    CachedPartialGramGraph cached{graph, input, output, input_shape};
+    CachedPartialGramGraph cached{
+        graph, left_input, right_input, output, left_shape, right_shape};
     partial_gram_graph_cache.emplace(key, cached);
     return cached;
 }
@@ -621,7 +633,7 @@ extern "C" void *rpd_metal_hamiltonian_create(
         uint64_t total = 0;
         const size_t allocations[] = {
             grid_batch_bytes, compact_batch_bytes, grid_bytes, grid_bytes, index_bytes,
-            projector_bytes, d_bytes, projector_bytes, reduction_bytes};
+            projector_bytes, d_bytes, projector_bytes, reduction_bytes, reduction_bytes};
         for (size_t bytes : allocations) {
             if (bytes > project_limit - total) {
                 copy_message(error_buffer, error_capacity,
@@ -666,13 +678,16 @@ extern "C" void *rpd_metal_hamiltonian_create(
             [device newBufferWithBytes:projector_transpose_interleaved
                                 length:projector_bytes
                                options:MTLResourceStorageModeShared];
-        context->reduction_input = [device newBufferWithLength:reduction_bytes
+        context->reduction_left = [device newBufferWithLength:reduction_bytes
+                                                       options:MTLResourceStorageModeShared];
+        context->reduction_right = [device newBufferWithLength:reduction_bytes
                                                         options:MTLResourceStorageModeShared];
         if (context->grid_input == nil || context->compact_input == nil ||
             context->potential == nil || context->kinetic == nil ||
             context->basis_indices == nil ||
             context->projector_conjugate == nil || context->d_transpose == nil ||
-            context->projector_transpose == nil || context->reduction_input == nil) {
+            context->projector_transpose == nil || context->reduction_left == nil ||
+            context->reduction_right == nil) {
             delete context;
             copy_message(error_buffer, error_capacity,
                          @"failed to allocate resident Metal buffers");
@@ -764,13 +779,17 @@ extern "C" int rpd_metal_hamiltonian_apply(
 
 extern "C" int rpd_metal_hamiltonian_partial_gram(
     void *opaque_context,
+    const float *left_input_interleaved,
+    const float *right_input_interleaved,
     float *partial_output_interleaved,
-    size_t batch,
+    size_t left_batch,
+    size_t right_batch,
     char *error_buffer, size_t error_capacity) {
     @autoreleasepool {
         ResidentHamiltonian *context = static_cast<ResidentHamiltonian *>(opaque_context);
-        if (!context || !partial_output_interleaved || batch == 0 ||
-            batch > context->max_batch) {
+        if (!context || !left_input_interleaved || !right_input_interleaved ||
+            !partial_output_interleaved || left_batch == 0 || right_batch == 0 ||
+            left_batch > context->max_batch || right_batch > context->max_batch) {
             copy_message(error_buffer, error_capacity,
                          @"invalid partial-Gram arguments");
             return 2;
@@ -778,24 +797,38 @@ extern "C" int rpd_metal_hamiltonian_partial_gram(
         const size_t complex_bytes = 2 * sizeof(float);
         const size_t reduction_row_bytes = context->reduction_dimension * complex_bytes;
         const size_t compact_row_bytes = context->dimension * complex_bytes;
-        std::memset(context->reduction_input.contents, 0,
-                    context->reduction_dimension * batch * complex_bytes);
-        for (size_t state = 0; state < batch; ++state) {
-            std::memcpy(static_cast<char *>(context->reduction_input.contents) +
+        std::memset(context->reduction_left.contents, 0,
+                    context->reduction_dimension * left_batch * complex_bytes);
+        std::memset(context->reduction_right.contents, 0,
+                    context->reduction_dimension * right_batch * complex_bytes);
+        for (size_t state = 0; state < left_batch; ++state) {
+            std::memcpy(static_cast<char *>(context->reduction_left.contents) +
                             state * reduction_row_bytes,
-                        static_cast<const char *>(context->compact_input.contents) +
-                            state * compact_row_bytes,
+                        left_input_interleaved + state * context->dimension * 2,
                         compact_row_bytes);
         }
-        CachedPartialGramGraph cached =
-            partial_gram_graph_for(context->reduction_chunks, batch);
-        MPSGraphTensorData *input_data = [[MPSGraphTensorData alloc]
-            initWithMTLBuffer:context->reduction_input
-                        shape:cached.input_shape
+        for (size_t state = 0; state < right_batch; ++state) {
+            std::memcpy(static_cast<char *>(context->reduction_right.contents) +
+                            state * reduction_row_bytes,
+                        right_input_interleaved + state * context->dimension * 2,
+                        compact_row_bytes);
+        }
+        CachedPartialGramGraph cached = partial_gram_graph_for(
+            context->reduction_chunks, left_batch, right_batch);
+        MPSGraphTensorData *left_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:context->reduction_left
+                        shape:cached.left_shape
+                     dataType:MPSDataTypeComplexFloat32];
+        MPSGraphTensorData *right_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:context->reduction_right
+                        shape:cached.right_shape
                      dataType:MPSDataTypeComplexFloat32];
         @try {
             NSDictionary *result = [cached.graph runWithMTLCommandQueue:context->queue
-                                                                  feeds:@{cached.input: input_data}
+                                                                  feeds:@{
+                                                                      cached.left: left_data,
+                                                                      cached.right: right_data
+                                                                  }
                                                           targetTensors:@[cached.output]
                                                        targetOperations:nil];
             MPSGraphTensorData *output = result[cached.output];

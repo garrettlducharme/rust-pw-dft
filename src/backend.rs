@@ -35,13 +35,14 @@ impl PrecisionPolicy {
         }
     }
 
-    /// Transitional persistent-buffer policy: Hamiltonian blocks run in Metal
-    /// complex-FP32, while the Davidson basis and reductions remain host FP64.
-    /// This is intentionally distinct from fully GPU-resident eigensolver state.
+    /// Transitional persistent-buffer policy: Hamiltonian blocks and Davidson
+    /// cross-Gram partials run in Metal complex-FP32. The basis remains host
+    /// FP64, partial sums finish on the CPU in complex-FP64, and Rayleigh-Ritz
+    /// remains CPU-FP64. This is distinct from fully resident eigensolver state.
     pub fn metal_validation() -> Self {
         Self {
             storage: "complex-f64-host+persistent-complex-f32-metal-block-buffers".into(),
-            reductions: "f64-cpu".into(),
+            reductions: "complex-f32-metal-partials+complex-f64-cpu-final".into(),
             eigensolve: "f64-cpu".into(),
             energy: "f64-cpu".into(),
         }

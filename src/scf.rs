@@ -1,5 +1,7 @@
 use crate::backend::{BackendKind, PrecisionPolicy};
-use crate::eigensolver::{DavidsonOptions, block_davidson_batched};
+use crate::eigensolver::{
+    DavidsonOptions, block_davidson_batched, block_davidson_batched_with_gram,
+};
 use crate::input::SimulationInput;
 use crate::lattice::Lattice;
 use crate::operator::{
@@ -58,6 +60,9 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
         occupied_states > 0 && occupied_states <= g_vectors.len(),
         "invalid occupied-state count"
     );
+    let davidson_max_subspace = (occupied_states * 8)
+        .max(occupied_states + 4)
+        .min(g_vectors.len());
 
     let setup_started = Instant::now();
     let hamiltonian = CpuHamiltonian::new(&lattice, &g_vectors, &input.atoms, &pseudo)?;
@@ -79,7 +84,7 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
             let device = crate::metal::device_name()
                 .context("Metal backend unavailable (no CPU Hamiltonian fallback)")?;
             (
-                format!("{device} (persistent MPSGraph buffers; compact separable projectors)"),
+                format!("{device} (persistent MPSGraph Hamiltonian; GPU cross-Gram partials)"),
                 PrecisionPolicy::metal_validation(),
                 1.0e-5,
                 1.0e-5,
@@ -91,7 +96,7 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
         BackendKind::CpuF64 => None,
         BackendKind::MetalMixed => Some(
             hamiltonian
-                .create_metal_hamiltonian_context(occupied_states)
+                .create_metal_hamiltonian_context(davidson_max_subspace)
                 .context("failed to initialize persistent Metal Hamiltonian")?,
         ),
     };
@@ -141,31 +146,44 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
             roots: occupied_states,
             residual_tolerance: eigensolver_tolerance,
             max_iterations: 80,
-            max_subspace: (occupied_states * 8)
-                .max(occupied_states + 4)
-                .min(hamiltonian.dimension()),
+            max_subspace: davidson_max_subspace,
         };
-        let eigenpairs = block_davidson_batched(
-            hamiltonian.kinetic_ry(),
-            previous_orbitals.as_deref(),
-            &davidson_options,
-            |orbitals| match requested_backend {
-                BackendKind::CpuF64 => orbitals
-                    .iter()
-                    .map(|orbital| hamiltonian.apply_fft(orbital, &potential.real_ry))
-                    .collect(),
-                BackendKind::MetalMixed => {
-                    let context = metal_context
-                        .as_mut()
-                        .context("persistent Metal Hamiltonian context is missing")?;
-                    hamiltonian.apply_hamiltonian_metal_persistent(
-                        context,
-                        orbitals,
-                        &potential.real_ry,
-                    )
-                }
-            },
-        )?;
+        let eigenpairs = match requested_backend {
+            BackendKind::CpuF64 => block_davidson_batched(
+                hamiltonian.kinetic_ry(),
+                previous_orbitals.as_deref(),
+                &davidson_options,
+                |orbitals| {
+                    orbitals
+                        .iter()
+                        .map(|orbital| hamiltonian.apply_fft(orbital, &potential.real_ry))
+                        .collect()
+                },
+            ),
+            BackendKind::MetalMixed => {
+                let context = metal_context
+                    .as_mut()
+                    .context("persistent Metal Hamiltonian context is missing")?;
+                let context = std::cell::RefCell::new(context);
+                block_davidson_batched_with_gram(
+                    hamiltonian.kinetic_ry(),
+                    previous_orbitals.as_deref(),
+                    &davidson_options,
+                    |orbitals| {
+                        let mut context = context.borrow_mut();
+                        hamiltonian.apply_hamiltonian_metal_persistent(
+                            &mut context,
+                            orbitals,
+                            &potential.real_ry,
+                        )
+                    },
+                    |left, right| {
+                        let mut context = context.borrow_mut();
+                        context.cross_gram(left, right)
+                    },
+                )
+            }
+        }?;
         add_timing(
             &mut timings,
             "eigensolve_seconds",
@@ -288,6 +306,14 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
         final_terms.insert(
             "metal_peak_device_allocated_bytes".into(),
             context.peak_device_allocated_bytes() as f64,
+        );
+        final_terms.insert(
+            "metal_gram_reduction_calls".into(),
+            context.gram_reduction_calls() as f64,
+        );
+        final_terms.insert(
+            "metal_gram_reduction_pairs".into(),
+            context.gram_reduction_pairs() as f64,
         );
     }
     Ok(ScfResult {

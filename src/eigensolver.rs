@@ -32,6 +32,16 @@ fn inner_product(left: &[Complex64], right: &[Complex64]) -> Complex64 {
     left.iter().zip(right).map(|(a, b)| a.conj() * b).sum()
 }
 
+fn cross_gram_cpu(left: &[Vec<Complex64>], right: &[Vec<Complex64>]) -> Vec<Complex64> {
+    left.iter()
+        .flat_map(|left_vector| {
+            right
+                .iter()
+                .map(|right_vector| inner_product(left_vector, right_vector))
+        })
+        .collect()
+}
+
 fn orthonormalize_candidate(
     mut candidate: Vec<Complex64>,
     basis: &[Vec<Complex64>],
@@ -94,10 +104,35 @@ pub fn block_davidson_batched<F>(
     kinetic_diagonal: &[f64],
     initial_vectors: Option<&[Vec<Complex64>]>,
     options: &DavidsonOptions,
-    mut apply_batch: F,
+    apply_batch: F,
 ) -> Result<DavidsonResult>
 where
     F: FnMut(&[Vec<Complex64>]) -> Result<Vec<Vec<Complex64>>>,
+{
+    block_davidson_batched_with_gram(
+        kinetic_diagonal,
+        initial_vectors,
+        options,
+        apply_batch,
+        |left, right| Ok(cross_gram_cpu(left, right)),
+    )
+}
+
+/// Batched block Davidson with an explicit cross-Gram backend.
+///
+/// `cross_gram(left, right)` returns the row-major rectangular matrix
+/// `<left_i|right_j>`. Accelerator backends may compute blockwise FP32
+/// partials, but must finish accumulation before returning complex FP64.
+pub fn block_davidson_batched_with_gram<F, G>(
+    kinetic_diagonal: &[f64],
+    initial_vectors: Option<&[Vec<Complex64>]>,
+    options: &DavidsonOptions,
+    mut apply_batch: F,
+    mut cross_gram: G,
+) -> Result<DavidsonResult>
+where
+    F: FnMut(&[Vec<Complex64>]) -> Result<Vec<Vec<Complex64>>>,
+    G: FnMut(&[Vec<Complex64>], &[Vec<Complex64>]) -> Result<Vec<Complex64>>,
 {
     let dimension = kinetic_diagonal.len();
     ensure!(dimension > 0, "Davidson dimension must be nonzero");
@@ -178,11 +213,16 @@ where
 
     for iteration in 1..=options.max_iterations {
         let subspace = basis.len();
+        let raw_projection = cross_gram(&basis, &applied_basis)?;
+        ensure!(
+            raw_projection.len() == subspace * subspace,
+            "cross-Gram backend returned the wrong matrix size"
+        );
         let mut projected = vec![Complex64::default(); subspace * subspace];
         for i in 0..subspace {
             for j in 0..=i {
-                let lower = inner_product(&basis[i], &applied_basis[j]);
-                let upper = inner_product(&basis[j], &applied_basis[i]).conj();
+                let lower = raw_projection[i * subspace + j];
+                let upper = raw_projection[j * subspace + i].conj();
                 let value = 0.5 * (lower + upper);
                 projected[i * subspace + j] = if i == j {
                     Complex64::new(value.re, 0.0)
@@ -407,5 +447,38 @@ mod tests {
             assert!(davidson.residual_norms[root] < 1.0e-11);
         }
         assert!(davidson.hamiltonian_applications <= dimension);
+
+        let mut gram_calls = 0;
+        let accelerated_reduction = block_davidson_batched_with_gram(
+            &kinetic,
+            None,
+            &options,
+            |vectors| {
+                Ok(vectors
+                    .iter()
+                    .map(|vector| {
+                        (0..dimension)
+                            .map(|row| {
+                                (0..dimension)
+                                    .map(|column| matrix[row * dimension + column] * vector[column])
+                                    .sum()
+                            })
+                            .collect()
+                    })
+                    .collect())
+            },
+            |left, right| {
+                gram_calls += 1;
+                Ok(cross_gram_cpu(left, right))
+            },
+        )
+        .unwrap();
+        assert!(accelerated_reduction.converged);
+        assert!(gram_calls > 0);
+        for root in 0..2 {
+            assert!(
+                (accelerated_reduction.eigenvalues[root] - dense.eigenvalues[root]).abs() < 1.0e-11
+            );
+        }
     }
 }
