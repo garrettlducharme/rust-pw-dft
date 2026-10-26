@@ -176,6 +176,14 @@ struct AtomProjectors {
     component: Vec<usize>,
 }
 
+#[derive(Clone)]
+struct DenseReferenceData {
+    lattice: Lattice,
+    g_vectors: Vec<GVector>,
+    atoms: Vec<AtomInput>,
+    pseudo: NormConservingPseudo,
+}
+
 /// Dense-reference CPU Hamiltonian for operator validation and small silicon cells.
 ///
 /// The local operator is deliberately formed directly in reciprocal space. This
@@ -184,7 +192,8 @@ struct AtomProjectors {
 #[derive(Clone)]
 pub struct CpuHamiltonian {
     kinetic_ry: Vec<f64>,
-    local_ry: Vec<Complex64>,
+    local_ry: OnceLock<Vec<Complex64>>,
+    dense_reference: DenseReferenceData,
     atom_projectors: Vec<AtomProjectors>,
     dij_ry: Vec<Vec<f64>>,
     fft: Fft3d,
@@ -217,31 +226,6 @@ impl CpuHamiltonian {
             .iter()
             .map(|g| flat_index_for_shape(g.index, grid_shape))
             .collect();
-        let mut local_ry = vec![Complex64::default(); dimension * dimension];
-        for row in 0..dimension {
-            for column in 0..dimension {
-                let delta_index = [
-                    g_vectors[row].index[0] - g_vectors[column].index[0],
-                    g_vectors[row].index[1] - g_vectors[column].index[1],
-                    g_vectors[row].index[2] - g_vectors[column].index[2],
-                ];
-                let q = norm_squared(lattice.cartesian_g(delta_index)).sqrt();
-                let radial = local_form_factor_ry(pseudo, q, lattice.volume)?;
-                let structure: Complex64 = atoms
-                    .iter()
-                    .map(|atom| {
-                        let phase = -TAU
-                            * delta_index
-                                .iter()
-                                .zip(atom.fractional)
-                                .map(|(&n, f)| n as f64 * f)
-                                .sum::<f64>();
-                        Complex64::from_polar(1.0, phase)
-                    })
-                    .sum();
-                local_ry[row * dimension + column] = radial * structure;
-            }
-        }
 
         let mut atom_projectors = Vec::with_capacity(atoms.len());
         for atom in atoms {
@@ -324,7 +308,13 @@ impl CpuHamiltonian {
             .collect();
         Ok(Self {
             kinetic_ry,
-            local_ry,
+            local_ry: OnceLock::new(),
+            dense_reference: DenseReferenceData {
+                lattice: lattice.clone(),
+                g_vectors: g_vectors.to_vec(),
+                atoms: atoms.to_vec(),
+                pseudo: pseudo.clone(),
+            },
             atom_projectors,
             dij_ry: pseudo.dij_ry.clone(),
             fft,
@@ -383,6 +373,49 @@ impl CpuHamiltonian {
         }
     }
 
+    fn build_local_dense_matrix(&self) -> Result<Vec<Complex64>> {
+        let n = self.dimension();
+        let reference = &self.dense_reference;
+        let mut matrix = vec![Complex64::default(); n * n];
+        for row in 0..n {
+            for column in 0..n {
+                let delta_index = [
+                    reference.g_vectors[row].index[0] - reference.g_vectors[column].index[0],
+                    reference.g_vectors[row].index[1] - reference.g_vectors[column].index[1],
+                    reference.g_vectors[row].index[2] - reference.g_vectors[column].index[2],
+                ];
+                let q = norm_squared(reference.lattice.cartesian_g(delta_index)).sqrt();
+                let radial = local_form_factor_ry(&reference.pseudo, q, reference.lattice.volume)?;
+                let structure: Complex64 = reference
+                    .atoms
+                    .iter()
+                    .map(|atom| {
+                        let phase = -TAU
+                            * delta_index
+                                .iter()
+                                .zip(atom.fractional)
+                                .map(|(&n, f)| n as f64 * f)
+                                .sum::<f64>();
+                        Complex64::from_polar(1.0, phase)
+                    })
+                    .sum();
+                matrix[row * n + column] = radial * structure;
+            }
+        }
+        Ok(matrix)
+    }
+
+    fn local_dense_matrix(&self) -> Result<&[Complex64]> {
+        if self.local_ry.get().is_none() {
+            let matrix = self.build_local_dense_matrix()?;
+            let _ = self.local_ry.set(matrix);
+        }
+        Ok(self
+            .local_ry
+            .get()
+            .expect("local dense matrix was initialized"))
+    }
+
     fn build_nonlocal_dense_matrix(&self) -> Vec<Complex64> {
         let n = self.dimension();
         let mut matrix = vec![Complex64::default(); n * n];
@@ -409,11 +442,12 @@ impl CpuHamiltonian {
             wavefunction.len() == n,
             "wavefunction has the wrong dimension"
         );
+        let local_ry = self.local_dense_matrix()?;
         let mut result = vec![Complex64::default(); n];
         for row in 0..n {
             result[row] = self.kinetic_ry[row] * wavefunction[row];
             for (column, &coefficient) in wavefunction.iter().enumerate() {
-                result[row] += self.local_ry[row * n + column] * coefficient;
+                result[row] += local_ry[row * n + column] * coefficient;
             }
         }
         self.add_nonlocal(wavefunction, &mut result);
@@ -566,9 +600,137 @@ impl CpuHamiltonian {
         Ok(output)
     }
 
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    pub fn create_metal_hamiltonian_context(
+        &self,
+        max_batch: usize,
+    ) -> Result<crate::metal::HamiltonianContext> {
+        let projector_count: usize = self
+            .atom_projectors
+            .iter()
+            .map(|atom| atom.columns.len())
+            .sum();
+        ensure!(projector_count > 0, "Metal Hamiltonian requires projectors");
+        let dimension = self.dimension();
+        let mut projector_conjugate = vec![Complex32::default(); dimension * projector_count];
+        let mut projector_transpose = vec![Complex32::default(); projector_count * dimension];
+        let mut d_transpose = vec![Complex32::default(); projector_count * projector_count];
+        let mut offset = 0;
+        for atom in &self.atom_projectors {
+            for (channel, beta) in atom.columns.iter().enumerate() {
+                let global = offset + channel;
+                for (basis, value) in beta.iter().enumerate() {
+                    projector_conjugate[basis * projector_count + global] =
+                        Complex32::new(value.re as f32, -value.im as f32);
+                    projector_transpose[global * dimension + basis] =
+                        Complex32::new(value.re as f32, value.im as f32);
+                }
+            }
+            for left in 0..atom.columns.len() {
+                for right in 0..atom.columns.len() {
+                    if atom.component[left] == atom.component[right] {
+                        let coupling = self.dij_ry[atom.radial_projector[left]]
+                            [atom.radial_projector[right]]
+                            as f32;
+                        d_transpose[(offset + right) * projector_count + offset + left] =
+                            Complex32::new(coupling, 0.0);
+                    }
+                }
+            }
+            offset += atom.columns.len();
+        }
+        let mut kinetic = vec![Complex32::default(); self.fft.len()];
+        for (basis, &grid_index) in self.basis_grid_indices.iter().enumerate() {
+            kinetic[grid_index] = Complex32::new(self.kinetic_ry[basis] as f32, 0.0);
+        }
+        crate::metal::HamiltonianContext::new(
+            self.fft.shape(),
+            dimension,
+            projector_count,
+            max_batch,
+            &kinetic,
+            &projector_conjugate,
+            &d_transpose,
+            &projector_transpose,
+        )
+    }
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    pub fn apply_hamiltonian_metal_persistent(
+        &self,
+        context: &mut crate::metal::HamiltonianContext,
+        wavefunctions: &[Vec<Complex64>],
+        hartree_xc_real_ry: &[f64],
+    ) -> Result<Vec<Vec<Complex64>>> {
+        ensure!(
+            !wavefunctions.is_empty(),
+            "Metal Hamiltonian batch is empty"
+        );
+        ensure!(
+            hartree_xc_real_ry.len() == self.fft.len(),
+            "real-space potential has the wrong grid size"
+        );
+        let mut grid_input = vec![Complex32::default(); self.fft.len() * wavefunctions.len()];
+        let mut compact_input = Vec::with_capacity(self.dimension() * wavefunctions.len());
+        for (state, wavefunction) in wavefunctions.iter().enumerate() {
+            ensure!(
+                wavefunction.len() == self.dimension(),
+                "wavefunction has the wrong dimension"
+            );
+            let grid_offset = state * self.fft.len();
+            for (basis, &grid_index) in self.basis_grid_indices.iter().enumerate() {
+                let value = wavefunction[basis];
+                let value = Complex32::new(value.re as f32, value.im as f32);
+                grid_input[grid_offset + grid_index] = value;
+                compact_input.push(value);
+            }
+        }
+        let potential: Vec<_> = self
+            .ionic_local_real_ry
+            .iter()
+            .zip(hartree_xc_real_ry)
+            .map(|(&ionic, &electronic)| Complex32::new((ionic + electronic) as f32, 0.0))
+            .collect();
+        let (grid_output, nonlocal_output) =
+            context.apply(&grid_input, &compact_input, &potential, wavefunctions.len())?;
+        Ok((0..wavefunctions.len())
+            .map(|state| {
+                let grid_offset = state * self.fft.len();
+                let compact_offset = state * self.dimension();
+                self.basis_grid_indices
+                    .iter()
+                    .enumerate()
+                    .map(|(basis, &grid_index)| {
+                        let value = grid_output[grid_offset + grid_index]
+                            + nonlocal_output[compact_offset + basis];
+                        Complex64::new(value.re as f64, value.im as f64)
+                    })
+                    .collect()
+            })
+            .collect())
+    }
+
     #[cfg(not(all(feature = "metal", target_os = "macos")))]
     pub fn apply_hamiltonian_metal_validation(
         &self,
+        _wavefunctions: &[Vec<Complex64>],
+        _hartree_xc_real_ry: &[f64],
+    ) -> Result<Vec<Vec<Complex64>>> {
+        anyhow::bail!("Metal Hamiltonian requires the macOS-only `metal` feature")
+    }
+
+    #[cfg(not(all(feature = "metal", target_os = "macos")))]
+    pub fn create_metal_hamiltonian_context(
+        &self,
+        _max_batch: usize,
+    ) -> Result<crate::metal::HamiltonianContext> {
+        anyhow::bail!("Metal Hamiltonian requires the macOS-only `metal` feature")
+    }
+
+    #[cfg(not(all(feature = "metal", target_os = "macos")))]
+    pub fn apply_hamiltonian_metal_persistent(
+        &self,
+        _context: &mut crate::metal::HamiltonianContext,
         _wavefunctions: &[Vec<Complex64>],
         _hartree_xc_real_ry: &[f64],
     ) -> Result<Vec<Vec<Complex64>>> {
@@ -888,7 +1050,7 @@ mod tests {
             return;
         }
         let input = SimulationInput::from_path(input_path).unwrap();
-        let pseudo = NormConservingPseudo::from_legacy_upf(&input.pseudopotentials["Si"]).unwrap();
+        let pseudo = NormConservingPseudo::from_upf(&input.pseudopotentials["Si"]).unwrap();
         let lattice = Lattice::new(input.cell.lattice_bohr).unwrap();
         let g_vectors = lattice.enumerate_g_vectors(input.cutoff_ry);
         let hamiltonian = CpuHamiltonian::new(&lattice, &g_vectors, &input.atoms, &pseudo).unwrap();
@@ -1023,6 +1185,29 @@ mod tests {
             eprintln!("silicon complete Metal fixed-density error: {full_relative_l2:e}");
             assert!(full_relative_l2 < 1.0e-5);
 
+            let mut persistent_context = hamiltonian
+                .create_metal_hamiltonian_context(wavefunctions.len())
+                .unwrap();
+            assert!(persistent_context.projector_count() > 0);
+            let persistent_full = hamiltonian
+                .apply_hamiltonian_metal_persistent(
+                    &mut persistent_context,
+                    &wavefunctions,
+                    &electronic.real_ry,
+                )
+                .unwrap();
+            let persistent_error = cpu_full
+                .iter()
+                .flatten()
+                .zip(persistent_full.iter().flatten())
+                .map(|(a, b)| (*a - *b).norm_sqr())
+                .sum::<f64>();
+            let persistent_relative_l2 = (persistent_error / full_reference_norm).sqrt();
+            eprintln!(
+                "silicon persistent compact-projector Metal error: {persistent_relative_l2:e}"
+            );
+            assert!(persistent_relative_l2 < 1.0e-5);
+
             let metal_davidson = block_davidson(
                 hamiltonian.kinetic_ry(),
                 None,
@@ -1033,7 +1218,8 @@ mod tests {
                     max_subspace: 32,
                 },
                 |orbital| {
-                    let mut batch = hamiltonian.apply_hamiltonian_metal_validation(
+                    let mut batch = hamiltonian.apply_hamiltonian_metal_persistent(
+                        &mut persistent_context,
                         &[orbital.to_vec()],
                         &electronic.real_ry,
                     )?;

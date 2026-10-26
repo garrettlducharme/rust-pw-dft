@@ -41,7 +41,7 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
         "the CPU scientific slice supports one species"
     );
     let (element, pseudo_path) = input.pseudopotentials.first_key_value().unwrap();
-    let pseudo = NormConservingPseudo::from_legacy_upf(pseudo_path)?;
+    let pseudo = NormConservingPseudo::from_upf(pseudo_path)?;
     ensure!(
         &pseudo.element == element,
         "pseudopotential element mismatch"
@@ -61,27 +61,40 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
 
     let setup_started = Instant::now();
     let hamiltonian = CpuHamiltonian::new(&lattice, &g_vectors, &input.atoms, &pseudo)?;
-    let (actual_device, precision_policy, eigensolver_tolerance, scf_orbital_tolerance) =
-        match requested_backend {
-            BackendKind::CpuF64 => (
-                "Apple CPU (rustfft/f64 + block-Davidson/faer-f64)".into(),
-                PrecisionPolicy::cpu_f64(),
-                input.scf_options.orbital_residual_tolerance.min(1.0e-10),
-                input.scf_options.orbital_residual_tolerance,
-            ),
-            BackendKind::MetalMixed => {
-                let device = crate::metal::device_name()
-                    .context("Metal backend unavailable (no CPU Hamiltonian fallback)")?;
-                (
-                    format!(
-                        "{device} (MPSGraph Hamiltonian validation; nonresident host round trips)"
-                    ),
-                    PrecisionPolicy::metal_validation(),
-                    1.0e-5,
-                    1.0e-5,
-                )
-            }
-        };
+    let (
+        actual_device,
+        precision_policy,
+        eigensolver_tolerance,
+        scf_orbital_tolerance,
+        scf_energy_tolerance,
+    ) = match requested_backend {
+        BackendKind::CpuF64 => (
+            "Apple CPU (rustfft/f64 + block-Davidson/faer-f64)".into(),
+            PrecisionPolicy::cpu_f64(),
+            input.scf_options.orbital_residual_tolerance.min(1.0e-10),
+            input.scf_options.orbital_residual_tolerance,
+            input.scf_options.energy_tolerance_ry,
+        ),
+        BackendKind::MetalMixed => {
+            let device = crate::metal::device_name()
+                .context("Metal backend unavailable (no CPU Hamiltonian fallback)")?;
+            (
+                format!("{device} (persistent MPSGraph buffers; compact separable projectors)"),
+                PrecisionPolicy::metal_validation(),
+                1.0e-5,
+                1.0e-5,
+                input.scf_options.energy_tolerance_ry.max(5.0e-7),
+            )
+        }
+    };
+    let mut metal_context = match requested_backend {
+        BackendKind::CpuF64 => None,
+        BackendKind::MetalMixed => Some(
+            hamiltonian
+                .create_metal_hamiltonian_context(occupied_states)
+                .context("failed to initialize persistent Metal Hamiltonian")?,
+        ),
+    };
     let mut density = atomic_starting_density(
         hamiltonian.fft(),
         &lattice,
@@ -142,7 +155,14 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
                     .map(|orbital| hamiltonian.apply_fft(orbital, &potential.real_ry))
                     .collect(),
                 BackendKind::MetalMixed => {
-                    hamiltonian.apply_hamiltonian_metal_validation(orbitals, &potential.real_ry)
+                    let context = metal_context
+                        .as_mut()
+                        .context("persistent Metal Hamiltonian context is missing")?;
+                    hamiltonian.apply_hamiltonian_metal_persistent(
+                        context,
+                        orbitals,
+                        &potential.real_ry,
+                    )
                 }
             },
         )?;
@@ -204,11 +224,16 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
             ("ewald_ry".into(), ewald_ry),
             ("density_residual".into(), final_density_residual),
             ("energy_change_ry".into(), final_energy_change),
+            ("energy_tolerance_ry".into(), scf_energy_tolerance),
+            (
+                "orbital_residual_tolerance_ry".into(),
+                scf_orbital_tolerance,
+            ),
         ]);
 
         let maximum_orbital_residual = final_residuals.iter().copied().fold(0.0_f64, f64::max);
         if final_density_residual <= input.scf_options.density_tolerance
-            && final_energy_change <= input.scf_options.energy_tolerance_ry
+            && final_energy_change <= scf_energy_tolerance
             && maximum_orbital_residual <= scf_orbital_tolerance
         {
             converged = true;
@@ -251,6 +276,20 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
         "highest_occupied_eigenvalue_ev".into(),
         final_eigenvalues.last().copied().unwrap_or_default() * RY_TO_EV,
     );
+    if let Some(context) = &metal_context {
+        final_terms.insert(
+            "metal_projector_count".into(),
+            context.projector_count() as f64,
+        );
+        final_terms.insert(
+            "metal_persistent_buffer_bytes".into(),
+            context.persistent_buffer_bytes() as f64,
+        );
+        final_terms.insert(
+            "metal_peak_device_allocated_bytes".into(),
+            context.peak_device_allocated_bytes() as f64,
+        );
+    }
     Ok(ScfResult {
         converged,
         iterations: completed_iterations,

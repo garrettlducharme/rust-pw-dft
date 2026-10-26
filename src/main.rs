@@ -185,7 +185,7 @@ fn main() -> Result<()> {
             let performance_eligible = last.converged && kind == BackendKind::CpuF64;
             let benchmark_stop_reason = if kind == BackendKind::MetalMixed && last.converged {
                 Some(
-                    "Metal validation uses nonresident host round trips and is not eligible for an end-to-end performance claim"
+                    "Metal uses persistent operator buffers and compact projectors, but the Davidson basis remains host FP64 and is staged by block; a fully resident eigensolver is required for a production performance claim"
                         .into(),
                 )
             } else {

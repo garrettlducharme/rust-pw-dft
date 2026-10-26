@@ -5,7 +5,10 @@ use num_complex::Complex32;
 mod imp {
     use super::*;
     use std::ffi::CStr;
-    use std::os::raw::{c_char, c_int};
+    use std::marker::PhantomData;
+    use std::os::raw::{c_char, c_int, c_void};
+    use std::ptr::NonNull;
+    use std::rc::Rc;
 
     unsafe extern "C" {
         fn rpd_metal_device_name(buffer: *mut c_char, capacity: usize) -> c_int;
@@ -40,6 +43,174 @@ mod imp {
             error_buffer: *mut c_char,
             error_capacity: usize,
         ) -> c_int;
+        fn rpd_metal_hamiltonian_create(
+            kinetic_interleaved: *const f32,
+            projector_conjugate_interleaved: *const f32,
+            d_transpose_interleaved: *const f32,
+            projector_transpose_interleaved: *const f32,
+            nx: usize,
+            ny: usize,
+            nz: usize,
+            dimension: usize,
+            projector_count: usize,
+            max_batch: usize,
+            error_buffer: *mut c_char,
+            error_capacity: usize,
+        ) -> *mut c_void;
+        fn rpd_metal_hamiltonian_apply(
+            context: *mut c_void,
+            grid_input_interleaved: *const f32,
+            compact_input_interleaved: *const f32,
+            potential_interleaved: *const f32,
+            grid_output_interleaved: *mut f32,
+            nonlocal_output_interleaved: *mut f32,
+            batch: usize,
+            error_buffer: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
+        fn rpd_metal_hamiltonian_destroy(context: *mut c_void);
+        fn rpd_metal_hamiltonian_peak_allocated_bytes(context: *mut c_void) -> u64;
+    }
+
+    pub struct HamiltonianContext {
+        raw: NonNull<c_void>,
+        shape: [usize; 3],
+        dimension: usize,
+        projector_count: usize,
+        max_batch: usize,
+        persistent_buffer_bytes: usize,
+        _not_send_or_sync: PhantomData<Rc<()>>,
+    }
+
+    impl HamiltonianContext {
+        #[allow(clippy::too_many_arguments)]
+        pub fn new(
+            shape: [usize; 3],
+            dimension: usize,
+            projector_count: usize,
+            max_batch: usize,
+            kinetic: &[Complex32],
+            projector_conjugate: &[Complex32],
+            d_transpose: &[Complex32],
+            projector_transpose: &[Complex32],
+        ) -> Result<Self> {
+            let grid_points = shape.iter().product::<usize>();
+            if shape.contains(&0) || dimension == 0 || projector_count == 0 || max_batch == 0 {
+                bail!("Metal Hamiltonian context dimensions must be nonzero");
+            }
+            if kinetic.len() != grid_points {
+                bail!("Metal kinetic grid has the wrong size");
+            }
+            if projector_conjugate.len() != dimension * projector_count
+                || projector_transpose.len() != projector_count * dimension
+            {
+                bail!("Metal projector matrix has the wrong size");
+            }
+            if d_transpose.len() != projector_count * projector_count {
+                bail!("Metal projector coupling matrix has the wrong size");
+            }
+            let mut error = vec![0_i8; 2048];
+            let raw = unsafe {
+                rpd_metal_hamiltonian_create(
+                    kinetic.as_ptr().cast::<f32>(),
+                    projector_conjugate.as_ptr().cast::<f32>(),
+                    d_transpose.as_ptr().cast::<f32>(),
+                    projector_transpose.as_ptr().cast::<f32>(),
+                    shape[0],
+                    shape[1],
+                    shape[2],
+                    dimension,
+                    projector_count,
+                    max_batch,
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            let Some(raw) = NonNull::new(raw) else {
+                let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
+                bail!("Metal Hamiltonian context creation failed: {message}");
+            };
+            let complex_bytes = std::mem::size_of::<Complex32>();
+            let persistent_buffer_bytes = complex_bytes
+                * (grid_points * max_batch
+                    + dimension * max_batch
+                    + 2 * grid_points
+                    + 2 * dimension * projector_count
+                    + projector_count * projector_count);
+            Ok(Self {
+                raw,
+                shape,
+                dimension,
+                projector_count,
+                max_batch,
+                persistent_buffer_bytes,
+                _not_send_or_sync: PhantomData,
+            })
+        }
+
+        pub fn apply(
+            &mut self,
+            grid_input: &[Complex32],
+            compact_input: &[Complex32],
+            potential: &[Complex32],
+            batch: usize,
+        ) -> Result<(Vec<Complex32>, Vec<Complex32>)> {
+            let grid_points = self.shape.iter().product::<usize>();
+            if batch == 0 || batch > self.max_batch {
+                bail!(
+                    "Metal Hamiltonian batch {batch} exceeds configured maximum {}",
+                    self.max_batch
+                );
+            }
+            if grid_input.len() != grid_points * batch {
+                bail!("Metal grid input has the wrong size");
+            }
+            if compact_input.len() != self.dimension * batch {
+                bail!("Metal compact input has the wrong size");
+            }
+            if potential.len() != grid_points {
+                bail!("Metal local potential has the wrong size");
+            }
+            let mut grid_output = vec![Complex32::default(); grid_input.len()];
+            let mut nonlocal_output = vec![Complex32::default(); compact_input.len()];
+            let mut error = vec![0_i8; 2048];
+            let status = unsafe {
+                rpd_metal_hamiltonian_apply(
+                    self.raw.as_ptr(),
+                    grid_input.as_ptr().cast::<f32>(),
+                    compact_input.as_ptr().cast::<f32>(),
+                    potential.as_ptr().cast::<f32>(),
+                    grid_output.as_mut_ptr().cast::<f32>(),
+                    nonlocal_output.as_mut_ptr().cast::<f32>(),
+                    batch,
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            if status != 0 {
+                let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
+                bail!("resident Metal Hamiltonian failed ({status}): {message}");
+            }
+            Ok((grid_output, nonlocal_output))
+        }
+
+        pub fn projector_count(&self) -> usize {
+            self.projector_count
+        }
+
+        pub fn persistent_buffer_bytes(&self) -> usize {
+            self.persistent_buffer_bytes
+        }
+
+        pub fn peak_device_allocated_bytes(&self) -> u64 {
+            unsafe { rpd_metal_hamiltonian_peak_allocated_bytes(self.raw.as_ptr()) }
+        }
+    }
+
+    impl Drop for HamiltonianContext {
+        fn drop(&mut self) {
+            unsafe { rpd_metal_hamiltonian_destroy(self.raw.as_ptr()) };
+        }
     }
 
     pub fn device_name() -> Result<String> {
@@ -214,6 +385,40 @@ mod imp {
 #[cfg(not(all(feature = "metal", target_os = "macos")))]
 mod imp {
     use super::*;
+    pub struct HamiltonianContext;
+    impl HamiltonianContext {
+        #[allow(clippy::too_many_arguments)]
+        pub fn new(
+            _shape: [usize; 3],
+            _dimension: usize,
+            _projector_count: usize,
+            _max_batch: usize,
+            _kinetic: &[Complex32],
+            _projector_conjugate: &[Complex32],
+            _d_transpose: &[Complex32],
+            _projector_transpose: &[Complex32],
+        ) -> Result<Self> {
+            bail!("binary was built without the macOS-only `metal` feature")
+        }
+        pub fn apply(
+            &mut self,
+            _grid_input: &[Complex32],
+            _compact_input: &[Complex32],
+            _potential: &[Complex32],
+            _batch: usize,
+        ) -> Result<(Vec<Complex32>, Vec<Complex32>)> {
+            bail!("binary was built without the macOS-only `metal` feature")
+        }
+        pub fn projector_count(&self) -> usize {
+            0
+        }
+        pub fn persistent_buffer_bytes(&self) -> usize {
+            0
+        }
+        pub fn peak_device_allocated_bytes(&self) -> u64 {
+            0
+        }
+    }
     pub fn device_name() -> Result<String> {
         bail!("binary was built without the macOS-only `metal` feature")
     }
@@ -252,7 +457,8 @@ mod imp {
 }
 
 pub use imp::{
-    apply_dense_operator, apply_local_fft, apply_local_hamiltonian, device_name, fft_roundtrip,
+    HamiltonianContext, apply_dense_operator, apply_local_fft, apply_local_hamiltonian,
+    device_name, fft_roundtrip,
 };
 
 #[cfg(all(test, feature = "metal", target_os = "macos"))]

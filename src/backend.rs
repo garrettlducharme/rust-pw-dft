@@ -35,12 +35,12 @@ impl PrecisionPolicy {
         }
     }
 
-    /// Transitional validation policy: Hamiltonian arithmetic runs in Metal
-    /// complex-FP32, while orbitals and all reductions remain host FP64. This
-    /// is intentionally distinct from the future resident mixed policy.
+    /// Transitional persistent-buffer policy: Hamiltonian blocks run in Metal
+    /// complex-FP32, while the Davidson basis and reductions remain host FP64.
+    /// This is intentionally distinct from fully GPU-resident eigensolver state.
     pub fn metal_validation() -> Self {
         Self {
-            storage: "complex-f64-host+complex-f32-metal-per-application".into(),
+            storage: "complex-f64-host+persistent-complex-f32-metal-block-buffers".into(),
             reductions: "f64-cpu".into(),
             eigensolve: "f64-cpu".into(),
             energy: "f64-cpu".into(),

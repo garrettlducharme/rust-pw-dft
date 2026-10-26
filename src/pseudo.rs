@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
@@ -49,6 +49,56 @@ fn numbers(text: &str) -> Result<Vec<f64>> {
         .collect()
 }
 
+fn opening_tag<'a>(text: &'a str, name: &str) -> Result<&'a str> {
+    let marker = format!("<{name}");
+    let start = text
+        .find(&marker)
+        .with_context(|| format!("missing <{name}>"))?;
+    let end = text[start..]
+        .find('>')
+        .with_context(|| format!("unterminated <{name}>"))?
+        + start
+        + 1;
+    Ok(&text[start..end])
+}
+
+fn attribute<'a>(tag: &'a str, name: &str) -> Result<&'a str> {
+    let marker = format!("{name}=");
+    let start = tag
+        .find(&marker)
+        .with_context(|| format!("missing attribute {name}"))?
+        + marker.len();
+    let remaining = tag[start..].trim_start();
+    let quote = remaining
+        .chars()
+        .next()
+        .filter(|character| *character == '\'' || *character == '"')
+        .with_context(|| format!("attribute {name} is not quoted"))?;
+    let value = &remaining[quote.len_utf8()..];
+    let end = value
+        .find(quote)
+        .with_context(|| format!("attribute {name} is unterminated"))?;
+    Ok(value[..end].trim())
+}
+
+fn tagged_body<'a>(text: &'a str, name: &str) -> Result<&'a str> {
+    let marker = format!("<{name}");
+    let start = text
+        .find(&marker)
+        .with_context(|| format!("missing <{name}>"))?;
+    let body_start = text[start..]
+        .find('>')
+        .with_context(|| format!("unterminated <{name}>"))?
+        + start
+        + 1;
+    let close = format!("</{name}>");
+    let body_end = text[body_start..]
+        .find(&close)
+        .with_context(|| format!("missing {close}"))?
+        + body_start;
+    Ok(&text[body_start..body_end])
+}
+
 fn repeated_sections<'a>(text: &'a str, name: &str) -> Result<Vec<&'a str>> {
     let open = format!("<{name}>");
     let close = format!("</{name}>");
@@ -67,13 +117,13 @@ fn repeated_sections<'a>(text: &'a str, name: &str) -> Result<Vec<&'a str>> {
 }
 
 impl NormConservingPseudo {
-    /// Read the legacy tagged UPF representation used by QE's Si.pz-vbc.UPF.
-    /// XML UPF v2 is rejected until its semantics are independently validated.
-    pub fn from_legacy_upf(path: &Path) -> Result<Self> {
+    /// Read either the pinned legacy silicon representation or a strict
+    /// scalar/non-relativistic norm-conserving UPF v2 PZ representation.
+    pub fn from_upf(path: &Path) -> Result<Self> {
         let text = fs::read_to_string(path)
             .with_context(|| format!("failed to read pseudopotential {}", path.display()))?;
         if text.contains("<UPF version=") {
-            bail!("UPF v2 XML parsing is not yet validated; legacy Si.pz-vbc.UPF is required");
+            return Self::from_v2_text(&text);
         }
         let header = section(&text, "PP_HEADER")?;
         let lines: Vec<_> = header
@@ -229,6 +279,148 @@ impl NormConservingPseudo {
             atomic_density,
         })
     }
+
+    fn from_v2_text(text: &str) -> Result<Self> {
+        let root = opening_tag(text, "UPF")?;
+        ensure!(
+            attribute(root, "version")?.starts_with("2."),
+            "only UPF v2 is supported"
+        );
+        let header = opening_tag(text, "PP_HEADER")?;
+        ensure!(
+            attribute(header, "pseudo_type")? == "NC",
+            "only norm-conserving UPF v2 pseudopotentials are supported"
+        );
+        ensure!(
+            attribute(header, "is_ultrasoft")?.eq_ignore_ascii_case("F")
+                && attribute(header, "is_paw")?.eq_ignore_ascii_case("F"),
+            "ultrasoft and PAW UPF v2 pseudopotentials are unsupported"
+        );
+        ensure!(
+            attribute(header, "core_correction")?.eq_ignore_ascii_case("F"),
+            "nonlinear core corrections are unsupported"
+        );
+        ensure!(
+            attribute(header, "has_so")?.eq_ignore_ascii_case("F"),
+            "spin-orbit UPF v2 pseudopotentials are unsupported"
+        );
+        let relativistic = attribute(header, "relativistic")?;
+        ensure!(
+            relativistic.eq_ignore_ascii_case("scalar")
+                || relativistic.eq_ignore_ascii_case("no")
+                || relativistic.eq_ignore_ascii_case("nonrelativistic"),
+            "fully relativistic UPF v2 pseudopotentials are unsupported"
+        );
+        let functional = attribute(header, "functional")?.to_string();
+        ensure!(
+            functional.eq_ignore_ascii_case("PZ"),
+            "only the PZ LDA pseudopotential is supported"
+        );
+        let element = attribute(header, "element")?.to_string();
+        ensure!(!element.is_empty(), "UPF v2 element is empty");
+        let valence_charge: f64 = attribute(header, "z_valence")?.parse()?;
+        let mesh_points: usize = attribute(header, "mesh_size")?.parse()?;
+        let projector_count: usize = attribute(header, "number_of_proj")?.parse()?;
+        ensure!(mesh_points > 1, "UPF v2 radial mesh is too short");
+        ensure!(projector_count > 0, "UPF v2 contains no projectors");
+
+        let radial_grid = numbers(tagged_body(text, "PP_R")?)?;
+        let radial_weights = numbers(tagged_body(text, "PP_RAB")?)?;
+        let local_potential_ry = numbers(tagged_body(text, "PP_LOCAL")?)?;
+        let atomic_density = numbers(tagged_body(text, "PP_RHOATOM")?)?;
+        for (label, values) in [
+            ("radial grid", &radial_grid),
+            ("radial weights", &radial_weights),
+            ("local potential", &local_potential_ry),
+            ("atomic density", &atomic_density),
+        ] {
+            ensure!(
+                values.len() == mesh_points,
+                "UPF v2 {label} has {} values; expected {mesh_points}",
+                values.len()
+            );
+            ensure!(
+                values.iter().all(|value| value.is_finite()),
+                "UPF v2 {label} contains non-finite values"
+            );
+        }
+        ensure!(
+            radial_grid.windows(2).all(|pair| pair[1] > pair[0]),
+            "UPF v2 radial grid is not increasing"
+        );
+
+        let mut projectors = Vec::with_capacity(projector_count);
+        for projector_index in 1..=projector_count {
+            let name = format!("PP_BETA.{projector_index}");
+            let tag = opening_tag(text, &name)?;
+            let parsed_index: usize = attribute(tag, "index")?.parse()?;
+            ensure!(
+                parsed_index == projector_index,
+                "UPF v2 projector indices are not contiguous"
+            );
+            let angular_momentum: usize = attribute(tag, "angular_momentum")?.parse()?;
+            let cutoff_points: usize = attribute(tag, "cutoff_radius_index")?.parse()?;
+            ensure!(
+                cutoff_points > 0 && cutoff_points <= mesh_points,
+                "UPF v2 projector cutoff exceeds the radial mesh"
+            );
+            let beta = numbers(tagged_body(text, &name)?)?;
+            ensure!(
+                beta.len() == mesh_points,
+                "UPF v2 projector {projector_index} has {} values; expected {mesh_points}",
+                beta.len()
+            );
+            ensure!(
+                beta.iter().all(|value| value.is_finite()),
+                "UPF v2 projector {projector_index} contains non-finite values"
+            );
+            projectors.push(Projector {
+                index: parsed_index,
+                angular_momentum,
+                cutoff_points,
+                beta,
+            });
+        }
+        let flat_dij = numbers(tagged_body(text, "PP_DIJ")?)?;
+        ensure!(
+            flat_dij.len() == projector_count * projector_count,
+            "UPF v2 Dij has the wrong size"
+        );
+        ensure!(
+            flat_dij.iter().all(|value| value.is_finite()),
+            "UPF v2 Dij contains non-finite values"
+        );
+        for row in 0..projector_count {
+            for column in 0..projector_count {
+                ensure!(
+                    (flat_dij[row * projector_count + column]
+                        - flat_dij[column * projector_count + row])
+                        .abs()
+                        <= 1.0e-10,
+                    "UPF v2 Dij is not symmetric"
+                );
+            }
+        }
+        let dij_ry = flat_dij
+            .chunks_exact(projector_count)
+            .map(<[f64]>::to_vec)
+            .collect();
+        ensure!(
+            valence_charge.is_finite() && valence_charge > 0.0,
+            "UPF v2 valence charge is invalid"
+        );
+        Ok(Self {
+            element,
+            functional,
+            valence_charge,
+            radial_grid,
+            radial_weights,
+            local_potential_ry,
+            projectors,
+            dij_ry,
+            atomic_density,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -241,12 +433,64 @@ mod tests {
         if !path.exists() {
             return;
         }
-        let pseudo = NormConservingPseudo::from_legacy_upf(path).unwrap();
+        let pseudo = NormConservingPseudo::from_upf(path).unwrap();
         assert_eq!(pseudo.element, "Si");
         assert_eq!(pseudo.valence_charge, 4.0);
         assert_eq!(pseudo.radial_grid.len(), 431);
         assert_eq!(pseudo.projectors.len(), 2);
         assert_eq!(pseudo.projectors[0].angular_momentum, 0);
         assert_eq!(pseudo.projectors[1].angular_momentum, 1);
+    }
+
+    #[test]
+    fn parses_strict_norm_conserving_upf_v2() {
+        let text = r#"
+<UPF version="2.0.1">
+<PP_HEADER element="Si" pseudo_type="NC" relativistic="scalar"
+ is_ultrasoft="F" is_paw="F" core_correction="F" has_so="F"
+ functional="PZ" z_valence="4.0" mesh_size="3" number_of_proj="1"/>
+<PP_MESH>
+<PP_R>0.0 0.5 1.0</PP_R>
+<PP_RAB>0.25 0.5 0.5</PP_RAB>
+</PP_MESH>
+<PP_LOCAL>-2.0 -1.0 -0.5</PP_LOCAL>
+<PP_NONLOCAL>
+<PP_BETA.1 index="1" angular_momentum="0" cutoff_radius_index="2">
+0.0 1.0 0.0
+</PP_BETA.1>
+<PP_DIJ>1.5</PP_DIJ>
+</PP_NONLOCAL>
+<PP_RHOATOM>0.0 2.0 0.0</PP_RHOATOM>
+</UPF>
+"#;
+        let pseudo = NormConservingPseudo::from_v2_text(text).unwrap();
+        assert_eq!(pseudo.element, "Si");
+        assert_eq!(pseudo.functional, "PZ");
+        assert_eq!(pseudo.valence_charge, 4.0);
+        assert_eq!(pseudo.radial_grid, [0.0, 0.5, 1.0]);
+        assert_eq!(pseudo.projectors.len(), 1);
+        assert_eq!(pseudo.projectors[0].cutoff_points, 2);
+        assert_eq!(pseudo.dij_ry, [vec![1.5]]);
+    }
+
+    #[test]
+    fn parses_pinned_upf_v2_and_rejects_out_of_scope_v2_when_available() {
+        let lda_path =
+            Path::new("../dft studies/checkouts/q-e-7.6/EPW/examples/gan/pp/N_ONCV_LDA-1.0.upf");
+        if lda_path.exists() {
+            let pseudo = NormConservingPseudo::from_upf(lda_path).unwrap();
+            assert_eq!(pseudo.element, "N");
+            assert_eq!(pseudo.functional, "PZ");
+            assert_eq!(pseudo.valence_charge, 5.0);
+            assert_eq!(pseudo.radial_grid.len(), 1058);
+            assert_eq!(pseudo.projectors.len(), 4);
+            assert!((pseudo.dij_ry[0][0] - 13.970_499_110).abs() < 1.0e-9);
+        }
+
+        let spin_orbit_path = Path::new("../dft studies/checkouts/q-e-7.6/pseudo/Si_r.upf");
+        if spin_orbit_path.exists() {
+            let error = NormConservingPseudo::from_upf(spin_orbit_path).unwrap_err();
+            assert!(error.to_string().contains("core corrections"));
+        }
     }
 }
