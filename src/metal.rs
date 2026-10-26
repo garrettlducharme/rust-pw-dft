@@ -101,6 +101,14 @@ mod imp {
             error_buffer: *mut c_char,
             error_capacity: usize,
         ) -> c_int;
+        fn rpd_metal_hamiltonian_partial_norms(
+            context: *mut c_void,
+            input_interleaved: *const f32,
+            partial_output_interleaved: *mut f32,
+            batch: usize,
+            error_buffer: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
         fn rpd_metal_hamiltonian_reduction_chunks(context: *mut c_void) -> usize;
     }
 
@@ -116,6 +124,8 @@ mod imp {
         gram_reduction_pairs: usize,
         resident_projection_calls: usize,
         resident_projection_resyncs: usize,
+        norm_reduction_calls: usize,
+        norm_reduction_vectors: usize,
         _not_send_or_sync: PhantomData<Rc<()>>,
     }
 
@@ -185,7 +195,7 @@ mod imp {
                     + 2 * grid_points
                     + 2 * dimension * projector_count
                     + projector_count * projector_count
-                    + 2 * reduction_dimension * max_batch)
+                    + 3 * reduction_dimension * max_batch)
                 + std::mem::size_of_val(basis_indices);
             Ok(Self {
                 raw,
@@ -199,6 +209,8 @@ mod imp {
                 gram_reduction_pairs: 0,
                 resident_projection_calls: 0,
                 resident_projection_resyncs: 0,
+                norm_reduction_calls: 0,
+                norm_reduction_vectors: 0,
                 _not_send_or_sync: PhantomData,
             })
         }
@@ -346,6 +358,60 @@ mod imp {
                 .collect())
         }
 
+        /// Return direct residual norms from chunked complex-FP32 Metal
+        /// partials with final complex-FP64 accumulation on the CPU.
+        pub fn residual_norms(
+            &mut self,
+            vectors: &[Vec<num_complex::Complex64>],
+        ) -> Result<Vec<f64>> {
+            if vectors.is_empty() || vectors.len() > self.max_batch {
+                bail!("Metal residual-norm batch is empty or exceeds capacity");
+            }
+            if vectors.iter().any(|vector| vector.len() != self.dimension) {
+                bail!("Metal residual-norm vector has the wrong dimension");
+            }
+            let values: Vec<_> = vectors
+                .iter()
+                .flatten()
+                .map(|value| Complex32::new(value.re as f32, value.im as f32))
+                .collect();
+            let mut partials = vec![Complex32::default(); vectors.len() * self.reduction_chunks];
+            let mut error = vec![0_i8; 2048];
+            let status = unsafe {
+                rpd_metal_hamiltonian_partial_norms(
+                    self.raw.as_ptr(),
+                    values.as_ptr().cast::<f32>(),
+                    partials.as_mut_ptr().cast::<f32>(),
+                    vectors.len(),
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            if status != 0 {
+                let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
+                bail!("Metal partial norm reduction failed ({status}): {message}");
+            }
+            let mut norms = Vec::with_capacity(vectors.len());
+            for vector in 0..vectors.len() {
+                let sum = partials
+                    [vector * self.reduction_chunks..(vector + 1) * self.reduction_chunks]
+                    .iter()
+                    .fold(num_complex::Complex64::default(), |sum, value| {
+                        sum + num_complex::Complex64::new(value.re as f64, value.im as f64)
+                    });
+                if !sum.re.is_finite()
+                    || !sum.im.is_finite()
+                    || sum.im.abs() > 1.0e-6 * sum.re.abs().max(1.0e-20)
+                {
+                    bail!("Metal residual-norm reduction returned an invalid complex sum");
+                }
+                norms.push(sum.re.max(0.0).sqrt());
+            }
+            self.norm_reduction_calls += 1;
+            self.norm_reduction_vectors += vectors.len();
+            Ok(norms)
+        }
+
         /// Return the rectangular cross-Gram matrix `<left_i|right_j>`.
         /// Metal produces one complex-FP32 partial per 256 coefficients; Rust
         /// performs the final accumulation in complex FP64.
@@ -423,6 +489,14 @@ mod imp {
 
         pub fn resident_projection_resyncs(&self) -> usize {
             self.resident_projection_resyncs
+        }
+
+        pub fn norm_reduction_calls(&self) -> usize {
+            self.norm_reduction_calls
+        }
+
+        pub fn norm_reduction_vectors(&self) -> usize {
+            self.norm_reduction_vectors
         }
 
         pub fn projector_count(&self) -> usize {
@@ -658,6 +732,12 @@ mod imp {
         ) -> Result<Vec<num_complex::Complex64>> {
             bail!("binary was built without the macOS-only `metal` feature")
         }
+        pub fn residual_norms(
+            &mut self,
+            _vectors: &[Vec<num_complex::Complex64>],
+        ) -> Result<Vec<f64>> {
+            bail!("binary was built without the macOS-only `metal` feature")
+        }
         pub fn gram_reduction_calls(&self) -> usize {
             0
         }
@@ -668,6 +748,12 @@ mod imp {
             0
         }
         pub fn resident_projection_resyncs(&self) -> usize {
+            0
+        }
+        pub fn norm_reduction_calls(&self) -> usize {
+            0
+        }
+        pub fn norm_reduction_vectors(&self) -> usize {
             0
         }
         pub fn projector_count(&self) -> usize {

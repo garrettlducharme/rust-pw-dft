@@ -1,6 +1,6 @@
 use crate::backend::{BackendKind, PrecisionPolicy};
 use crate::eigensolver::{
-    DavidsonOptions, block_davidson_batched, block_davidson_batched_with_gram,
+    DavidsonOptions, block_davidson_batched, block_davidson_batched_with_reductions,
 };
 use crate::input::SimulationInput;
 use crate::lattice::Lattice;
@@ -170,7 +170,7 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
                     .begin_resident_davidson()
                     .context("failed to initialize resident Davidson journal")?;
                 let context = std::cell::RefCell::new(context);
-                block_davidson_batched_with_gram(
+                block_davidson_batched_with_reductions(
                     hamiltonian.kinetic_ry(),
                     previous_orbitals.as_deref(),
                     &davidson_options,
@@ -185,6 +185,10 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
                     |left, right| {
                         let mut context = context.borrow_mut();
                         context.resident_cross_gram(left, right)
+                    },
+                    |vectors| {
+                        let mut context = context.borrow_mut();
+                        context.residual_norms(vectors)
                     },
                 )
             }
@@ -327,6 +331,14 @@ pub fn run(input_path: &Path, requested_backend: BackendKind) -> Result<ScfResul
         final_terms.insert(
             "metal_resident_projection_resyncs".into(),
             context.resident_projection_resyncs() as f64,
+        );
+        final_terms.insert(
+            "metal_norm_reduction_calls".into(),
+            context.norm_reduction_calls() as f64,
+        );
+        final_terms.insert(
+            "metal_norm_reduction_vectors".into(),
+            context.norm_reduction_vectors() as f64,
         );
     }
     Ok(ScfResult {

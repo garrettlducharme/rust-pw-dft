@@ -1030,7 +1030,7 @@ pub fn hartree_xc_potential(
 mod tests {
     use super::*;
     #[cfg(all(feature = "metal", target_os = "macos"))]
-    use crate::eigensolver::block_davidson_batched_with_gram;
+    use crate::eigensolver::block_davidson_batched_with_reductions;
     use crate::eigensolver::{DavidsonOptions, block_davidson, projected_hermitian_eigensolve};
     use crate::input::SimulationInput;
     use std::path::Path;
@@ -1298,10 +1298,20 @@ mod tests {
                 persistent_context.gram_reduction_pairs(),
                 2 * wavefunctions.len() * wavefunctions.len() + 2 * wavefunctions.len() + 4
             );
+            let metal_norms = persistent_context.residual_norms(&wavefunctions).unwrap();
+            for (vector, &metal_norm) in wavefunctions.iter().zip(&metal_norms) {
+                let cpu_norm = vector.iter().map(Complex64::norm_sqr).sum::<f64>().sqrt();
+                assert!((metal_norm - cpu_norm).abs() < 1.0e-5);
+            }
+            assert_eq!(persistent_context.norm_reduction_calls(), 1);
+            assert_eq!(
+                persistent_context.norm_reduction_vectors(),
+                wavefunctions.len()
+            );
 
             persistent_context.begin_resident_davidson().unwrap();
             let context = std::cell::RefCell::new(&mut persistent_context);
-            let metal_davidson = block_davidson_batched_with_gram(
+            let metal_davidson = block_davidson_batched_with_reductions(
                 hamiltonian.kinetic_ry(),
                 None,
                 &DavidsonOptions {
@@ -1322,6 +1332,10 @@ mod tests {
                     let mut context = context.borrow_mut();
                     context.resident_cross_gram(left, right)
                 },
+                |vectors| {
+                    let mut context = context.borrow_mut();
+                    context.residual_norms(vectors)
+                },
             )
             .unwrap();
             assert!(metal_davidson.converged);
@@ -1336,6 +1350,7 @@ mod tests {
             );
             assert!(maximum_eigenvalue_error_mev < 5.0);
             assert!(context.borrow().resident_projection_calls() > 2);
+            assert!(context.borrow().norm_reduction_calls() > 1);
         }
 
         let ewald_a = ewald_energy_ry(&lattice, &input.atoms, pseudo.valence_charge, 0.6).unwrap();

@@ -71,6 +71,13 @@ struct CachedPartialGramGraph {
     MPSShape *right_shape;
 };
 
+struct CachedPartialNormGraph {
+    MPSGraph *graph;
+    MPSGraphTensor *input;
+    MPSGraphTensor *output;
+    MPSShape *input_shape;
+};
+
 struct ResidentHamiltonian {
     id<MTLDevice> device;
     id<MTLCommandQueue> queue;
@@ -97,6 +104,7 @@ struct ResidentHamiltonian {
     id<MTLBuffer> hamiltonian_output;
     id<MTLBuffer> reduction_left;
     id<MTLBuffer> reduction_right;
+    id<MTLBuffer> norm_input;
 };
 
 std::mutex cache_mutex;
@@ -105,6 +113,7 @@ std::unordered_map<std::string, CachedLocalGraph> local_graph_cache;
 std::unordered_map<std::string, CachedMatrixGraph> matrix_graph_cache;
 std::unordered_map<std::string, CachedResidentGraph> resident_graph_cache;
 std::unordered_map<std::string, CachedPartialGramGraph> partial_gram_graph_cache;
+std::unordered_map<std::string, CachedPartialNormGraph> partial_norm_graph_cache;
 
 id<MTLDevice> shared_device() {
     static id<MTLDevice> device = MTLCreateSystemDefaultDevice();
@@ -365,6 +374,31 @@ CachedPartialGramGraph partial_gram_graph_for(size_t chunks,
     CachedPartialGramGraph cached{
         graph, left_input, right_input, output, left_shape, right_shape};
     partial_gram_graph_cache.emplace(key, cached);
+    return cached;
+}
+
+CachedPartialNormGraph partial_norm_graph_for(size_t chunks, size_t batch) {
+    constexpr size_t chunk_size = 256;
+    std::string key = std::to_string(batch) + ":" + std::to_string(chunks);
+    std::lock_guard<std::mutex> lock(cache_mutex);
+    auto found = partial_norm_graph_cache.find(key);
+    if (found != partial_norm_graph_cache.end()) return found->second;
+
+    MPSShape *input_shape = @[@(batch), @(chunks), @(chunk_size)];
+    MPSGraph *graph = [[MPSGraph alloc] init];
+    MPSGraphTensor *input = [graph placeholderWithShape:input_shape
+                                               dataType:MPSDataTypeComplexFloat32
+                                                   name:@"residual_vectors"];
+    MPSGraphTensor *conjugate = [graph conjugateWithTensor:input
+                                                      name:@"residual_conjugate"];
+    MPSGraphTensor *squares = [graph multiplicationWithPrimaryTensor:conjugate
+                                                        secondaryTensor:input
+                                                                   name:@"residual_norm_squares"];
+    MPSGraphTensor *output = [graph reductionSumWithTensor:squares
+                                                       axis:2
+                                                       name:@"residual_norm_partials"];
+    CachedPartialNormGraph cached{graph, input, output, input_shape};
+    partial_norm_graph_cache.emplace(key, cached);
     return cached;
 }
 }  // namespace
@@ -637,7 +671,7 @@ extern "C" void *rpd_metal_hamiltonian_create(
         const size_t allocations[] = {
             grid_batch_bytes, compact_batch_bytes, grid_bytes, grid_bytes, index_bytes,
             projector_bytes, d_bytes, projector_bytes, compact_batch_bytes,
-            reduction_bytes, reduction_bytes};
+            reduction_bytes, reduction_bytes, reduction_bytes};
         for (size_t bytes : allocations) {
             if (bytes > project_limit - total) {
                 copy_message(error_buffer, error_capacity,
@@ -691,13 +725,15 @@ extern "C" void *rpd_metal_hamiltonian_create(
                                                        options:MTLResourceStorageModeShared];
         context->reduction_right = [device newBufferWithLength:reduction_bytes
                                                         options:MTLResourceStorageModeShared];
+        context->norm_input = [device newBufferWithLength:reduction_bytes
+                                                   options:MTLResourceStorageModeShared];
         if (context->grid_input == nil || context->compact_input == nil ||
             context->potential == nil || context->kinetic == nil ||
             context->basis_indices == nil ||
             context->projector_conjugate == nil || context->d_transpose == nil ||
             context->projector_transpose == nil || context->hamiltonian_output == nil ||
             context->reduction_left == nil ||
-            context->reduction_right == nil) {
+            context->reduction_right == nil || context->norm_input == nil) {
             delete context;
             copy_message(error_buffer, error_capacity,
                          @"failed to allocate resident Metal buffers");
@@ -979,6 +1015,55 @@ extern "C" int rpd_metal_hamiltonian_resident_partial_gram(
                                                                       cached.left: left_data,
                                                                       cached.right: right_data
                                                                   }
+                                                          targetTensors:@[cached.output]
+                                                       targetOperations:nil];
+            MPSGraphTensorData *output = result[cached.output];
+            [[output mpsndarray] readBytes:partial_output_interleaved strideBytes:nil];
+            context->peak_device_allocated_bytes = std::max(
+                context->peak_device_allocated_bytes,
+                static_cast<uint64_t>(context->device.currentAllocatedSize));
+        } @catch (NSException *exception) {
+            copy_message(error_buffer, error_capacity, exception.reason);
+            return 3;
+        }
+        return 0;
+    }
+}
+
+extern "C" int rpd_metal_hamiltonian_partial_norms(
+    void *opaque_context,
+    const float *input_interleaved,
+    float *partial_output_interleaved,
+    size_t batch,
+    char *error_buffer, size_t error_capacity) {
+    @autoreleasepool {
+        ResidentHamiltonian *context = static_cast<ResidentHamiltonian *>(opaque_context);
+        if (!context || !input_interleaved || !partial_output_interleaved ||
+            batch == 0 || batch > context->max_batch) {
+            copy_message(error_buffer, error_capacity,
+                         @"invalid partial-norm arguments");
+            return 2;
+        }
+        const size_t complex_bytes = 2 * sizeof(float);
+        const size_t reduction_row_bytes = context->reduction_dimension * complex_bytes;
+        const size_t compact_row_bytes = context->dimension * complex_bytes;
+        std::memset(context->norm_input.contents, 0,
+                    context->reduction_dimension * batch * complex_bytes);
+        for (size_t state = 0; state < batch; ++state) {
+            std::memcpy(static_cast<char *>(context->norm_input.contents) +
+                            state * reduction_row_bytes,
+                        input_interleaved + state * context->dimension * 2,
+                        compact_row_bytes);
+        }
+        CachedPartialNormGraph cached =
+            partial_norm_graph_for(context->reduction_chunks, batch);
+        MPSGraphTensorData *input_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:context->norm_input
+                        shape:cached.input_shape
+                     dataType:MPSDataTypeComplexFloat32];
+        @try {
+            NSDictionary *result = [cached.graph runWithMTLCommandQueue:context->queue
+                                                                  feeds:@{cached.input: input_data}
                                                           targetTensors:@[cached.output]
                                                        targetOperations:nil];
             MPSGraphTensorData *output = result[cached.output];

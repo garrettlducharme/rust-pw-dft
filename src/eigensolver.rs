@@ -42,6 +42,13 @@ fn cross_gram_cpu(left: &[Vec<Complex64>], right: &[Vec<Complex64>]) -> Vec<Comp
         .collect()
 }
 
+fn vector_norms_cpu(vectors: &[Vec<Complex64>]) -> Vec<f64> {
+    vectors
+        .iter()
+        .map(|vector| inner_product(vector, vector).re.max(0.0).sqrt())
+        .collect()
+}
+
 fn orthonormalize_candidate(
     mut candidate: Vec<Complex64>,
     basis: &[Vec<Complex64>],
@@ -127,12 +134,40 @@ pub fn block_davidson_batched_with_gram<F, G>(
     kinetic_diagonal: &[f64],
     initial_vectors: Option<&[Vec<Complex64>]>,
     options: &DavidsonOptions,
-    mut apply_batch: F,
-    mut cross_gram: G,
+    apply_batch: F,
+    cross_gram: G,
 ) -> Result<DavidsonResult>
 where
     F: FnMut(&[Vec<Complex64>]) -> Result<Vec<Vec<Complex64>>>,
     G: FnMut(&[Vec<Complex64>], &[Vec<Complex64>]) -> Result<Vec<Complex64>>,
+{
+    block_davidson_batched_with_reductions(
+        kinetic_diagonal,
+        initial_vectors,
+        options,
+        apply_batch,
+        cross_gram,
+        |vectors| Ok(vector_norms_cpu(vectors)),
+    )
+}
+
+/// Batched block Davidson with explicit cross-Gram and direct-norm backends.
+///
+/// The norm backend receives fully formed residual vectors and must return one
+/// nonnegative FP64 norm per vector. Computing direct residual norms avoids the
+/// cancellation inherent in deriving them from projected matrices.
+pub fn block_davidson_batched_with_reductions<F, G, N>(
+    kinetic_diagonal: &[f64],
+    initial_vectors: Option<&[Vec<Complex64>]>,
+    options: &DavidsonOptions,
+    mut apply_batch: F,
+    mut cross_gram: G,
+    mut vector_norms: N,
+) -> Result<DavidsonResult>
+where
+    F: FnMut(&[Vec<Complex64>]) -> Result<Vec<Vec<Complex64>>>,
+    G: FnMut(&[Vec<Complex64>], &[Vec<Complex64>]) -> Result<Vec<Complex64>>,
+    N: FnMut(&[Vec<Complex64>]) -> Result<Vec<f64>>,
 {
     let dimension = kinetic_diagonal.len();
     ensure!(dimension > 0, "Davidson dimension must be nonzero");
@@ -237,7 +272,6 @@ where
         let mut ritz_vectors = Vec::with_capacity(options.roots);
         let mut applied_ritz = Vec::with_capacity(options.roots);
         let mut residual_vectors = Vec::with_capacity(options.roots);
-        let mut residual_norms = Vec::with_capacity(options.roots);
         for (root, &eigenvalue) in eigenvalues.iter().enumerate() {
             let vector = combine_basis(&basis, &projected_pairs.eigenvectors[root]);
             let applied = combine_basis(&applied_basis, &projected_pairs.eigenvectors[root]);
@@ -246,12 +280,21 @@ where
                 .zip(&vector)
                 .map(|(hpsi, psi)| *hpsi - eigenvalue * psi)
                 .collect();
-            let norm = inner_product(&residual, &residual).re.max(0.0).sqrt();
             ritz_vectors.push(vector);
             applied_ritz.push(applied);
             residual_vectors.push(residual);
-            residual_norms.push(norm);
         }
+        let residual_norms = vector_norms(&residual_vectors)?;
+        ensure!(
+            residual_norms.len() == options.roots,
+            "norm backend returned the wrong vector count"
+        );
+        ensure!(
+            residual_norms
+                .iter()
+                .all(|norm| norm.is_finite() && *norm >= 0.0),
+            "norm backend returned an invalid residual norm"
+        );
         let converged = residual_norms
             .iter()
             .all(|&norm| norm <= options.residual_tolerance);
@@ -480,5 +523,44 @@ mod tests {
                 (accelerated_reduction.eigenvalues[root] - dense.eigenvalues[root]).abs() < 1.0e-11
             );
         }
+    }
+
+    #[test]
+    fn rejects_invalid_accelerator_norm_results() {
+        let kinetic = [1.0, 2.0];
+        let options = DavidsonOptions {
+            roots: 1,
+            residual_tolerance: 1.0e-10,
+            max_iterations: 2,
+            max_subspace: 2,
+        };
+        let apply = |vectors: &[Vec<Complex64>]| {
+            Ok(vectors
+                .iter()
+                .map(|vector| vec![vector[0], 2.0 * vector[1]])
+                .collect())
+        };
+
+        let wrong_count = block_davidson_batched_with_reductions(
+            &kinetic,
+            None,
+            &options,
+            apply,
+            |left, right| Ok(cross_gram_cpu(left, right)),
+            |_| Ok(Vec::new()),
+        )
+        .unwrap_err();
+        assert!(wrong_count.to_string().contains("wrong vector count"));
+
+        let invalid_value = block_davidson_batched_with_reductions(
+            &kinetic,
+            None,
+            &options,
+            apply,
+            |left, right| Ok(cross_gram_cpu(left, right)),
+            |_| Ok(vec![f64::NAN]),
+        )
+        .unwrap_err();
+        assert!(invalid_value.to_string().contains("invalid residual norm"));
     }
 }
