@@ -78,6 +78,21 @@ struct CachedPartialNormGraph {
     MPSShape *input_shape;
 };
 
+struct CachedResidentRitzGraph {
+    MPSGraph *graph;
+    MPSGraphTensor *basis;
+    MPSGraphTensor *applied_basis;
+    MPSGraphTensor *coefficients;
+    MPSGraphTensor *eigenvalues;
+    MPSGraphTensor *ritz;
+    MPSGraphTensor *applied_ritz;
+    MPSGraphTensor *residual;
+    MPSShape *basis_shape;
+    MPSShape *coefficients_shape;
+    MPSShape *eigenvalues_shape;
+    MPSShape *output_shape;
+};
+
 struct ResidentHamiltonian {
     id<MTLDevice> device;
     id<MTLCommandQueue> queue;
@@ -91,6 +106,7 @@ struct ResidentHamiltonian {
     size_t reduction_chunks;
     size_t reduction_dimension;
     size_t resident_count;
+    size_t resident_ritz_count;
     bool resident_recording;
     uint64_t peak_device_allocated_bytes;
     id<MTLBuffer> grid_input;
@@ -105,6 +121,11 @@ struct ResidentHamiltonian {
     id<MTLBuffer> reduction_left;
     id<MTLBuffer> reduction_right;
     id<MTLBuffer> norm_input;
+    id<MTLBuffer> ritz_coefficients;
+    id<MTLBuffer> ritz_eigenvalues;
+    id<MTLBuffer> resident_ritz;
+    id<MTLBuffer> resident_applied_ritz;
+    id<MTLBuffer> resident_residual;
 };
 
 std::mutex cache_mutex;
@@ -114,6 +135,7 @@ std::unordered_map<std::string, CachedMatrixGraph> matrix_graph_cache;
 std::unordered_map<std::string, CachedResidentGraph> resident_graph_cache;
 std::unordered_map<std::string, CachedPartialGramGraph> partial_gram_graph_cache;
 std::unordered_map<std::string, CachedPartialNormGraph> partial_norm_graph_cache;
+std::unordered_map<std::string, CachedResidentRitzGraph> resident_ritz_graph_cache;
 
 id<MTLDevice> shared_device() {
     static id<MTLDevice> device = MTLCreateSystemDefaultDevice();
@@ -401,6 +423,56 @@ CachedPartialNormGraph partial_norm_graph_for(size_t chunks, size_t batch) {
     partial_norm_graph_cache.emplace(key, cached);
     return cached;
 }
+
+CachedResidentRitzGraph resident_ritz_graph_for(size_t reduction_dimension,
+                                                size_t subspace,
+                                                size_t roots) {
+    std::string key = std::to_string(roots) + ":" + std::to_string(subspace) +
+                      ":" + std::to_string(reduction_dimension);
+    std::lock_guard<std::mutex> lock(cache_mutex);
+    auto found = resident_ritz_graph_cache.find(key);
+    if (found != resident_ritz_graph_cache.end()) return found->second;
+
+    MPSShape *basis_shape = @[@(subspace), @(reduction_dimension)];
+    MPSShape *coefficients_shape = @[@(roots), @(subspace)];
+    MPSShape *eigenvalues_shape = @[@(roots), @1];
+    MPSShape *output_shape = @[@(roots), @(reduction_dimension)];
+    MPSGraph *graph = [[MPSGraph alloc] init];
+    MPSGraphTensor *basis = [graph placeholderWithShape:basis_shape
+                                              dataType:MPSDataTypeComplexFloat32
+                                                  name:@"resident_basis"];
+    MPSGraphTensor *applied_basis =
+        [graph placeholderWithShape:basis_shape
+                           dataType:MPSDataTypeComplexFloat32
+                               name:@"resident_applied_basis"];
+    MPSGraphTensor *coefficients =
+        [graph placeholderWithShape:coefficients_shape
+                           dataType:MPSDataTypeComplexFloat32
+                               name:@"ritz_coefficients"];
+    MPSGraphTensor *eigenvalues =
+        [graph placeholderWithShape:eigenvalues_shape
+                           dataType:MPSDataTypeComplexFloat32
+                               name:@"ritz_eigenvalues"];
+    MPSGraphTensor *ritz = [graph matrixMultiplicationWithPrimaryTensor:coefficients
+                                                        secondaryTensor:basis
+                                                                   name:@"resident_ritz"];
+    MPSGraphTensor *applied_ritz =
+        [graph matrixMultiplicationWithPrimaryTensor:coefficients
+                                     secondaryTensor:applied_basis
+                                                name:@"resident_applied_ritz"];
+    MPSGraphTensor *scaled_ritz = [graph multiplicationWithPrimaryTensor:ritz
+                                                         secondaryTensor:eigenvalues
+                                                                    name:@"scaled_resident_ritz"];
+    MPSGraphTensor *residual = [graph subtractionWithPrimaryTensor:applied_ritz
+                                                   secondaryTensor:scaled_ritz
+                                                              name:@"resident_residual"];
+    CachedResidentRitzGraph cached{
+        graph, basis, applied_basis, coefficients, eigenvalues, ritz,
+        applied_ritz, residual, basis_shape, coefficients_shape,
+        eigenvalues_shape, output_shape};
+    resident_ritz_graph_cache.emplace(key, cached);
+    return cached;
+}
 }  // namespace
 
 extern "C" int rpd_metal_device_name(char *buffer, size_t capacity) {
@@ -634,7 +706,8 @@ extern "C" void *rpd_metal_hamiltonian_create(
         if (!kinetic_interleaved || !basis_indices || !projector_conjugate_interleaved ||
             !d_transpose_interleaved || !projector_transpose_interleaved ||
             nx == 0 || ny == 0 || nz == 0 || dimension == 0 ||
-            projector_count == 0 || max_batch == 0) {
+            projector_count == 0 || max_batch == 0 ||
+            dimension > SIZE_MAX - 255) {
             copy_message(error_buffer, error_capacity, @"invalid resident-Hamiltonian arguments");
             return nullptr;
         }
@@ -648,7 +721,8 @@ extern "C" void *rpd_metal_hamiltonian_create(
             nx * ny * nz > SIZE_MAX / max_batch ||
             dimension > SIZE_MAX / max_batch ||
             dimension > SIZE_MAX / projector_count ||
-            projector_count > SIZE_MAX / projector_count) {
+            projector_count > SIZE_MAX / projector_count ||
+            max_batch > SIZE_MAX / max_batch) {
             copy_message(error_buffer, error_capacity, @"resident-Hamiltonian allocation overflow");
             return nullptr;
         }
@@ -658,6 +732,21 @@ extern "C" void *rpd_metal_hamiltonian_create(
             (dimension + reduction_chunk_size - 1) / reduction_chunk_size;
         const size_t reduction_dimension = reduction_chunks * reduction_chunk_size;
         const size_t complex_bytes = 2 * sizeof(float);
+        const size_t complex_element_limit = SIZE_MAX / complex_bytes;
+        if (reduction_dimension > SIZE_MAX / max_batch ||
+            grid_count * max_batch > complex_element_limit ||
+            dimension * max_batch > complex_element_limit ||
+            grid_count > complex_element_limit ||
+            dimension * projector_count > complex_element_limit ||
+            projector_count * projector_count > complex_element_limit ||
+            reduction_dimension * max_batch > complex_element_limit ||
+            max_batch * max_batch > complex_element_limit ||
+            max_batch > complex_element_limit ||
+            dimension * max_batch > SIZE_MAX / sizeof(int32_t)) {
+            copy_message(error_buffer, error_capacity,
+                         @"resident-Hamiltonian byte-size overflow");
+            return nullptr;
+        }
         const size_t grid_batch_bytes = grid_count * max_batch * complex_bytes;
         const size_t compact_batch_bytes = dimension * max_batch * complex_bytes;
         const size_t grid_bytes = grid_count * complex_bytes;
@@ -665,12 +754,16 @@ extern "C" void *rpd_metal_hamiltonian_create(
         const size_t projector_bytes = dimension * projector_count * complex_bytes;
         const size_t d_bytes = projector_count * projector_count * complex_bytes;
         const size_t reduction_bytes = reduction_dimension * max_batch * complex_bytes;
+        const size_t coefficient_bytes = max_batch * max_batch * complex_bytes;
+        const size_t eigenvalue_bytes = max_batch * complex_bytes;
         const uint64_t project_limit = std::min((uint64_t)(12ULL << 30),
                                                 device.recommendedMaxWorkingSetSize);
         uint64_t total = 0;
         const size_t allocations[] = {
             grid_batch_bytes, compact_batch_bytes, grid_bytes, grid_bytes, index_bytes,
             projector_bytes, d_bytes, projector_bytes, compact_batch_bytes,
+            reduction_bytes, reduction_bytes, reduction_bytes,
+            coefficient_bytes, eigenvalue_bytes,
             reduction_bytes, reduction_bytes, reduction_bytes};
         for (size_t bytes : allocations) {
             if (bytes > project_limit - total) {
@@ -693,6 +786,7 @@ extern "C" void *rpd_metal_hamiltonian_create(
         context->reduction_chunks = reduction_chunks;
         context->reduction_dimension = reduction_dimension;
         context->resident_count = 0;
+        context->resident_ritz_count = 0;
         context->resident_recording = false;
         context->peak_device_allocated_bytes = device.currentAllocatedSize;
         context->grid_input = [device newBufferWithLength:grid_batch_bytes
@@ -727,13 +821,26 @@ extern "C" void *rpd_metal_hamiltonian_create(
                                                         options:MTLResourceStorageModeShared];
         context->norm_input = [device newBufferWithLength:reduction_bytes
                                                    options:MTLResourceStorageModeShared];
+        context->ritz_coefficients = [device newBufferWithLength:coefficient_bytes
+                                                          options:MTLResourceStorageModeShared];
+        context->ritz_eigenvalues = [device newBufferWithLength:eigenvalue_bytes
+                                                         options:MTLResourceStorageModeShared];
+        context->resident_ritz = [device newBufferWithLength:reduction_bytes
+                                                     options:MTLResourceStorageModeShared];
+        context->resident_applied_ritz = [device newBufferWithLength:reduction_bytes
+                                                             options:MTLResourceStorageModeShared];
+        context->resident_residual = [device newBufferWithLength:reduction_bytes
+                                                         options:MTLResourceStorageModeShared];
         if (context->grid_input == nil || context->compact_input == nil ||
             context->potential == nil || context->kinetic == nil ||
             context->basis_indices == nil ||
             context->projector_conjugate == nil || context->d_transpose == nil ||
             context->projector_transpose == nil || context->hamiltonian_output == nil ||
             context->reduction_left == nil ||
-            context->reduction_right == nil || context->norm_input == nil) {
+            context->reduction_right == nil || context->norm_input == nil ||
+            context->ritz_coefficients == nil || context->ritz_eigenvalues == nil ||
+            context->resident_ritz == nil || context->resident_applied_ritz == nil ||
+            context->resident_residual == nil) {
             delete context;
             copy_message(error_buffer, error_capacity,
                          @"failed to allocate resident Metal buffers");
@@ -824,6 +931,7 @@ extern "C" int rpd_metal_hamiltonian_apply(
                     // to the next projection rather than mixing both bases.
                     context->resident_recording = false;
                     context->resident_count = 0;
+                    context->resident_ritz_count = 0;
                 } else {
                     const size_t resident_row_bytes =
                         context->reduction_dimension * complex_bytes;
@@ -848,6 +956,7 @@ extern "C" int rpd_metal_hamiltonian_apply(
                                     compact_row_bytes);
                     }
                     context->resident_count += batch;
+                    context->resident_ritz_count = 0;
                 }
             }
             context->peak_device_allocated_bytes = std::max(
@@ -880,6 +989,7 @@ extern "C" int rpd_metal_hamiltonian_partial_gram(
         }
         context->resident_recording = false;
         context->resident_count = 0;
+        context->resident_ritz_count = 0;
         const size_t complex_bytes = 2 * sizeof(float);
         const size_t reduction_row_bytes = context->reduction_dimension * complex_bytes;
         const size_t compact_row_bytes = context->dimension * complex_bytes;
@@ -940,6 +1050,7 @@ extern "C" int rpd_metal_hamiltonian_resident_begin(
         return 2;
     }
     context->resident_count = 0;
+    context->resident_ritz_count = 0;
     context->resident_recording = true;
     return 0;
 }
@@ -982,6 +1093,7 @@ extern "C" int rpd_metal_hamiltonian_resident_sync(
                     compact_row_bytes);
     }
     context->resident_count = batch;
+    context->resident_ritz_count = 0;
     context->resident_recording = true;
     return 0;
 }
@@ -1015,6 +1127,157 @@ extern "C" int rpd_metal_hamiltonian_resident_partial_gram(
                                                                       cached.left: left_data,
                                                                       cached.right: right_data
                                                                   }
+                                                          targetTensors:@[cached.output]
+                                                       targetOperations:nil];
+            MPSGraphTensorData *output = result[cached.output];
+            [[output mpsndarray] readBytes:partial_output_interleaved strideBytes:nil];
+            context->peak_device_allocated_bytes = std::max(
+                context->peak_device_allocated_bytes,
+                static_cast<uint64_t>(context->device.currentAllocatedSize));
+        } @catch (NSException *exception) {
+            copy_message(error_buffer, error_capacity, exception.reason);
+            return 3;
+        }
+        return 0;
+    }
+}
+
+extern "C" int rpd_metal_hamiltonian_resident_form_ritz_residuals(
+    void *opaque_context,
+    const float *coefficients_interleaved,
+    const float *eigenvalues_interleaved,
+    size_t subspace,
+    size_t roots,
+    char *error_buffer, size_t error_capacity) {
+    @autoreleasepool {
+        ResidentHamiltonian *context = static_cast<ResidentHamiltonian *>(opaque_context);
+        if (!context || !coefficients_interleaved || !eigenvalues_interleaved ||
+            subspace == 0 || roots == 0 || subspace != context->resident_count ||
+            subspace > context->max_batch || roots > context->max_batch) {
+            copy_message(error_buffer, error_capacity,
+                         @"resident Ritz construction is out of sync");
+            return 2;
+        }
+        const size_t complex_bytes = 2 * sizeof(float);
+        std::memcpy(context->ritz_coefficients.contents, coefficients_interleaved,
+                    roots * subspace * complex_bytes);
+        std::memcpy(context->ritz_eigenvalues.contents, eigenvalues_interleaved,
+                    roots * complex_bytes);
+
+        CachedResidentRitzGraph cached = resident_ritz_graph_for(
+            context->reduction_dimension, subspace, roots);
+        MPSGraphTensorData *basis_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:context->reduction_left
+                        shape:cached.basis_shape
+                     dataType:MPSDataTypeComplexFloat32];
+        MPSGraphTensorData *applied_basis_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:context->reduction_right
+                        shape:cached.basis_shape
+                     dataType:MPSDataTypeComplexFloat32];
+        MPSGraphTensorData *coefficient_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:context->ritz_coefficients
+                        shape:cached.coefficients_shape
+                     dataType:MPSDataTypeComplexFloat32];
+        MPSGraphTensorData *eigenvalue_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:context->ritz_eigenvalues
+                        shape:cached.eigenvalues_shape
+                     dataType:MPSDataTypeComplexFloat32];
+        MPSGraphTensorData *ritz_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:context->resident_ritz
+                        shape:cached.output_shape
+                     dataType:MPSDataTypeComplexFloat32];
+        MPSGraphTensorData *applied_ritz_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:context->resident_applied_ritz
+                        shape:cached.output_shape
+                     dataType:MPSDataTypeComplexFloat32];
+        MPSGraphTensorData *residual_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:context->resident_residual
+                        shape:cached.output_shape
+                     dataType:MPSDataTypeComplexFloat32];
+        @try {
+            [cached.graph runWithMTLCommandQueue:context->queue
+                                           feeds:@{
+                                               cached.basis: basis_data,
+                                               cached.applied_basis: applied_basis_data,
+                                               cached.coefficients: coefficient_data,
+                                               cached.eigenvalues: eigenvalue_data
+                                           }
+                                targetOperations:nil
+                               resultsDictionary:@{
+                                   cached.ritz: ritz_data,
+                                   cached.applied_ritz: applied_ritz_data,
+                                   cached.residual: residual_data
+                               }];
+            context->resident_ritz_count = roots;
+            context->peak_device_allocated_bytes = std::max(
+                context->peak_device_allocated_bytes,
+                static_cast<uint64_t>(context->device.currentAllocatedSize));
+        } @catch (NSException *exception) {
+            context->resident_ritz_count = 0;
+            copy_message(error_buffer, error_capacity, exception.reason);
+            return 3;
+        }
+        return 0;
+    }
+}
+
+extern "C" int rpd_metal_hamiltonian_resident_read_ritz_residuals(
+    void *opaque_context,
+    float *ritz_output_interleaved,
+    float *applied_ritz_output_interleaved,
+    float *residual_output_interleaved,
+    size_t roots,
+    char *error_buffer, size_t error_capacity) {
+    ResidentHamiltonian *context = static_cast<ResidentHamiltonian *>(opaque_context);
+    if (!context || !ritz_output_interleaved || !applied_ritz_output_interleaved ||
+        !residual_output_interleaved || roots == 0 ||
+        roots != context->resident_ritz_count) {
+        copy_message(error_buffer, error_capacity,
+                     @"resident Ritz vectors are unavailable or out of sync");
+        return 2;
+    }
+    const size_t complex_bytes = 2 * sizeof(float);
+    const size_t resident_row_bytes = context->reduction_dimension * complex_bytes;
+    const size_t compact_row_bytes = context->dimension * complex_bytes;
+    for (size_t root = 0; root < roots; ++root) {
+        std::memcpy(ritz_output_interleaved + root * context->dimension * 2,
+                    static_cast<const char *>(context->resident_ritz.contents) +
+                        root * resident_row_bytes,
+                    compact_row_bytes);
+        std::memcpy(applied_ritz_output_interleaved + root * context->dimension * 2,
+                    static_cast<const char *>(context->resident_applied_ritz.contents) +
+                        root * resident_row_bytes,
+                    compact_row_bytes);
+        std::memcpy(residual_output_interleaved + root * context->dimension * 2,
+                    static_cast<const char *>(context->resident_residual.contents) +
+                        root * resident_row_bytes,
+                    compact_row_bytes);
+    }
+    return 0;
+}
+
+extern "C" int rpd_metal_hamiltonian_resident_partial_residual_norms(
+    void *opaque_context,
+    float *partial_output_interleaved,
+    size_t roots,
+    char *error_buffer, size_t error_capacity) {
+    @autoreleasepool {
+        ResidentHamiltonian *context = static_cast<ResidentHamiltonian *>(opaque_context);
+        if (!context || !partial_output_interleaved || roots == 0 ||
+            roots != context->resident_ritz_count) {
+            copy_message(error_buffer, error_capacity,
+                         @"resident residual norms are unavailable or out of sync");
+            return 2;
+        }
+        CachedPartialNormGraph cached =
+            partial_norm_graph_for(context->reduction_chunks, roots);
+        MPSGraphTensorData *input_data = [[MPSGraphTensorData alloc]
+            initWithMTLBuffer:context->resident_residual
+                        shape:cached.input_shape
+                     dataType:MPSDataTypeComplexFloat32];
+        @try {
+            NSDictionary *result = [cached.graph runWithMTLCommandQueue:context->queue
+                                                                  feeds:@{cached.input: input_data}
                                                           targetTensors:@[cached.output]
                                                        targetOperations:nil];
             MPSGraphTensorData *output = result[cached.output];

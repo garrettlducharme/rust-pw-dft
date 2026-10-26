@@ -1,6 +1,13 @@
 use anyhow::{Result, bail};
 use num_complex::Complex32;
 
+#[derive(Debug)]
+pub struct ResidentRitzVectors {
+    pub ritz: Vec<Vec<num_complex::Complex64>>,
+    pub applied_ritz: Vec<Vec<num_complex::Complex64>>,
+    pub residuals: Vec<Vec<num_complex::Complex64>>,
+}
+
 #[cfg(all(feature = "metal", target_os = "macos"))]
 mod imp {
     use super::*;
@@ -101,6 +108,31 @@ mod imp {
             error_buffer: *mut c_char,
             error_capacity: usize,
         ) -> c_int;
+        fn rpd_metal_hamiltonian_resident_form_ritz_residuals(
+            context: *mut c_void,
+            coefficients_interleaved: *const f32,
+            eigenvalues_interleaved: *const f32,
+            subspace: usize,
+            roots: usize,
+            error_buffer: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
+        fn rpd_metal_hamiltonian_resident_read_ritz_residuals(
+            context: *mut c_void,
+            ritz_output_interleaved: *mut f32,
+            applied_ritz_output_interleaved: *mut f32,
+            residual_output_interleaved: *mut f32,
+            roots: usize,
+            error_buffer: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
+        fn rpd_metal_hamiltonian_resident_partial_residual_norms(
+            context: *mut c_void,
+            partial_output_interleaved: *mut f32,
+            roots: usize,
+            error_buffer: *mut c_char,
+            error_capacity: usize,
+        ) -> c_int;
         fn rpd_metal_hamiltonian_partial_norms(
             context: *mut c_void,
             input_interleaved: *const f32,
@@ -126,6 +158,9 @@ mod imp {
         resident_projection_resyncs: usize,
         norm_reduction_calls: usize,
         norm_reduction_vectors: usize,
+        resident_ritz_updates: usize,
+        resident_coefficient_upload_bytes: usize,
+        resident_vector_download_bytes: usize,
         _not_send_or_sync: PhantomData<Rc<()>>,
     }
 
@@ -195,7 +230,9 @@ mod imp {
                     + 2 * grid_points
                     + 2 * dimension * projector_count
                     + projector_count * projector_count
-                    + 3 * reduction_dimension * max_batch)
+                    + 6 * reduction_dimension * max_batch
+                    + max_batch * max_batch
+                    + max_batch)
                 + std::mem::size_of_val(basis_indices);
             Ok(Self {
                 raw,
@@ -211,6 +248,9 @@ mod imp {
                 resident_projection_resyncs: 0,
                 norm_reduction_calls: 0,
                 norm_reduction_vectors: 0,
+                resident_ritz_updates: 0,
+                resident_coefficient_upload_bytes: 0,
+                resident_vector_download_bytes: 0,
                 _not_send_or_sync: PhantomData,
             })
         }
@@ -358,6 +398,158 @@ mod imp {
                 .collect())
         }
 
+        /// Form Ritz vectors, applied Ritz vectors, and residuals from the
+        /// resident Davidson journal. Only the compact coefficient matrix and
+        /// eigenvalues cross from the CPU; all full vectors remain in Metal
+        /// buffers until explicitly downloaded for validation or final output.
+        pub fn form_resident_ritz_residuals(
+            &mut self,
+            coefficients: &[Vec<num_complex::Complex64>],
+            eigenvalues: &[f64],
+        ) -> Result<()> {
+            if coefficients.is_empty() || coefficients.len() != eigenvalues.len() {
+                bail!("resident Ritz update requires one coefficient row per eigenvalue");
+            }
+            if coefficients.len() > self.max_batch {
+                bail!("resident Ritz root count exceeds capacity");
+            }
+            let subspace = coefficients[0].len();
+            if subspace == 0 || subspace > self.max_batch {
+                bail!("resident Ritz subspace is empty or exceeds capacity");
+            }
+            if coefficients.iter().any(|row| {
+                row.len() != subspace
+                    || row
+                        .iter()
+                        .any(|value| !value.re.is_finite() || !value.im.is_finite())
+            }) || eigenvalues.iter().any(|value| !value.is_finite())
+            {
+                bail!("resident Ritz coefficients or eigenvalues are invalid");
+            }
+            let coefficient_values: Vec<_> = coefficients
+                .iter()
+                .flatten()
+                .map(|value| Complex32::new(value.re as f32, value.im as f32))
+                .collect();
+            let eigenvalue_values: Vec<_> = eigenvalues
+                .iter()
+                .map(|&value| Complex32::new(value as f32, 0.0))
+                .collect();
+            let mut error = vec![0_i8; 2048];
+            let status = unsafe {
+                rpd_metal_hamiltonian_resident_form_ritz_residuals(
+                    self.raw.as_ptr(),
+                    coefficient_values.as_ptr().cast::<f32>(),
+                    eigenvalue_values.as_ptr().cast::<f32>(),
+                    subspace,
+                    coefficients.len(),
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            if status != 0 {
+                let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
+                bail!("resident Metal Ritz update failed ({status}): {message}");
+            }
+            self.resident_ritz_updates += 1;
+            self.resident_coefficient_upload_bytes += (coefficient_values.len()
+                + eigenvalue_values.len())
+                * std::mem::size_of::<Complex32>();
+            Ok(())
+        }
+
+        /// Download resident Ritz, applied-Ritz, and residual vectors. This is
+        /// an explicit validation/final-output boundary and is byte-counted.
+        pub fn read_resident_ritz_residuals(
+            &mut self,
+            roots: usize,
+        ) -> Result<ResidentRitzVectors> {
+            if roots == 0 || roots > self.max_batch {
+                bail!("resident Ritz download root count is invalid");
+            }
+            let value_count = roots * self.dimension;
+            let mut ritz = vec![Complex32::default(); value_count];
+            let mut applied_ritz = vec![Complex32::default(); value_count];
+            let mut residuals = vec![Complex32::default(); value_count];
+            let mut error = vec![0_i8; 2048];
+            let status = unsafe {
+                rpd_metal_hamiltonian_resident_read_ritz_residuals(
+                    self.raw.as_ptr(),
+                    ritz.as_mut_ptr().cast::<f32>(),
+                    applied_ritz.as_mut_ptr().cast::<f32>(),
+                    residuals.as_mut_ptr().cast::<f32>(),
+                    roots,
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            if status != 0 {
+                let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
+                bail!("resident Metal Ritz download failed ({status}): {message}");
+            }
+            self.resident_vector_download_bytes +=
+                3 * value_count * std::mem::size_of::<Complex32>();
+            let unpack = |values: Vec<Complex32>| {
+                values
+                    .chunks_exact(self.dimension)
+                    .map(|row| {
+                        row.iter()
+                            .map(|value| {
+                                num_complex::Complex64::new(value.re as f64, value.im as f64)
+                            })
+                            .collect()
+                    })
+                    .collect()
+            };
+            Ok(ResidentRitzVectors {
+                ritz: unpack(ritz),
+                applied_ritz: unpack(applied_ritz),
+                residuals: unpack(residuals),
+            })
+        }
+
+        /// Reduce norms directly from resident residual buffers without a
+        /// full-vector upload or download.
+        pub fn resident_residual_norms(&mut self, roots: usize) -> Result<Vec<f64>> {
+            if roots == 0 || roots > self.max_batch {
+                bail!("resident residual-norm root count is invalid");
+            }
+            let mut partials = vec![Complex32::default(); roots * self.reduction_chunks];
+            let mut error = vec![0_i8; 2048];
+            let status = unsafe {
+                rpd_metal_hamiltonian_resident_partial_residual_norms(
+                    self.raw.as_ptr(),
+                    partials.as_mut_ptr().cast::<f32>(),
+                    roots,
+                    error.as_mut_ptr(),
+                    error.len(),
+                )
+            };
+            if status != 0 {
+                let message = unsafe { CStr::from_ptr(error.as_ptr()) }.to_string_lossy();
+                bail!("resident Metal residual norms failed ({status}): {message}");
+            }
+            let mut norms = Vec::with_capacity(roots);
+            for root in 0..roots {
+                let sum = partials
+                    [root * self.reduction_chunks..(root + 1) * self.reduction_chunks]
+                    .iter()
+                    .fold(num_complex::Complex64::default(), |sum, value| {
+                        sum + num_complex::Complex64::new(value.re as f64, value.im as f64)
+                    });
+                if !sum.re.is_finite()
+                    || !sum.im.is_finite()
+                    || sum.im.abs() > 1.0e-6 * sum.re.abs().max(1.0e-20)
+                {
+                    bail!("resident Metal norm reduction returned an invalid complex sum");
+                }
+                norms.push(sum.re.max(0.0).sqrt());
+            }
+            self.norm_reduction_calls += 1;
+            self.norm_reduction_vectors += roots;
+            Ok(norms)
+        }
+
         /// Return direct residual norms from chunked complex-FP32 Metal
         /// partials with final complex-FP64 accumulation on the CPU.
         pub fn residual_norms(
@@ -497,6 +689,18 @@ mod imp {
 
         pub fn norm_reduction_vectors(&self) -> usize {
             self.norm_reduction_vectors
+        }
+
+        pub fn resident_ritz_updates(&self) -> usize {
+            self.resident_ritz_updates
+        }
+
+        pub fn resident_coefficient_upload_bytes(&self) -> usize {
+            self.resident_coefficient_upload_bytes
+        }
+
+        pub fn resident_vector_download_bytes(&self) -> usize {
+            self.resident_vector_download_bytes
         }
 
         pub fn projector_count(&self) -> usize {
@@ -722,6 +926,22 @@ mod imp {
         ) -> Result<Vec<num_complex::Complex64>> {
             bail!("binary was built without the macOS-only `metal` feature")
         }
+        pub fn form_resident_ritz_residuals(
+            &mut self,
+            _coefficients: &[Vec<num_complex::Complex64>],
+            _eigenvalues: &[f64],
+        ) -> Result<()> {
+            bail!("binary was built without the macOS-only `metal` feature")
+        }
+        pub fn read_resident_ritz_residuals(
+            &mut self,
+            _roots: usize,
+        ) -> Result<ResidentRitzVectors> {
+            bail!("binary was built without the macOS-only `metal` feature")
+        }
+        pub fn resident_residual_norms(&mut self, _roots: usize) -> Result<Vec<f64>> {
+            bail!("binary was built without the macOS-only `metal` feature")
+        }
         pub fn begin_resident_davidson(&mut self) -> Result<()> {
             bail!("binary was built without the macOS-only `metal` feature")
         }
@@ -754,6 +974,15 @@ mod imp {
             0
         }
         pub fn norm_reduction_vectors(&self) -> usize {
+            0
+        }
+        pub fn resident_ritz_updates(&self) -> usize {
+            0
+        }
+        pub fn resident_coefficient_upload_bytes(&self) -> usize {
+            0
+        }
+        pub fn resident_vector_download_bytes(&self) -> usize {
             0
         }
         pub fn projector_count(&self) -> usize {

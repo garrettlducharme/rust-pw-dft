@@ -1242,6 +1242,90 @@ mod tests {
             assert!(maximum_resident_projection_error < 1.0e-5);
             assert_eq!(persistent_context.resident_projection_calls(), 1);
             assert_eq!(persistent_context.resident_projection_resyncs(), 0);
+
+            let ritz_coefficients: Vec<Vec<Complex64>> = (0..2)
+                .map(|root| {
+                    (0..wavefunctions.len())
+                        .map(|state| {
+                            Complex64::new(
+                                0.17 * (root + state + 1) as f64,
+                                0.03 * (root as f64 - state as f64),
+                            )
+                        })
+                        .collect()
+                })
+                .collect();
+            let ritz_eigenvalues = [-0.35, 0.42];
+            persistent_context
+                .form_resident_ritz_residuals(&ritz_coefficients, &ritz_eigenvalues)
+                .unwrap();
+            let resident_norms = persistent_context.resident_residual_norms(2).unwrap();
+            assert_eq!(
+                persistent_context.resident_coefficient_upload_bytes(),
+                (2 * wavefunctions.len() + 2) * std::mem::size_of::<Complex32>()
+            );
+            assert_eq!(persistent_context.resident_vector_download_bytes(), 0);
+            let resident_vectors = persistent_context.read_resident_ritz_residuals(2).unwrap();
+            let combine = |source: &[Vec<Complex64>], coefficients: &[Complex64]| {
+                let mut output = vec![Complex64::default(); hamiltonian.dimension()];
+                for (vector, coefficient) in source.iter().zip(coefficients) {
+                    for (value, basis_value) in output.iter_mut().zip(vector) {
+                        *value += *coefficient * *basis_value;
+                    }
+                }
+                output
+            };
+            let relative_l2 = |actual: &[Complex64], expected: &[Complex64]| {
+                let error = actual
+                    .iter()
+                    .zip(expected)
+                    .map(|(a, b)| (*a - *b).norm_sqr())
+                    .sum::<f64>();
+                let reference = expected.iter().map(Complex64::norm_sqr).sum::<f64>();
+                (error / reference.max(1.0e-30)).sqrt()
+            };
+            let mut maximum_ritz_error = 0.0_f64;
+            let mut maximum_applied_ritz_error = 0.0_f64;
+            let mut maximum_residual_error = 0.0_f64;
+            let mut maximum_resident_norm_error = 0.0_f64;
+            for root in 0..2 {
+                let expected_ritz = combine(&wavefunctions, &ritz_coefficients[root]);
+                let expected_applied = combine(&persistent_full, &ritz_coefficients[root]);
+                let expected_residual: Vec<_> = expected_applied
+                    .iter()
+                    .zip(&expected_ritz)
+                    .map(|(applied, vector)| *applied - ritz_eigenvalues[root] * *vector)
+                    .collect();
+                maximum_ritz_error = maximum_ritz_error
+                    .max(relative_l2(&resident_vectors.ritz[root], &expected_ritz));
+                maximum_applied_ritz_error = maximum_applied_ritz_error.max(relative_l2(
+                    &resident_vectors.applied_ritz[root],
+                    &expected_applied,
+                ));
+                maximum_residual_error = maximum_residual_error.max(relative_l2(
+                    &resident_vectors.residuals[root],
+                    &expected_residual,
+                ));
+                let expected_norm = expected_residual
+                    .iter()
+                    .map(Complex64::norm_sqr)
+                    .sum::<f64>()
+                    .sqrt();
+                maximum_resident_norm_error = maximum_resident_norm_error
+                    .max((resident_norms[root] - expected_norm).abs() / expected_norm.max(1.0e-30));
+            }
+            eprintln!(
+                "silicon resident Ritz/applied/residual/norm relative errors: {maximum_ritz_error:e} / {maximum_applied_ritz_error:e} / {maximum_residual_error:e} / {maximum_resident_norm_error:e}"
+            );
+            assert!(maximum_ritz_error < 2.0e-5);
+            assert!(maximum_applied_ritz_error < 2.0e-5);
+            assert!(maximum_residual_error < 2.0e-5);
+            assert!(maximum_resident_norm_error < 2.0e-5);
+            assert_eq!(persistent_context.resident_ritz_updates(), 1);
+            assert_eq!(
+                persistent_context.resident_vector_download_bytes(),
+                3 * 2 * hamiltonian.dimension() * std::mem::size_of::<Complex32>()
+            );
             let resynced_projection = persistent_context
                 .resident_cross_gram(&wavefunctions[..2], &persistent_full[..2])
                 .unwrap();
@@ -1259,6 +1343,7 @@ mod tests {
             }
             assert_eq!(persistent_context.resident_projection_calls(), 2);
             assert_eq!(persistent_context.resident_projection_resyncs(), 1);
+            assert!(persistent_context.resident_residual_norms(2).is_err());
 
             let metal_gram = persistent_context
                 .cross_gram(&wavefunctions, &wavefunctions)
@@ -1309,10 +1394,10 @@ mod tests {
                 "silicon Metal direct-norm maximum relative error: {maximum_norm_relative_error:e}"
             );
             assert!(maximum_norm_relative_error < 1.0e-5);
-            assert_eq!(persistent_context.norm_reduction_calls(), 1);
+            assert_eq!(persistent_context.norm_reduction_calls(), 2);
             assert_eq!(
                 persistent_context.norm_reduction_vectors(),
-                wavefunctions.len()
+                wavefunctions.len() + 2
             );
 
             persistent_context.begin_resident_davidson().unwrap();
