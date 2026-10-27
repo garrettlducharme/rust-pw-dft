@@ -332,24 +332,28 @@ fn run_with_profile(
     let lattice = Lattice::new(input.cell.lattice_bohr)?;
     let g_vectors = lattice.enumerate_g_vectors(input.cutoff_ry);
     let mut pseudo_hashes = BTreeMap::new();
-    ensure!(
-        input.pseudopotentials.len() == 1,
-        "the CPU scientific slice supports one species"
-    );
-    let (element, pseudo_path) = input.pseudopotentials.first_key_value().unwrap();
-    let pseudo = NormConservingPseudo::from_upf(pseudo_path)?;
-    ensure!(
-        &pseudo.element == element,
-        "pseudopotential element mismatch"
-    );
-    ensure!(
-        input.xc.matches_upf_label(&pseudo.functional),
-        "input XC {} is incompatible with pseudopotential functional {}",
-        input.xc.identifier(),
-        pseudo.functional
-    );
-    pseudo_hashes.insert(element.clone(), sha256(pseudo_path)?);
-    let electron_count = pseudo.valence_charge * input.atoms.len() as f64;
+    let mut pseudos = BTreeMap::new();
+    for (element, pseudo_path) in &input.pseudopotentials {
+        let pseudo = NormConservingPseudo::from_upf(pseudo_path)?;
+        ensure!(
+            &pseudo.element == element,
+            "pseudopotential element mismatch: input key {element}, UPF element {}",
+            pseudo.element
+        );
+        ensure!(
+            input.xc.matches_upf_label(&pseudo.functional),
+            "input XC {} is incompatible with {element} pseudopotential functional {}",
+            input.xc.identifier(),
+            pseudo.functional
+        );
+        pseudo_hashes.insert(element.clone(), sha256(pseudo_path)?);
+        pseudos.insert(element.clone(), pseudo);
+    }
+    let electron_count = input
+        .atoms
+        .iter()
+        .map(|atom| pseudos[&atom.element].valence_charge)
+        .sum::<f64>();
     let occupied_states_f64 = electron_count / 2.0;
     ensure!(
         (occupied_states_f64 - occupied_states_f64.round()).abs() < 1.0e-12,
@@ -365,7 +369,13 @@ fn run_with_profile(
         .min(g_vectors.len());
 
     let setup_started = Instant::now();
-    let hamiltonian = CpuHamiltonian::new(&lattice, &g_vectors, &input.atoms, &pseudo)?;
+    let hamiltonian = CpuHamiltonian::new(
+        &lattice,
+        &g_vectors,
+        &input.atoms,
+        &pseudos,
+        input.cutoff_ry,
+    )?;
     let (
         actual_device,
         precision_policy,
@@ -415,10 +425,16 @@ fn run_with_profile(
         hamiltonian.fft(),
         &lattice,
         &input.atoms,
-        &pseudo,
+        &pseudos,
+        input.cutoff_ry,
         electron_count,
     )?;
-    let ewald_ry = ewald_energy_ry(&lattice, &input.atoms, pseudo.valence_charge, 0.7)?;
+    let ionic_charges: Vec<_> = input
+        .atoms
+        .iter()
+        .map(|atom| pseudos[&atom.element].valence_charge)
+        .collect();
+    let ewald_ry = ewald_energy_ry(&lattice, &input.atoms, &ionic_charges, 0.7)?;
     let occupations = vec![2.0; occupied_states];
     let mut density = initial_density;
     let mut timings = BTreeMap::new();
@@ -606,7 +622,11 @@ fn run_with_profile(
         );
         davidson_iterations += eigenpairs.iterations;
         hamiltonian_applications += eigenpairs.hamiltonian_applications;
-        if !eigenpairs.converged {
+        let satisfies_scf_orbital_contract = eigenpairs
+            .residual_norms
+            .iter()
+            .all(|residual| *residual <= scf_orbital_tolerance);
+        if !eigenpairs.converged && !satisfies_scf_orbital_contract {
             final_eigenvalues = eigenpairs.eigenvalues;
             final_residuals = eigenpairs.residual_norms;
             eigensolver_stop_reason = Some(format!(
@@ -786,6 +806,16 @@ fn run_with_profile(
         final_residuals.iter().copied().fold(0.0_f64, f64::max),
     );
     final_terms.insert(
+        "eigensolver_scf_contract_acceptances".into(),
+        history
+            .iter()
+            .filter(|record| {
+                record.total_energy_ry.is_some()
+                    && record.maximum_orbital_residual_ry > eigensolver_tolerance
+            })
+            .count() as f64,
+    );
+    final_terms.insert(
         "highest_occupied_eigenvalue_ev".into(),
         final_eigenvalues.last().copied().unwrap_or_default() * RY_TO_EV,
     );
@@ -939,6 +969,38 @@ mod checkpoint_tests {
         assert!(eigenvalue_error_mev <= 5.0, "{eigenvalue_error_mev:e}");
         assert!((result.electron_count.unwrap() - reference.electron_count.unwrap()).abs() <= 1e-8);
     }
+
+    #[test]
+    #[ignore = "100 Ry scientific fixture; run explicitly in release mode"]
+    fn mgo_cpu_scf_matches_pinned_qe_reference() {
+        let input_path = Path::new("examples/mgo2-pbe.toml");
+        if !Path::new("pseudopotentials/Mg_ONCV_PBE-1.0.UPF").exists()
+            || !Path::new("pseudopotentials/O_ONCV_PBE-1.0.UPF").exists()
+        {
+            return;
+        }
+        let result = run(input_path, BackendKind::CpuF64).unwrap();
+        result.validate().unwrap();
+        assert!(result.converged);
+
+        let reference: ScfResult = serde_json::from_str(
+            &std::fs::read_to_string("results/qe-mgo2-pbe-reference.json").unwrap(),
+        )
+        .unwrap();
+        let energy_error_mev_atom =
+            (result.total_energy_ry.unwrap() - reference.total_energy_ry.unwrap()).abs()
+                * 13_605.693_122_994
+                / result.atom_count as f64;
+        let eigenvalue_error_mev = result
+            .eigenvalues_ry
+            .iter()
+            .zip(&reference.eigenvalues_ry)
+            .map(|(left, right)| (left - right).abs() * 13_605.693_122_994)
+            .fold(0.0_f64, f64::max);
+        assert!(energy_error_mev_atom <= 2.0, "{energy_error_mev_atom:e}");
+        assert!(eigenvalue_error_mev <= 5.0, "{eigenvalue_error_mev:e}");
+        assert!((result.electron_count.unwrap() - reference.electron_count.unwrap()).abs() <= 1e-8);
+    }
 }
 
 #[cfg(all(test, feature = "metal", target_os = "macos"))]
@@ -947,6 +1009,7 @@ mod tests {
 
     #[test]
     fn resident_metal_scf_matches_cpu_and_transfers_only_at_boundaries() {
+        let _device_guard = crate::metal::test_device_lock();
         let input_path = Path::new("examples/si2.toml");
         let input = SimulationInput::from_path(input_path).unwrap();
         let lattice = Lattice::new(input.cell.lattice_bohr).unwrap();
@@ -954,8 +1017,22 @@ mod tests {
         let grid_points = Lattice::density_fft_grid(&g_vectors)
             .iter()
             .product::<usize>();
-        let pseudo = NormConservingPseudo::from_upf(&input.pseudopotentials["Si"]).unwrap();
-        let roots = (pseudo.valence_charge * input.atoms.len() as f64 / 2.0) as usize;
+        let pseudos: BTreeMap<_, _> = input
+            .pseudopotentials
+            .iter()
+            .map(|(element, path)| {
+                (
+                    element.clone(),
+                    NormConservingPseudo::from_upf(path).unwrap(),
+                )
+            })
+            .collect();
+        let electron_count: f64 = input
+            .atoms
+            .iter()
+            .map(|atom| pseudos[&atom.element].valence_charge)
+            .sum();
+        let roots = (electron_count / 2.0) as usize;
 
         let cpu = run(input_path, BackendKind::CpuF64).unwrap();
         let metal = run(input_path, BackendKind::MetalMixed).unwrap();
@@ -1083,8 +1160,45 @@ mod tests {
 
     #[test]
     fn resident_metal_pbe_scf_matches_cpu() {
+        let _device_guard = crate::metal::test_device_lock();
         let input_path = Path::new("examples/si2-pbe.toml");
         if !Path::new("pseudopotentials/Si_ONCV_PBE-1.0.upf").exists() {
+            return;
+        }
+        let cpu = run(input_path, BackendKind::CpuF64).unwrap();
+        let metal = run(input_path, BackendKind::MetalMixed).unwrap();
+        cpu.validate().unwrap();
+        metal.validate().unwrap();
+        assert!(cpu.converged && metal.converged);
+
+        let energy_error_mev_atom = (metal.total_energy_ry.unwrap() - cpu.total_energy_ry.unwrap())
+            .abs()
+            * 13_605.693_122_994
+            / metal.atom_count as f64;
+        let eigenvalue_error_mev = metal
+            .eigenvalues_ry
+            .iter()
+            .zip(&cpu.eigenvalues_ry)
+            .map(|(left, right)| (left - right).abs() * 13_605.693_122_994)
+            .fold(0.0_f64, f64::max);
+        assert!(energy_error_mev_atom <= 1.0, "{energy_error_mev_atom:e}");
+        assert!(eigenvalue_error_mev <= 5.0, "{eigenvalue_error_mev:e}");
+        assert!((metal.electron_count.unwrap() - cpu.electron_count.unwrap()).abs() <= 1e-5);
+        assert_eq!(metal.energy_terms["metal_resident_projection_resyncs"], 0.0);
+        assert_eq!(
+            metal.energy_terms["metal_resident_transfer_invariant_checks"],
+            metal.energy_terms["davidson_iterations"]
+        );
+    }
+
+    #[test]
+    #[ignore = "100 Ry scientific fixture; run explicitly in release mode"]
+    fn resident_metal_mgo_scf_matches_cpu() {
+        let _device_guard = crate::metal::test_device_lock();
+        let input_path = Path::new("examples/mgo2-pbe.toml");
+        if !Path::new("pseudopotentials/Mg_ONCV_PBE-1.0.UPF").exists()
+            || !Path::new("pseudopotentials/O_ONCV_PBE-1.0.UPF").exists()
+        {
             return;
         }
         let cpu = run(input_path, BackendKind::CpuF64).unwrap();

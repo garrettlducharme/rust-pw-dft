@@ -1,0 +1,39 @@
+&CONTROL
+  calculation = 'scf'
+  prefix = 'mgo2-pbe-gamma-reference'
+  restart_mode = 'from_scratch'
+  pseudo_dir = './pseudopotentials'
+  outdir = './qe-mgo2-pbe-reference-tmp'
+  tprnfor = .false.
+  tstress = .false.
+/
+&SYSTEM
+  ibrav = 0
+  nat = 2
+  ntyp = 2
+  ecutwfc = 100.0
+  ecutrho = 400.0
+  input_dft = 'pbe'
+  occupations = 'fixed'
+  nspin = 1
+  nosym = .true.
+  noinv = .true.
+/
+&ELECTRONS
+  conv_thr = 1.0d-12
+  electron_maxstep = 150
+  mixing_mode = 'plain'
+  mixing_beta = 0.2
+  diagonalization = 'david'
+/
+ATOMIC_SPECIES
+Mg 24.3050 Mg_ONCV_PBE-1.0.UPF
+O  15.9990 O_ONCV_PBE-1.0.UPF
+CELL_PARAMETERS bohr
+0.000000000000000 3.992424385254755 3.992424385254755
+3.992424385254755 0.000000000000000 3.992424385254755
+3.992424385254755 3.992424385254755 0.000000000000000
+ATOMIC_POSITIONS crystal
+Mg 0.000000000000000 0.000000000000000 0.000000000000000
+O  0.500000000000000 0.500000000000000 0.500000000000000
+K_POINTS gamma

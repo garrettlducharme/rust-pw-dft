@@ -17,7 +17,7 @@ jobs:
           components: clippy, rustfmt
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
-      - name: Fetch pinned silicon pseudopotential fixtures
+      - name: Fetch pinned pseudopotential fixtures
         run: |
           curl --fail --location \
             https://gitlab.com/QEF/q-e/-/raw/qe-7.6/EPW/examples/sic/pp/Si.pz-vbc.UPF \
@@ -29,9 +29,24 @@ jobs:
             --output pseudopotentials/Si_ONCV_PBE-1.0.upf
           echo '481a5fae1167fd712d4e8e2e4df33f8bfc1e7d2abbc0565290d39fbba9dccb41  pseudopotentials/Si_ONCV_PBE-1.0.upf' \
             | sha256sum --check
+          curl --fail --location \
+            https://raw.githubusercontent.com/anharmonic/d3q/6e5f97816af439702196c248ec2ad0092c561b89/Examples/MgO/UPF/Mg_ONCV_PBE-1.0.UPF \
+            --output pseudopotentials/Mg_ONCV_PBE-1.0.UPF
+          echo '7d19fe11bd630b5e4092c8fa884d11d76731386fd36ea0cdd999d723a6330e80  pseudopotentials/Mg_ONCV_PBE-1.0.UPF' \
+            | sha256sum --check
+          curl --fail --location \
+            https://raw.githubusercontent.com/anharmonic/d3q/6e5f97816af439702196c248ec2ad0092c561b89/Examples/MgO/UPF/O_ONCV_PBE-1.0.UPF \
+            --output pseudopotentials/O_ONCV_PBE-1.0.UPF
+          echo '374452e85db23c51d33c3f69a541d6be6a74c6eed080a0545b06ac697c8b7cad  pseudopotentials/O_ONCV_PBE-1.0.UPF' \
+            | sha256sum --check
       - name: Verify fixture provenance manifest
         run: cargo run --locked -- verify-fixtures
       - run: cargo test --locked
+      - name: Run 100 Ry MgO CPU scientific gate in release mode
+        run: >-
+          cargo test --locked --release
+          scf::checkpoint_tests::mgo_cpu_scf_matches_pinned_qe_reference
+          -- --ignored --exact
 
   macos-metal-build:
     runs-on: macos-14

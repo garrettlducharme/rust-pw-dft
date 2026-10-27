@@ -1,8 +1,9 @@
 //! Numerically explicit building blocks for a small plane-wave DFT solver.
 //!
-//! Unsupported physics is rejected at input validation.  In particular, this
-//! crate currently accepts only fixed-cell, spin-unpolarized, Gamma-point,
-//! norm-conserving LDA-PZ silicon calculations.
+//! Unsupported physics is rejected at input validation. The current solver
+//! accepts fixed-cell, spin-unpolarized, Gamma-point, norm-conserving LDA-PZ
+//! and PBE calculations. Released scientific validation remains limited to
+//! the explicitly published silicon workloads.
 
 pub mod backend;
 pub mod checkpoint;

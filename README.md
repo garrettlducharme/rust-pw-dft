@@ -4,11 +4,11 @@ An educational, fail-closed plane-wave DFT prototype aimed at Apple Silicon.
 It is dual-licensed under MIT or Apache-2.0 and contains no code copied from
 GPL DFT implementations.
 
-Version 0.4 adds a native variational PBE implementation, strict PBE UPF
-admission, and independently validated CPU and Metal PBE silicon SCFs. Version
-0.3 added complete SCF convergence histories and a CI-enforced scientific-
-fixture provenance manifest; version 0.2 introduced atomic, checksummed
-CPU/Metal restart checkpoints.
+Version 0.5 adds true multi-species norm-conserving operators and independently
+validated CPU and Metal PBE MgO SCFs. Version 0.4 added native variational PBE
+and validated CPU and Metal PBE silicon SCFs. Earlier releases added complete
+SCF convergence histories, a CI-enforced scientific-fixture provenance
+manifest, and atomic checksummed CPU/Metal restart checkpoints.
 
 The path from the validated silicon prototype to a research-ready Mac package
 is tracked in [`ROADMAP.md`](ROADMAP.md). Claims are tied to committed,
@@ -16,7 +16,7 @@ machine-readable evidence rather than feature presence alone.
 
 ## Implemented
 
-- strict fixed-cell, spinless, Gamma-only LDA-PZ or PBE silicon input contract;
+- strict fixed-cell, spinless, Gamma-only LDA-PZ or PBE multi-species input contract;
 - direct/reciprocal lattice construction and cutoff-safe G-vector enumeration;
 - FP64 multidimensional CPU FFT with Parseval and round-trip tests;
 - LDA-PZ exchange-correlation energy and potential;
@@ -29,6 +29,10 @@ machine-readable evidence rather than feature presence alone.
 - strict parser for QE's legacy `Si.pz-vbc.UPF` and scalar/non-relativistic
   norm-conserving UPF v2 PZ/PBE files, including local potential, radial mesh,
   separable projectors, and `Dij`;
+- species-resolved local potentials, nonlocal projector couplings, atomic
+  starting densities, valence counts, and mixed-charge Ewald sums;
+- QE-compatible numerical UPF radial transforms that discard cancellation-noisy
+  tails beyond 10 bohr and use an odd Simpson mesh;
 - explicit provenance and precision policy in JSON results;
 - required version identifiers for input, result, comparison, benchmark, and
   checkpoint contracts;
@@ -140,6 +144,19 @@ establish chemical transferability. The exact-source records are
 [`results/si2-pbe-metal-scf.json`](results/si2-pbe-metal-scf.json), and their
 committed CPU/QE and Metal/CPU comparison reports.
 
+## Accepted multi-species MgO result
+
+The pinned two-atom rock-salt MgO workload uses 100 Ry PBE with ten-electron
+Mg and six-electron O ONCV pseudopotentials. CPU FP64 differs from the matched
+QE 7.6 result by `0.0426 meV/atom`, `0.0103 meV` for the worst occupied
+eigenvalue, and `4.2e-13` electrons. The resident Metal result differs from CPU
+by `0.0203 meV/atom`, `0.00734 meV` for occupied eigenvalues, and `3.0e-13`
+electrons, with zero projection resynchronizations.
+
+This closes one binary-insulator transfer test. It does not establish broad
+oxide chemistry, forces, stress, k-point sampling, or pseudopotential
+transferability.
+
 ## Commands
 
 First download and verify the external QE 7.6 fixture as described in
@@ -154,6 +171,9 @@ cargo run -- run examples/si2.toml --backend cpu --output result.json
 cargo run --release -- compare results/cpu-scf.json results/qe-reference.json
 cargo run --release -- run examples/si2-pbe.toml --backend cpu --output result-pbe.json
 cargo run --release -- compare result-pbe.json results/qe-pbe-reference.json
+cargo run --release -- run examples/mgo2-pbe.toml --backend cpu --output result-mgo.json
+cargo run --release -- compare result-mgo.json results/qe-mgo2-pbe-reference.json
+cargo run --release --features metal -- run examples/mgo2-pbe.toml --backend metal --output result-mgo-metal.json
 cargo run --release --features metal -- run examples/si2.toml --backend metal --output result-metal.json
 cargo run --release --features metal -- bench-compare examples/si16.toml --repetitions 5 --output benchmark-comparison.json
 cargo run --release -- verify-fixtures
@@ -171,13 +191,13 @@ Fixture provenance and reproduction commands are documented in
 [`docs/fixtures.md`](docs/fixtures.md); [`fixtures/manifest.toml`](fixtures/manifest.toml)
 is the machine-readable authority.
 
-The LDA and PBE Si2 CPU scientific milestones and resident Metal accuracy
-milestones are accepted. The LDA Si16 transfer and matched-performance
+The LDA and PBE Si2 and PBE MgO CPU scientific milestones and resident Metal
+accuracy milestones are accepted. The LDA Si16 transfer and matched-performance
 milestones are also accepted. The stateful driver is
 integrated into production SCF, and its normal-iteration
 zero-full-vector-transfer contract is checked at runtime and in portable and
-Apple-GPU tests. Phase 2 now focuses on versioned schemas, checkpoints,
-reproducible fixture manifests, and stronger validation infrastructure before
-the physics scope expands. The resident buffer contract, dataflow, transfer
+Apple-GPU tests. The next physics frontier is explicit k-point sampling and
+metallic occupations, with the same CPU-reference-first acceptance policy. The
+resident buffer contract, dataflow, transfer
 accounting, and fail-closed gates are specified in
 [`docs/resident-davidson.md`](docs/resident-davidson.md).

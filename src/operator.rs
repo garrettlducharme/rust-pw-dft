@@ -1,4 +1,4 @@
-//! CPU-FP64 Kohn-Sham Hamiltonian building blocks for the admitted silicon case.
+//! CPU-FP64 Kohn-Sham Hamiltonian building blocks.
 //!
 //! The radial transforms use the conventional plane-wave normalization
 //! `exp(i G.r) / sqrt(volume)`. Energies and pseudopotentials are in Rydberg.
@@ -12,11 +12,13 @@ use anyhow::{Result, ensure};
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use num_complex::Complex32;
 use num_complex::Complex64;
+use std::collections::BTreeMap;
 use std::f64::consts::{PI, TAU};
 use std::sync::OnceLock;
 
 const FOUR_PI: f64 = 4.0 * PI;
 const ELECTRON_CHARGE_SQUARED_RY: f64 = 2.0;
+const RADIAL_NOISE_CUTOFF_BOHR: f64 = 10.0;
 
 fn norm_squared(v: Vec3) -> f64 {
     v.iter().map(|x| x * x).sum()
@@ -57,6 +59,59 @@ fn signed_frequency(index: usize, extent: usize) -> i32 {
     }
 }
 
+/// Project numerically constructed reciprocal coefficients onto the exact
+/// Hermitian subspace required by a real-space field. The pre-projection
+/// mismatch remains fail-closed so this cannot hide a broken structure factor.
+fn enforce_hermitian_grid(values: &mut [Complex64], shape: [usize; 3]) -> Result<()> {
+    ensure!(
+        values.len() == shape.iter().product::<usize>(),
+        "Hermitian grid has the wrong size"
+    );
+    let mut maximum_mismatch = 0.0_f64;
+    let mut maximum_scale = 0.0_f64;
+    for x in 0..shape[0] {
+        for y in 0..shape[1] {
+            for z in 0..shape[2] {
+                let flat = (x * shape[1] + y) * shape[2] + z;
+                let partner_x = (shape[0] - x) % shape[0];
+                let partner_y = (shape[1] - y) % shape[1];
+                let partner_z = (shape[2] - z) % shape[2];
+                let partner = (partner_x * shape[1] + partner_y) * shape[2] + partner_z;
+                maximum_mismatch =
+                    maximum_mismatch.max((values[flat] - values[partner].conj()).norm());
+                maximum_scale = maximum_scale.max(values[flat].norm());
+            }
+        }
+    }
+    let relative_mismatch = if maximum_scale == 0.0 {
+        0.0
+    } else {
+        maximum_mismatch / maximum_scale
+    };
+    ensure!(
+        relative_mismatch < 1.0e-10,
+        "reciprocal field is not Hermitian (relative mismatch {relative_mismatch:e})"
+    );
+
+    for x in 0..shape[0] {
+        for y in 0..shape[1] {
+            for z in 0..shape[2] {
+                let flat = (x * shape[1] + y) * shape[2] + z;
+                let partner_x = (shape[0] - x) % shape[0];
+                let partner_y = (shape[1] - y) % shape[1];
+                let partner_z = (shape[2] - z) % shape[2];
+                let partner = (partner_x * shape[1] + partner_y) * shape[2] + partner_z;
+                if flat <= partner {
+                    let average = 0.5 * (values[flat] + values[partner].conj());
+                    values[flat] = average;
+                    values[partner] = average.conj();
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn weighted_simpson(values: &[f64], radial_weights: &[f64]) -> Result<f64> {
     ensure!(
         values.len() == radial_weights.len() && values.len() >= 3,
@@ -78,6 +133,23 @@ fn weighted_simpson(values: &[f64], radial_weights: &[f64]) -> Result<f64> {
     Ok(sum / 3.0)
 }
 
+/// Numerical UPF tails beyond 10 bohr can contain amplified cancellation
+/// noise in `r V_loc + Z e²`. The standard QE transform truncates there and
+/// forces an odd Simpson mesh; use the same well-defined convention for every
+/// radial field whose physical tail has already vanished.
+fn radial_integration_points(pseudo: &NormConservingPseudo) -> Result<usize> {
+    let mut points = pseudo
+        .radial_grid
+        .iter()
+        .position(|radius| *radius > RADIAL_NOISE_CUTOFF_BOHR)
+        .map_or(pseudo.radial_grid.len(), |index| index + 1);
+    if points.is_multiple_of(2) {
+        points -= 1;
+    }
+    ensure!(points >= 3, "UPF radial integration mesh is too short");
+    Ok(points)
+}
+
 fn spherical_bessel(angular_momentum: usize, x: f64) -> Result<f64> {
     let ax = x.abs();
     match angular_momentum {
@@ -91,7 +163,7 @@ fn spherical_bessel(angular_momentum: usize, x: f64) -> Result<f64> {
             Ok(x * (1.0 / 3.0 - x2 / 30.0 + x2 * x2 / 840.0))
         }
         1 => Ok(x.sin() / (x * x) - x.cos() / x),
-        _ => anyhow::bail!("only l=0 and l=1 silicon projectors are supported"),
+        _ => anyhow::bail!("only l=0 and l=1 projector channels are supported"),
     }
 }
 
@@ -100,11 +172,13 @@ pub fn local_form_factor_ry(pseudo: &NormConservingPseudo, q: f64, volume: f64) 
     ensure!(q.is_finite() && q >= 0.0, "invalid reciprocal magnitude");
     ensure!(volume.is_finite() && volume > 0.0, "invalid cell volume");
     let z_e2 = pseudo.valence_charge * ELECTRON_CHARGE_SQUARED_RY;
+    let points = radial_integration_points(pseudo)?;
     let values: Vec<f64> = if q < 1.0e-12 {
         pseudo
             .radial_grid
             .iter()
             .zip(&pseudo.local_potential_ry)
+            .take(points)
             .map(|(&r, &v)| r * (r * v + z_e2))
             .collect()
     } else {
@@ -112,10 +186,12 @@ pub fn local_form_factor_ry(pseudo: &NormConservingPseudo, q: f64, volume: f64) 
             .radial_grid
             .iter()
             .zip(&pseudo.local_potential_ry)
+            .take(points)
             .map(|(&r, &v)| (r * v + z_e2 * libm::erf(r)) * (q * r).sin() / q)
             .collect()
     };
-    let short_range = FOUR_PI * weighted_simpson(&values, &pseudo.radial_weights)? / volume;
+    let short_range =
+        FOUR_PI * weighted_simpson(&values, &pseudo.radial_weights[..points])? / volume;
     if q < 1.0e-12 {
         Ok(short_range)
     } else {
@@ -147,13 +223,15 @@ pub fn atomic_density_form_factor(
     volume: f64,
 ) -> Result<f64> {
     ensure!(q.is_finite() && q >= 0.0, "invalid reciprocal magnitude");
+    let points = radial_integration_points(pseudo)?;
     let values: Vec<_> = pseudo
         .atomic_density
         .iter()
         .zip(&pseudo.radial_grid)
+        .take(points)
         .map(|(&density, &r)| density * spherical_bessel(0, q * r).unwrap_or_default())
         .collect();
-    Ok(weighted_simpson(&values, &pseudo.radial_weights)? / volume)
+    Ok(weighted_simpson(&values, &pseudo.radial_weights[..points])? / volume)
 }
 
 fn real_spherical_harmonic(l: usize, component: usize, g: Vec3) -> Result<f64> {
@@ -174,6 +252,7 @@ struct AtomProjectors {
     columns: Vec<Vec<Complex64>>,
     radial_projector: Vec<usize>,
     component: Vec<usize>,
+    dij_ry: Vec<Vec<f64>>,
 }
 
 #[derive(Clone)]
@@ -181,10 +260,10 @@ struct DenseReferenceData {
     lattice: Lattice,
     g_vectors: Vec<GVector>,
     atoms: Vec<AtomInput>,
-    pseudo: NormConservingPseudo,
+    pseudos: BTreeMap<String, NormConservingPseudo>,
 }
 
-/// Dense-reference CPU Hamiltonian for operator validation and small silicon cells.
+/// Dense-reference CPU Hamiltonian for operator validation and small cells.
 ///
 /// The local operator is deliberately formed directly in reciprocal space. This
 /// is not the production FFT path; it provides an independent, transparent
@@ -195,7 +274,6 @@ pub struct CpuHamiltonian {
     local_ry: OnceLock<Vec<Complex64>>,
     dense_reference: DenseReferenceData,
     atom_projectors: Vec<AtomProjectors>,
-    dij_ry: Vec<Vec<f64>>,
     fft: Fft3d,
     basis_grid_indices: Vec<usize>,
     ionic_local_real_ry: Vec<f64>,
@@ -207,12 +285,17 @@ impl CpuHamiltonian {
         lattice: &Lattice,
         g_vectors: &[GVector],
         atoms: &[AtomInput],
-        pseudo: &NormConservingPseudo,
+        pseudos: &BTreeMap<String, NormConservingPseudo>,
+        wavefunction_cutoff_ry: f64,
     ) -> Result<Self> {
         ensure!(!g_vectors.is_empty(), "Hamiltonian basis is empty");
         ensure!(
-            atoms.iter().all(|atom| atom.element == pseudo.element),
-            "the reference Hamiltonian currently supports one element"
+            wavefunction_cutoff_ry.is_finite() && wavefunction_cutoff_ry > 0.0,
+            "wavefunction cutoff must be positive"
+        );
+        ensure!(
+            atoms.iter().all(|atom| pseudos.contains_key(&atom.element)),
+            "an atom has no loaded pseudopotential"
         );
         let cartesian: Vec<_> = g_vectors
             .iter()
@@ -229,6 +312,7 @@ impl CpuHamiltonian {
 
         let mut atom_projectors = Vec::with_capacity(atoms.len());
         for atom in atoms {
+            let pseudo = &pseudos[&atom.element];
             let mut columns = Vec::new();
             let mut radial_projector = Vec::new();
             let mut component = Vec::new();
@@ -262,6 +346,7 @@ impl CpuHamiltonian {
                 columns,
                 radial_projector,
                 component,
+                dij_ry: pseudo.dij_ry.clone(),
             });
         }
         let mut ionic_coefficients = vec![Complex64::default(); fft.len()];
@@ -273,34 +358,44 @@ impl CpuHamiltonian {
                         signed_frequency(y, grid_shape[1]),
                         signed_frequency(z, grid_shape[2]),
                     ];
-                    let q = norm_squared(lattice.cartesian_g(index)).sqrt();
-                    let radial = local_form_factor_ry(pseudo, q, lattice.volume)?;
-                    let structure: Complex64 = atoms
-                        .iter()
-                        .map(|atom| {
+                    let q2 = norm_squared(lattice.cartesian_g(index));
+                    if q2 > 4.0 * wavefunction_cutoff_ry * (1.0 + 32.0 * f64::EPSILON) {
+                        continue;
+                    }
+                    let q = q2.sqrt();
+                    let coefficient = atoms.iter().try_fold(
+                        Complex64::default(),
+                        |sum, atom| -> Result<Complex64> {
+                            let pseudo = &pseudos[&atom.element];
+                            let radial = local_form_factor_ry(pseudo, q, lattice.volume)?;
                             let phase = -TAU
                                 * index
                                     .iter()
                                     .zip(atom.fractional)
                                     .map(|(&n, f)| n as f64 * f)
                                     .sum::<f64>();
-                            Complex64::from_polar(1.0, phase)
-                        })
-                        .sum();
-                    ionic_coefficients[(x * grid_shape[1] + y) * grid_shape[2] + z] =
-                        radial * structure;
+                            Ok(sum + radial * Complex64::from_polar(1.0, phase))
+                        },
+                    )?;
+                    ionic_coefficients[(x * grid_shape[1] + y) * grid_shape[2] + z] = coefficient;
                 }
             }
         }
+        enforce_hermitian_grid(&mut ionic_coefficients, grid_shape)?;
         fft.inverse(&mut ionic_coefficients)?;
         let grid_points = fft.len() as f64;
         let maximum_imaginary = ionic_coefficients
             .iter()
             .map(|value| value.im.abs())
             .fold(0.0_f64, f64::max);
+        let maximum_real = ionic_coefficients
+            .iter()
+            .map(|value| value.re.abs())
+            .fold(0.0_f64, f64::max);
+        let relative_imaginary = maximum_imaginary / maximum_real.max(1.0);
         ensure!(
-            maximum_imaginary < 1.0e-10,
-            "ionic local potential is not real ({maximum_imaginary:e})"
+            relative_imaginary < 1.0e-12,
+            "ionic local potential is not real (absolute {maximum_imaginary:e}, relative {relative_imaginary:e})"
         );
         let ionic_local_real_ry = ionic_coefficients
             .iter()
@@ -313,10 +408,9 @@ impl CpuHamiltonian {
                 lattice: lattice.clone(),
                 g_vectors: g_vectors.to_vec(),
                 atoms: atoms.to_vec(),
-                pseudo: pseudo.clone(),
+                pseudos: pseudos.clone(),
             },
             atom_projectors,
-            dij_ry: pseudo.dij_ry.clone(),
             fft,
             basis_grid_indices,
             ionic_local_real_ry,
@@ -361,7 +455,7 @@ impl CpuHamiltonian {
                 let mut weighted = Complex64::default();
                 for (right, &overlap) in overlaps.iter().enumerate() {
                     if atom.component[left] == atom.component[right] {
-                        weighted += self.dij_ry[atom.radial_projector[left]]
+                        weighted += atom.dij_ry[atom.radial_projector[left]]
                             [atom.radial_projector[right]]
                             * overlap;
                     }
@@ -385,21 +479,21 @@ impl CpuHamiltonian {
                     reference.g_vectors[row].index[2] - reference.g_vectors[column].index[2],
                 ];
                 let q = norm_squared(reference.lattice.cartesian_g(delta_index)).sqrt();
-                let radial = local_form_factor_ry(&reference.pseudo, q, reference.lattice.volume)?;
-                let structure: Complex64 = reference
-                    .atoms
-                    .iter()
-                    .map(|atom| {
+                let coefficient = reference.atoms.iter().try_fold(
+                    Complex64::default(),
+                    |sum, atom| -> Result<Complex64> {
+                        let pseudo = &reference.pseudos[&atom.element];
+                        let radial = local_form_factor_ry(pseudo, q, reference.lattice.volume)?;
                         let phase = -TAU
                             * delta_index
                                 .iter()
                                 .zip(atom.fractional)
                                 .map(|(&n, f)| n as f64 * f)
                                 .sum::<f64>();
-                        Complex64::from_polar(1.0, phase)
-                    })
-                    .sum();
-                matrix[row * n + column] = radial * structure;
+                        Ok(sum + radial * Complex64::from_polar(1.0, phase))
+                    },
+                )?;
+                matrix[row * n + column] = coefficient;
             }
         }
         Ok(matrix)
@@ -629,7 +723,7 @@ impl CpuHamiltonian {
             for left in 0..atom.columns.len() {
                 for right in 0..atom.columns.len() {
                     if atom.component[left] == atom.component[right] {
-                        let coupling = self.dij_ry[atom.radial_projector[left]]
+                        let coupling = atom.dij_ry[atom.radial_projector[left]]
                             [atom.radial_projector[right]]
                             as f32;
                         d_transpose[(offset + right) * projector_count + offset + left] =
@@ -872,9 +966,14 @@ pub fn atomic_starting_density(
     fft: &Fft3d,
     lattice: &Lattice,
     atoms: &[AtomInput],
-    pseudo: &NormConservingPseudo,
+    pseudos: &BTreeMap<String, NormConservingPseudo>,
+    wavefunction_cutoff_ry: f64,
     electron_count: f64,
 ) -> Result<Vec<f64>> {
+    ensure!(
+        atoms.iter().all(|atom| pseudos.contains_key(&atom.element)),
+        "an atom has no pseudopotential for starting-density construction"
+    );
     let shape = fft.shape();
     let mut coefficients = vec![Complex64::default(); fft.len()];
     for x in 0..shape[0] {
@@ -885,24 +984,30 @@ pub fn atomic_starting_density(
                     signed_frequency(y, shape[1]),
                     signed_frequency(z, shape[2]),
                 ];
-                let q = norm_squared(lattice.cartesian_g(index)).sqrt();
-                let radial = atomic_density_form_factor(pseudo, q, lattice.volume)?;
-                let structure: Complex64 = atoms
-                    .iter()
-                    .map(|atom| {
+                let q2 = norm_squared(lattice.cartesian_g(index));
+                if q2 > 4.0 * wavefunction_cutoff_ry * (1.0 + 32.0 * f64::EPSILON) {
+                    continue;
+                }
+                let q = q2.sqrt();
+                let coefficient = atoms.iter().try_fold(
+                    Complex64::default(),
+                    |sum, atom| -> Result<Complex64> {
+                        let pseudo = &pseudos[&atom.element];
+                        let radial = atomic_density_form_factor(pseudo, q, lattice.volume)?;
                         let phase = -TAU
                             * index
                                 .iter()
                                 .zip(atom.fractional)
                                 .map(|(&n, f)| n as f64 * f)
                                 .sum::<f64>();
-                        Complex64::from_polar(1.0, phase)
-                    })
-                    .sum();
-                coefficients[(x * shape[1] + y) * shape[2] + z] = radial * structure;
+                        Ok(sum + radial * Complex64::from_polar(1.0, phase))
+                    },
+                )?;
+                coefficients[(x * shape[1] + y) * shape[2] + z] = coefficient;
             }
         }
     }
+    enforce_hermitian_grid(&mut coefficients, shape)?;
     fft.inverse(&mut coefficients)?;
     let grid_points = fft.len() as f64;
     let mut density: Vec<f64> = coefficients
@@ -925,16 +1030,23 @@ pub fn atomic_starting_density(
     Ok(density)
 }
 
-/// Periodic point-ion Ewald energy in Rydberg for the single-species scope.
-/// `eta` is the Gaussian splitting parameter in inverse bohr.
+/// Periodic point-ion Ewald energy in Rydberg. `ionic_charges` is aligned with
+/// `atoms`; `eta` is the Gaussian splitting parameter in inverse bohr.
 pub fn ewald_energy_ry(
     lattice: &Lattice,
     atoms: &[AtomInput],
-    ionic_charge: f64,
+    ionic_charges: &[f64],
     eta: f64,
 ) -> Result<f64> {
     ensure!(eta.is_finite() && eta > 0.0, "Ewald eta must be positive");
     ensure!(!atoms.is_empty(), "Ewald sum requires atoms");
+    ensure!(
+        ionic_charges.len() == atoms.len()
+            && ionic_charges
+                .iter()
+                .all(|charge| charge.is_finite() && *charge > 0.0),
+        "Ewald ionic charges are invalid"
+    );
     let positions: Vec<_> = atoms
         .iter()
         .map(|atom| fractional_to_cartesian(lattice, atom.fractional))
@@ -947,8 +1059,8 @@ pub fn ewald_energy_ry(
     let real_cutoff = 8.0 / eta;
     let direct_bound = (real_cutoff / shortest_direct).ceil() as i32 + 2;
     let mut real_sum = 0.0;
-    for (i, &ri) in positions.iter().enumerate() {
-        for (j, &rj) in positions.iter().enumerate() {
+    for (i, (&ri, &charge_i)) in positions.iter().zip(ionic_charges).enumerate() {
+        for (j, (&rj, &charge_j)) in positions.iter().zip(ionic_charges).enumerate() {
             for a in -direct_bound..=direct_bound {
                 for b in -direct_bound..=direct_bound {
                     for c in -direct_bound..=direct_bound {
@@ -964,8 +1076,7 @@ pub fn ewald_energy_ry(
                         );
                         let distance = norm_squared(add(subtract(ri, rj), translation)).sqrt();
                         if distance <= real_cutoff {
-                            real_sum +=
-                                ionic_charge * ionic_charge * libm::erfc(eta * distance) / distance;
+                            real_sum += charge_i * charge_j * libm::erfc(eta * distance) / distance;
                         }
                     }
                 }
@@ -995,9 +1106,10 @@ pub fn ewald_energy_ry(
                 }
                 let structure: Complex64 = positions
                     .iter()
-                    .map(|&position| {
+                    .zip(ionic_charges)
+                    .map(|(&position, &charge)| {
                         let phase = -(g[0] * position[0] + g[1] * position[1] + g[2] * position[2]);
-                        ionic_charge * Complex64::from_polar(1.0, phase)
+                        charge * Complex64::from_polar(1.0, phase)
                     })
                     .sum();
                 reciprocal_sum += (-g2 / (4.0 * eta * eta)).exp() * structure.norm_sqr() / g2;
@@ -1005,8 +1117,12 @@ pub fn ewald_energy_ry(
         }
     }
     reciprocal_sum *= 2.0 * PI / lattice.volume;
-    let total_charge = ionic_charge * atoms.len() as f64;
-    let self_energy = eta / PI.sqrt() * atoms.len() as f64 * ionic_charge * ionic_charge;
+    let total_charge = ionic_charges.iter().sum::<f64>();
+    let self_energy = eta / PI.sqrt()
+        * ionic_charges
+            .iter()
+            .map(|charge| charge * charge)
+            .sum::<f64>();
     let background = PI * total_charge * total_charge / (2.0 * eta * eta * lattice.volume);
     Ok(2.0 * (real_sum + reciprocal_sum - self_energy - background))
 }
@@ -1100,6 +1216,8 @@ mod tests {
 
     #[test]
     fn silicon_reference_hamiltonian_is_hermitian_when_available() {
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        let _device_guard = crate::metal::test_device_lock();
         let input_path = Path::new("examples/si2.toml");
         if !input_path.exists() {
             return;
@@ -1109,9 +1227,18 @@ mod tests {
             return;
         }
         let pseudo = NormConservingPseudo::from_upf(&input.pseudopotentials["Si"]).unwrap();
+        let valence_charge = pseudo.valence_charge;
+        let pseudos = BTreeMap::from([("Si".to_owned(), pseudo)]);
         let lattice = Lattice::new(input.cell.lattice_bohr).unwrap();
         let g_vectors = lattice.enumerate_g_vectors(input.cutoff_ry);
-        let hamiltonian = CpuHamiltonian::new(&lattice, &g_vectors, &input.atoms, &pseudo).unwrap();
+        let hamiltonian = CpuHamiltonian::new(
+            &lattice,
+            &g_vectors,
+            &input.atoms,
+            &pseudos,
+            input.cutoff_ry,
+        )
+        .unwrap();
         let matrix = hamiltonian.dense_matrix().unwrap();
         let scale = matrix.iter().map(|z| z.norm()).fold(0.0_f64, f64::max);
         let mut maximum_error = 0.0_f64;
@@ -1147,9 +1274,15 @@ mod tests {
             "direct and FFT local operators disagree"
         );
 
-        let starting_density =
-            atomic_starting_density(hamiltonian.fft(), &lattice, &input.atoms, &pseudo, 8.0)
-                .unwrap();
+        let starting_density = atomic_starting_density(
+            hamiltonian.fft(),
+            &lattice,
+            &input.atoms,
+            &pseudos,
+            input.cutoff_ry,
+            8.0,
+        )
+        .unwrap();
         let integrated =
             starting_density.iter().sum::<f64>() * lattice.volume / starting_density.len() as f64;
         assert!((integrated - 8.0).abs() < 1.0e-12);
@@ -1798,8 +1931,9 @@ mod tests {
             assert!(context.borrow().norm_reduction_calls() > 1);
         }
 
-        let ewald_a = ewald_energy_ry(&lattice, &input.atoms, pseudo.valence_charge, 0.6).unwrap();
-        let ewald_b = ewald_energy_ry(&lattice, &input.atoms, pseudo.valence_charge, 0.8).unwrap();
+        let ionic_charges = vec![valence_charge; input.atoms.len()];
+        let ewald_a = ewald_energy_ry(&lattice, &input.atoms, &ionic_charges, 0.6).unwrap();
+        let ewald_b = ewald_energy_ry(&lattice, &input.atoms, &ionic_charges, 0.8).unwrap();
         assert!((ewald_a - ewald_b).abs() < 1.0e-10, "Ewald eta dependence");
         assert!(
             (ewald_a - (-16.817_320_73)).abs() < 5.0e-8,
@@ -1824,5 +1958,81 @@ mod tests {
             hartree_xc_potential(&fft, &lattice, &density, XcFunctional::LdaPz).unwrap();
         assert!((potential.electron_count - 2.0).abs() < 1.0e-12);
         assert!(potential.hartree_energy_ry.abs() < 1.0e-14);
+    }
+
+    #[test]
+    fn mixed_ionic_charge_ewald_sum_is_eta_invariant() {
+        let half_lattice = 3.992_424_385_254_755;
+        let lattice = Lattice::new([
+            [0.0, half_lattice, half_lattice],
+            [half_lattice, 0.0, half_lattice],
+            [half_lattice, half_lattice, 0.0],
+        ])
+        .unwrap();
+        let atoms = vec![
+            AtomInput {
+                element: "Mg".into(),
+                fractional: [0.0, 0.0, 0.0],
+            },
+            AtomInput {
+                element: "O".into(),
+                fractional: [0.5, 0.5, 0.5],
+            },
+        ];
+        let charges = [10.0, 6.0];
+        let ewald_a = ewald_energy_ry(&lattice, &atoms, &charges, 0.6).unwrap();
+        let ewald_b = ewald_energy_ry(&lattice, &atoms, &charges, 0.8).unwrap();
+        assert!((ewald_a - ewald_b).abs() < 1.0e-10, "Ewald eta dependence");
+    }
+
+    #[test]
+    fn mgo_multi_species_hamiltonian_is_hermitian_when_available() {
+        let input_path = Path::new("examples/mgo2-pbe.toml");
+        let required = [
+            Path::new("pseudopotentials/Mg_ONCV_PBE-1.0.UPF"),
+            Path::new("pseudopotentials/O_ONCV_PBE-1.0.UPF"),
+        ];
+        if !input_path.exists() || required.iter().any(|path| !path.exists()) {
+            return;
+        }
+        let input = SimulationInput::from_path(input_path).unwrap();
+        let pseudos: BTreeMap<_, _> = input
+            .pseudopotentials
+            .iter()
+            .map(|(element, path)| {
+                (
+                    element.clone(),
+                    NormConservingPseudo::from_upf(path).unwrap(),
+                )
+            })
+            .collect();
+        let lattice = Lattice::new(input.cell.lattice_bohr).unwrap();
+        let g_vectors = lattice.enumerate_g_vectors(input.cutoff_ry);
+        let hamiltonian = CpuHamiltonian::new(
+            &lattice,
+            &g_vectors,
+            &input.atoms,
+            &pseudos,
+            input.cutoff_ry,
+        )
+        .unwrap();
+        let left: Vec<_> = (0..hamiltonian.dimension())
+            .map(|index| Complex64::new((index as f64 * 0.037).sin(), (index as f64 * 0.051).cos()))
+            .collect();
+        let right: Vec<_> = (0..hamiltonian.dimension())
+            .map(|index| Complex64::new((index as f64 * 0.071).cos(), (index as f64 * 0.029).sin()))
+            .collect();
+        let electronic_potential = vec![0.0; hamiltonian.fft().len()];
+        let h_left = hamiltonian.apply_fft(&left, &electronic_potential).unwrap();
+        let h_right = hamiltonian
+            .apply_fft(&right, &electronic_potential)
+            .unwrap();
+        let left_h_right: Complex64 = left.iter().zip(&h_right).map(|(a, b)| a.conj() * b).sum();
+        let h_left_right: Complex64 = h_left.iter().zip(&right).map(|(a, b)| a.conj() * b).sum();
+        let scale = left_h_right.norm().max(h_left_right.norm()).max(1.0);
+        assert!(
+            (left_h_right - h_left_right).norm() / scale < 1.0e-11,
+            "multi-species Hamiltonian is not Hermitian"
+        );
     }
 }
