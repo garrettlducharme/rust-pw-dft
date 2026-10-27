@@ -743,11 +743,11 @@
   ],
   "history_complete": true,
   "timings": {
-    "density_seconds": 0.34162750099999994,
-    "eigensolve_seconds": 6.571397628999998,
-    "potential_seconds": 0.029032699999999998,
-    "setup_seconds": 0.270192667,
-    "total_seconds": 7.23418675
+    "density_seconds": 0.364503748,
+    "eigensolve_seconds": 6.742523625000003,
+    "potential_seconds": 0.033644166999999996,
+    "setup_seconds": 0.272590959,
+    "total_seconds": 7.447044917
   },
   "provenance": {
     "requested_backend": "metal-mixed",
@@ -763,6 +763,6 @@
     "pseudopotential_sha256": {
       "Si": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d"
     },
-    "git_revision": "b3785e7c40fe61f609fbe50a5b53efb2d9fac2f2"
+    "git_revision": "6d0d13bef5e4c16792f3d284bef68572727b54e0"
   }
 }

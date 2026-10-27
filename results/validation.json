@@ -1,9 +1,9 @@
 {
-  "schema_version": 10,
-  "source_revision": "b3785e7c40fe61f609fbe50a5b53efb2d9fac2f2",
+  "schema_version": 11,
+  "source_revision": "6d0d13bef5e4c16792f3d284bef68572727b54e0",
   "tests": {
-    "cpu_passed": 25,
-    "metal_feature_passed": 29,
+    "cpu_passed": 35,
+    "metal_feature_passed": 40,
     "failed": 0,
     "clippy_all_targets_metal_feature": "passed"
   },
@@ -14,18 +14,20 @@
     "benchmark": 1,
     "checkpoint": 2,
     "fixture_manifest": 1,
-    "validation_manifest": 10
+    "validation_manifest": 11
   },
   "input_and_pseudopotential": {
     "legacy_si_upf": "accepted",
     "strict_norm_conserving_upf_v2_pz": "accepted",
-    "pinned_sha256": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d",
-    "ultrasoft_paw_core_correction_spin_orbit_non_pz": "fail-closed"
+    "strict_norm_conserving_upf_v2_pbe": "accepted for the pinned Si ONCV workload",
+    "lda_pinned_sha256": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d",
+    "pbe_pinned_sha256": "481a5fae1167fd712d4e8e2e4df33f8bfc1e7d2abbc0565290d39fbba9dccb41",
+    "ultrasoft_paw_core_correction_spin_orbit_other_functionals": "fail-closed"
   },
   "cpu": {
     "fft_roundtrip_relative_l2_gate": 1e-12,
     "parseval_relative_gate": 1e-12,
-    "si2_scf": {
+    "si2_lda_scf": {
       "accepted": true,
       "iterations": 49,
       "total_energy_ry": -14.529468342292542,
@@ -35,6 +37,19 @@
       "electron_count_error": 3.9968028886505635e-14,
       "maximum_orbital_residual_ry": 8.760124477612133e-11,
       "energy_tolerance_ry": 1e-8
+    },
+    "si2_pbe_scf": {
+      "accepted": true,
+      "iterations": 54,
+      "total_energy_ry": -14.467981859666741,
+      "qe_total_energy_ry": -14.467983331607888,
+      "energy_error_mev_atom": 0.010013389780956417,
+      "maximum_occupied_eigenvalue_error_mev": 0.0033515150201630906,
+      "electron_count_error": 1.0658141036401503e-14,
+      "maximum_orbital_residual_ry": 8.304549271103014e-11,
+      "energy_tolerance_ry": 1e-8,
+      "independent_point_oracle": "Libxc 7.1.2 GGA_X_PBE plus GGA_C_PBE",
+      "grid_variational_derivative_gate": "passed"
     }
   },
   "metal": {
@@ -48,7 +63,7 @@
     "resident_projection_maximum_absolute_error": 2.937495851795345e-7,
     "resident_residual_norm_maximum_relative_error": 3.829607196732751e-8,
     "fixed_density_occupied_eigenvalue_error_mev": 0.0034194397954189254,
-    "si2_scf": {
+    "si2_lda_scf": {
       "accepted": true,
       "iterations": 45,
       "total_energy_ry": -14.529470020615527,
@@ -68,6 +83,26 @@
       "full_vector_upload_bytes": 5103360,
       "full_vector_download_bytes": 243360
     },
+    "si2_pbe_scf": {
+      "accepted": true,
+      "iterations": 47,
+      "total_energy_ry": -14.467983068488804,
+      "cpu_energy_error_mev_atom": 0.008223431026094392,
+      "maximum_occupied_eigenvalue_error_mev": 0.0006676030338256462,
+      "electron_count_error": 8.881784197001252e-16,
+      "maximum_orbital_residual_ry": 7.623929921664202e-6,
+      "energy_tolerance_ry": 5e-7,
+      "density_tolerance": 5e-8,
+      "persistent_buffer_bytes": 1609840,
+      "peak_device_allocated_bytes": 6619136,
+      "resident_driver_iterations": 132,
+      "resident_projection_calls": 132,
+      "resident_projection_resyncs": 0,
+      "resident_transfer_invariant_checks": 132,
+      "resident_restarts": 1,
+      "full_vector_upload_bytes": 5330176,
+      "full_vector_download_bytes": 254176
+    },
     "behavior": "fail-closed; no CPU Hamiltonian fallback"
   },
   "performance": {
@@ -76,18 +111,18 @@
     "cold_processes": 1,
     "warmed_repetitions": 5,
     "cpu_seconds": {
-      "min": 7.7710761250000004,
-      "median": 7.829507167,
-      "max": 8.065105292,
+      "min": 8.21817725,
+      "median": 8.252269416,
+      "max": 8.2549885,
       "scf_iterations": 48
     },
     "metal_seconds": {
-      "min": 6.171631917,
-      "median": 6.2052425,
-      "max": 6.236585541,
+      "min": 6.087638416,
+      "median": 6.106337541,
+      "max": 6.255930917,
       "scf_iterations": 52
     },
-    "median_speedup": 1.2617568398011842,
+    "median_speedup": 1.3514269986864456,
     "numeric_1_20x_gate_passed": true,
     "scientific_parity": {
       "energy_error_mev_atom": 0.009762298717713435,
@@ -138,6 +173,8 @@
     ],
     "si2_cpu_history_records": 49,
     "si2_metal_history_records": 45,
+    "si2_pbe_cpu_history_records": 54,
+    "si2_pbe_metal_history_records": 47,
     "si16_cpu_history_records": 47,
     "si16_metal_history_records": 52,
     "native_histories_complete": true,
@@ -145,7 +182,7 @@
   },
   "fixture_provenance": {
     "manifest_schema_version": 1,
-    "verified_fixture_count": 5,
+    "verified_fixture_count": 10,
     "ci_enforced": true,
     "path_traversal_rejected": true,
     "tamper_detection": "passed",
@@ -163,6 +200,7 @@
     "phase_2_checkpoint_restart": "go for the current CPU and Metal SCF state boundary",
     "phase_2_structured_diagnostics": "go for native SCF iteration histories",
     "phase_2_fixture_manifest": "go; hashes and provenance are enforced in CI",
-    "production_science_or_scope_expansion": "no-go beyond the explicitly validated silicon workloads until Phase 2 infrastructure and broader independent fixtures exist"
+    "phase_3_pbe_silicon": "go for the pinned Si2 ONCV workload; point, grid, CPU/QE, and Metal/CPU gates passed",
+    "production_science_or_scope_expansion": "no-go beyond the explicitly validated silicon workloads until multiple elements, k-points, occupations, and forces have independent fixtures"
   }
 }

@@ -603,11 +603,11 @@
   ],
   "history_complete": true,
   "timings": {
-    "density_seconds": 0.002271001,
-    "eigensolve_seconds": 1.0361641210000008,
-    "potential_seconds": 0.0019122920000000001,
-    "setup_seconds": 0.062127958,
-    "total_seconds": 1.122547083
+    "density_seconds": 0.0024434549999999998,
+    "eigensolve_seconds": 0.9943241650000001,
+    "potential_seconds": 0.0022037100000000007,
+    "setup_seconds": 0.052682917,
+    "total_seconds": 1.071865209
   },
   "provenance": {
     "requested_backend": "metal-mixed",
@@ -623,6 +623,6 @@
     "pseudopotential_sha256": {
       "Si": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d"
     },
-    "git_revision": "b3785e7c40fe61f609fbe50a5b53efb2d9fac2f2"
+    "git_revision": "6d0d13bef5e4c16792f3d284bef68572727b54e0"
   }
 }

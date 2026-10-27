@@ -626,11 +626,11 @@
   ],
   "history_complete": true,
   "timings": {
-    "density_seconds": 0.0024212939999999996,
-    "eigensolve_seconds": 0.07245200199999999,
-    "potential_seconds": 0.002204038000000001,
-    "setup_seconds": 0.020129583,
-    "total_seconds": 0.118551042
+    "density_seconds": 0.002613044000000002,
+    "eigensolve_seconds": 0.07619266499999997,
+    "potential_seconds": 0.0025380420000000008,
+    "setup_seconds": 0.021914584,
+    "total_seconds": 0.126249625
   },
   "provenance": {
     "requested_backend": "cpu-f64",
@@ -646,6 +646,6 @@
     "pseudopotential_sha256": {
       "Si": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d"
     },
-    "git_revision": "b3785e7c40fe61f609fbe50a5b53efb2d9fac2f2"
+    "git_revision": "6d0d13bef5e4c16792f3d284bef68572727b54e0"
   }
 }

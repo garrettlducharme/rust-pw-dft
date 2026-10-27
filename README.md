@@ -114,8 +114,8 @@ through the persistent compact-projector context differs from CPU by
 
 On the pinned 16-atom workload, `bench-compare` applied the same
 `matched-metal-compatible-v1` convergence policy to both backends. Five warmed
-runs measured CPU min/median/max times of `7.771/7.830/8.065 s` and resident
-Metal times of `6.172/6.205/6.237 s`, a `1.262x` median speedup. The paired run
+runs measured CPU min/median/max times of `8.218/8.252/8.255 s` and resident
+Metal times of `6.088/6.106/6.256 s`, a `1.351x` median speedup. The paired run
 also passed scientific comparison at `0.00976 meV/atom`, `0.00853 meV` maximum
 occupied-eigenvalue error, and `8.1e-13` electrons. This accepts the performance
 claim only for this pinned workload and Apple M5 Pro; it is not a general DFT
@@ -135,7 +135,10 @@ and the integrated charge error is `1.1e-14` electrons. The resident Metal SCF
 differs from CPU by `0.00823 meV/atom`, `0.000668 meV` for occupied
 eigenvalues, and `8.9e-16` electrons, with zero projection resynchronizations.
 These results admit PBE only for this exact silicon workload; they do not
-establish chemical transferability.
+establish chemical transferability. The exact-source records are
+[`results/si2-pbe-cpu-scf.json`](results/si2-pbe-cpu-scf.json),
+[`results/si2-pbe-metal-scf.json`](results/si2-pbe-metal-scf.json), and their
+committed CPU/QE and Metal/CPU comparison reports.
 
 ## Commands
 
