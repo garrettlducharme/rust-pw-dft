@@ -44,3 +44,24 @@ eigenvalues, electron count, and energy decomposition. Its SCF history is
 marked incomplete because QE's iteration log was not embedded in the original
 normalized artifact; native `rust-pw-dft` results require a complete structured
 history.
+
+## Independent Libxc PBE point table
+
+`fixtures/xc/libxc-7.1.2-pbe-unpolarized.json` records unpolarized PBE
+exchange plus correlation values from Libxc 7.1.2: energy per particle,
+the density derivative, and the squared-gradient derivative. It covers the
+uniform-density limit and two finite-gradient points. The fixture is an
+independent numerical oracle for the upcoming native PBE implementation; its
+presence does not make PBE an admitted input functional.
+
+The small generator in `tools/libxc_xc_reference.c` uses Libxc functional IDs
+101 and 130. With Homebrew Libxc 7.1.2 installed, regenerate it with:
+
+```sh
+clang tools/libxc_xc_reference.c -I/opt/homebrew/include \
+  -L/opt/homebrew/lib -lxc -o /tmp/libxc_xc_reference
+/tmp/libxc_xc_reference
+```
+
+The generator is project code under MIT/Apache-2.0. The recorded Libxc-derived
+reference data is identified as MPL-2.0 in the manifest.

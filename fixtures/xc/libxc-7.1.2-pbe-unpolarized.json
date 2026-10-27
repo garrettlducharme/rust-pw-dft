@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "generator": "Libxc 7.1.2",
+  "exchange_functional": "GGA_X_PBE (101)",
+  "correlation_functional": "GGA_C_PBE (130)",
+  "spin": "unpolarized",
+  "points": [
+    {"density_bohr3": 9.9999999999999995e-07, "sigma_bohr8": 0, "epsilon_xc_ha": -0.012157210699156994, "vrho_ha": -0.015933335854028906, "vsigma_ha_bohr5": -1.7462298274040222e-10},
+    {"density_bohr3": 0.0001, "sigma_bohr8": 0, "epsilon_xc_ha": -0.049597085988067995, "vrho_ha": -0.064504716106780158, "vsigma_ha_bohr5": 1.1368683772161603e-13},
+    {"density_bohr3": 0.01, "sigma_bohr8": 0, "epsilon_xc_ha": -0.19681530551651538, "vrho_ha": -0.25603285974735107, "vsigma_ha_bohr5": 2.2204460492503131e-16},
+    {"density_bohr3": 0.10000000000000001, "sigma_bohr8": 0, "epsilon_xc_ha": -0.39605951921603488, "vrho_ha": -0.5176321082988028, "vsigma_ha_bohr5": -2.7755575615628914e-17},
+    {"density_bohr3": 1, "sigma_bohr8": 0, "epsilon_xc_ha": -0.80975882524821408, "vrho_ha": -1.0642019296338081, "vsigma_ha_bohr5": -8.6736173798840355e-19},
+    {"density_bohr3": 0.01, "sigma_bohr8": 0.0001, "epsilon_xc_ha": -0.19927208229909438, "vrho_ha": -0.2490293813825239, "vsigma_ha_bohr5": -0.42435474957584995},
+    {"density_bohr3": 0.10000000000000001, "sigma_bohr8": 0.01, "epsilon_xc_ha": -0.39691828163848686, "vrho_ha": -0.51490853164709049, "vsigma_ha_bohr5": -0.015691775511290057}
+  ]
+}
