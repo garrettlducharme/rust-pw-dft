@@ -155,7 +155,14 @@ electrons, with zero projection resynchronizations.
 
 This closes one binary-insulator transfer test. It does not establish broad
 oxide chemistry, forces, stress, k-point sampling, or pseudopotential
-transferability.
+transferability. The matched five-warm-run performance gate is intentionally
+retained as a negative result: CPU min/median/max were
+`2.821/2.843/2.865 s`, Metal was `3.592/3.619/3.699 s`, and the `0.786x`
+speedup fails the required `1.20x`. MgO therefore extends scientific scope but
+does not add a performance claim. Exact-source evidence is in
+[`results/mgo2-pbe-cpu-scf.json`](results/mgo2-pbe-cpu-scf.json),
+[`results/mgo2-pbe-metal-scf.json`](results/mgo2-pbe-metal-scf.json), and
+[`results/mgo2-pbe-matched-benchmark.json`](results/mgo2-pbe-matched-benchmark.json).
 
 ## Commands
 
