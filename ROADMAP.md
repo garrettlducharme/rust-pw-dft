@@ -30,7 +30,7 @@ application, journal append, and subspace restart all remain on the GPU.
 Runtime transfer counters fail closed if a normal iteration uploads or
 downloads a full vector. Si2 accuracy and transfer gates pass, and a matched
 five-warm-run Si16 comparison passes scientific parity and the `1.20x`
-end-to-end gate at `1.291x` on the Apple M5 Pro. The complete implementation
+end-to-end gate at `1.334x` on the Apple M5 Pro. The complete implementation
 contract is in
 [`docs/resident-davidson.md`](docs/resident-davidson.md).
 

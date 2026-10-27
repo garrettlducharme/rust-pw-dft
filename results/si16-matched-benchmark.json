@@ -11,9 +11,9 @@
     "converged": true,
     "iterations": 48,
     "repetitions": 5,
-    "min_seconds": 8.050495667,
-    "median_seconds": 8.071929375,
-    "max_seconds": 8.097127,
+    "min_seconds": 7.994449041,
+    "median_seconds": 8.073522209,
+    "max_seconds": 8.130453083,
     "provenance": {
       "requested_backend": "cpu-f64",
       "actual_backend": "cpu-f64",
@@ -24,11 +24,11 @@
         "eigensolve": "f64",
         "energy": "f64"
       },
-      "input_sha256": "037dca4dda4414718809378c8225ab18608a51852c822933b45a00d1cc577d36",
+      "input_sha256": "3f251a70b0b93ecccf2affd15d435ecf93932c8f634ce79f3d2385107ab46c8e",
       "pseudopotential_sha256": {
         "Si": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d"
       },
-      "git_revision": "487603d82f98d5352e64a3be6027b476af54ca65"
+      "git_revision": "30085db7cc88ed2c643b1f56ac9f692e5cee39fd"
     },
     "stop_reason": null
   },
@@ -40,9 +40,9 @@
     "converged": true,
     "iterations": 52,
     "repetitions": 5,
-    "min_seconds": 6.220218541,
-    "median_seconds": 6.252389625,
-    "max_seconds": 6.255950917,
+    "min_seconds": 6.011646792,
+    "median_seconds": 6.051196875,
+    "max_seconds": 6.289451792,
     "provenance": {
       "requested_backend": "metal-mixed",
       "actual_backend": "metal-mixed",
@@ -53,20 +53,21 @@
         "eigensolve": "projected-f64-cpu",
         "energy": "f64-cpu"
       },
-      "input_sha256": "037dca4dda4414718809378c8225ab18608a51852c822933b45a00d1cc577d36",
+      "input_sha256": "3f251a70b0b93ecccf2affd15d435ecf93932c8f634ce79f3d2385107ab46c8e",
       "pseudopotential_sha256": {
         "Si": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d"
       },
-      "git_revision": "487603d82f98d5352e64a3be6027b476af54ca65"
+      "git_revision": "30085db7cc88ed2c643b1f56ac9f692e5cee39fd"
     },
     "stop_reason": null
   },
   "scientific_comparison": {
+    "schema_version": 1,
     "accepted": true,
     "total_energy_error_mev_atom": 0.009762298717713435,
     "maximum_occupied_eigenvalue_error_mev": 0.008526411690952215,
     "electron_count_error": 8.100187187665142e-13
   },
-  "median_speedup": 1.2910150932892317,
+  "median_speedup": 1.3342025347671407,
   "stop_reason": null
 }

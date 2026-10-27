@@ -60,11 +60,11 @@
     5.109113413156625e-6
   ],
   "timings": {
-    "density_seconds": 0.002459124000000001,
-    "eigensolve_seconds": 0.9629747920000002,
-    "potential_seconds": 0.00202696,
-    "setup_seconds": 0.053742084,
-    "total_seconds": 1.021928083
+    "density_seconds": 0.002410876,
+    "eigensolve_seconds": 1.0010662979999998,
+    "potential_seconds": 0.0019914159999999998,
+    "setup_seconds": 0.054165542,
+    "total_seconds": 1.072021917
   },
   "provenance": {
     "requested_backend": "metal-mixed",
@@ -76,10 +76,10 @@
       "eigensolve": "projected-f64-cpu",
       "energy": "f64-cpu"
     },
-    "input_sha256": "5818e5aee80895efeac7ec846ce0a945ecd361329c2d71e52ad117c22801844e",
+    "input_sha256": "d5d07a79f1176932884dc0d4d9492094bd26aa39fe1e9ac9de48739a41dcac62",
     "pseudopotential_sha256": {
       "Si": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d"
     },
-    "git_revision": "487603d82f98d5352e64a3be6027b476af54ca65"
+    "git_revision": "30085db7cc88ed2c643b1f56ac9f692e5cee39fd"
   }
 }
