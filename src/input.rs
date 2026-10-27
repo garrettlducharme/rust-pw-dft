@@ -1,3 +1,4 @@
+use crate::xc::XcFunctional;
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -14,7 +15,7 @@ pub struct SimulationInput {
     pub atoms: Vec<AtomInput>,
     pub pseudopotentials: BTreeMap<String, PathBuf>,
     pub cutoff_ry: f64,
-    pub xc: String,
+    pub xc: XcFunctional,
     #[serde(default)]
     pub scf_options: ScfOptions,
     #[serde(default = "gamma_point")]
@@ -130,10 +131,6 @@ impl SimulationInput {
             "spin-polarized calculations are unsupported"
         );
         ensure!(
-            self.xc.eq_ignore_ascii_case("lda-pz"),
-            "only xc = \"lda-pz\" is supported"
-        );
-        ensure!(
             self.cutoff_ry.is_finite() && self.cutoff_ry > 0.0,
             "cutoff_ry must be positive and finite"
         );
@@ -231,13 +228,25 @@ lattice_bohr = [[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]]
         input.spin_components = 2;
         assert!(input.validate().is_err());
         input.spin_components = 1;
-        input.xc = "pbe".into();
-        assert!(input.validate().is_err());
-        input.xc = "lda-pz".into();
         input.cell.fixed = false;
         assert!(input.validate().is_err());
         input.cell.fixed = true;
         input.atoms[0].element = "Al".into();
         assert!(input.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_unimplemented_xc_during_parsing() {
+        let unsupported = r#"
+cutoff_ry = 12.0
+schema_version = 1
+xc = "pbe"
+pseudopotentials = { Si = "Si.UPF" }
+atoms = [{ element = "Si", fractional = [0.0, 0.0, 0.0] }]
+[cell]
+lattice_bohr = [[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]]
+"#;
+        let error = toml::from_str::<SimulationInput>(unsupported).unwrap_err();
+        assert!(error.to_string().contains("unknown variant `pbe`"));
     }
 }

@@ -7,7 +7,7 @@ use crate::fft::Fft3d;
 use crate::input::AtomInput;
 use crate::lattice::{GVector, Lattice, Vec3};
 use crate::pseudo::{NormConservingPseudo, Projector};
-use crate::xc::lda_pz_unpolarized;
+use crate::xc::XcFunctional;
 use anyhow::{Result, ensure};
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use num_complex::Complex32;
@@ -1015,6 +1015,7 @@ pub fn hartree_xc_potential(
     fft: &Fft3d,
     lattice: &Lattice,
     density: &[f64],
+    functional: XcFunctional,
 ) -> Result<ElectronicPotential> {
     ensure!(
         density.len() == fft.len(),
@@ -1059,23 +1060,16 @@ pub fn hartree_xc_potential(
         }
     }
     fft.inverse(&mut vh_g)?;
+    let xc = functional.evaluate_unpolarized(fft, lattice, density)?;
     let mut real_ry = Vec::with_capacity(fft.len());
-    let mut xc_energy_ry = 0.0;
-    let mut integral_rho_vxc_ry = 0.0;
-    for (&rho, vh) in density.iter().zip(vh_g) {
-        let nonnegative_density = rho.max(0.0);
-        let (epsilon_xc_ha, v_xc_ha) = lda_pz_unpolarized(nonnegative_density);
-        let epsilon_xc_ry = 2.0 * epsilon_xc_ha;
-        let v_xc_ry = 2.0 * v_xc_ha;
-        xc_energy_ry += nonnegative_density * epsilon_xc_ry * cell_weight;
-        integral_rho_vxc_ry += nonnegative_density * v_xc_ry * cell_weight;
+    for (vh, v_xc_ry) in vh_g.into_iter().zip(&xc.potential_ry) {
         real_ry.push(vh.re * grid_points + v_xc_ry);
     }
     Ok(ElectronicPotential {
         real_ry,
         hartree_energy_ry,
-        xc_energy_ry,
-        integral_rho_vxc_ry,
+        xc_energy_ry: xc.energy_ry,
+        integral_rho_vxc_ry: xc.integral_rho_vxc_ry,
         electron_count,
     })
 }
@@ -1160,8 +1154,13 @@ mod tests {
             starting_density.iter().sum::<f64>() * lattice.volume / starting_density.len() as f64;
         assert!((integrated - 8.0).abs() < 1.0e-12);
 
-        let electronic =
-            hartree_xc_potential(hamiltonian.fft(), &lattice, &starting_density).unwrap();
+        let electronic = hartree_xc_potential(
+            hamiltonian.fft(),
+            &lattice,
+            &starting_density,
+            XcFunctional::LdaPz,
+        )
+        .unwrap();
         let dense_matrix = hamiltonian.dense_matrix_fft(&electronic.real_ry).unwrap();
         let dense_eigenpairs =
             projected_hermitian_eigensolve(&dense_matrix, hamiltonian.dimension()).unwrap();
@@ -1821,7 +1820,8 @@ mod tests {
             lattice.volume,
         )
         .unwrap();
-        let potential = hartree_xc_potential(&fft, &lattice, &density).unwrap();
+        let potential =
+            hartree_xc_potential(&fft, &lattice, &density, XcFunctional::LdaPz).unwrap();
         assert!((potential.electron_count - 2.0).abs() < 1.0e-12);
         assert!(potential.hartree_energy_ry.abs() < 1.0e-14);
     }

@@ -22,3 +22,4 @@ pub mod xc;
 pub use backend::{BackendKind, KohnShamBackend, PrecisionPolicy};
 pub use input::SimulationInput;
 pub use result::ScfResult;
+pub use xc::XcFunctional;

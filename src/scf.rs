@@ -342,6 +342,12 @@ fn run_with_profile(
         &pseudo.element == element,
         "pseudopotential element mismatch"
     );
+    ensure!(
+        input.xc.matches_upf_label(&pseudo.functional),
+        "input XC {} is incompatible with pseudopotential functional {}",
+        input.xc.identifier(),
+        pseudo.functional
+    );
     pseudo_hashes.insert(element.clone(), sha256(pseudo_path)?);
     let electron_count = pseudo.valence_charge * input.atoms.len() as f64;
     let occupied_states_f64 = electron_count / 2.0;
@@ -550,7 +556,7 @@ fn run_with_profile(
         let iterations_this_run = iterations_this_run + 1;
         completed_iterations = iteration;
         let potential_started = Instant::now();
-        let potential = hartree_xc_potential(hamiltonian.fft(), &lattice, &density)?;
+        let potential = hartree_xc_potential(hamiltonian.fft(), &lattice, &density, input.xc)?;
         add_timing(
             &mut timings,
             "potential_seconds",
