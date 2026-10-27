@@ -79,7 +79,10 @@ validation and independent fixtures.
    whole-functional finite-difference test. A pinned ONCV PBE UPF now passes
    strict parsing, and the Si2 CPU and Metal full-SCF comparisons pass their
    independent QE and mixed-precision gates. PBE is accepted only for that
-   explicitly validated silicon workload.**
+   explicitly validated silicon workload. Multi-species local/nonlocal
+   operators, starting densities, electron counts, and Ewald sums now pass a
+   matched 100 Ry MgO CPU/QE and Metal/CPU gate; this admits one binary oxide,
+   not broad chemical transferability.**
 2. Monkhorst-Pack and explicit k-point lists, weights, time-reversal handling,
    and band/density accumulation.
 3. Fractional occupations and finite-temperature smearing for metals.

@@ -61,6 +61,8 @@ enum Command {
     Compare {
         result: PathBuf,
         reference: PathBuf,
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
     Bench {
         input: PathBuf,
@@ -355,10 +357,18 @@ fn main() -> Result<()> {
             "{}",
             serde_json::to_string_pretty(&fixtures::verify_manifest(&manifest, &repository_root)?)?
         ),
-        Command::Compare { result, reference } => println!(
-            "{}",
-            serde_json::to_string_pretty(&compare(&result, &reference)?)?
-        ),
+        Command::Compare {
+            result,
+            reference,
+            output,
+        } => {
+            let rendered = serde_json::to_string_pretty(&compare(&result, &reference)?)?;
+            if let Some(path) = output {
+                fs::write(path, rendered + "\n")?;
+            } else {
+                println!("{rendered}");
+            }
+        }
         Command::Bench {
             input,
             backend,

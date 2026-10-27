@@ -45,11 +45,39 @@ def main() -> None:
     parser.add_argument("xml", type=Path)
     parser.add_argument("stdout", type=Path)
     parser.add_argument("input", type=Path)
-    parser.add_argument("pseudopotential", type=Path)
+    parser.add_argument(
+        "pseudopotential",
+        type=Path,
+        nargs="?",
+        help="legacy single-species pseudopotential path",
+    )
     parser.add_argument("output", type=Path)
     parser.add_argument("--qe-revision", required=True)
     parser.add_argument("--element", default="Si")
+    parser.add_argument(
+        "--pseudo",
+        action="append",
+        default=[],
+        metavar="ELEMENT=PATH",
+        help="repeat for every species in a multi-species calculation",
+    )
     args = parser.parse_args()
+
+    pseudopotentials: dict[str, Path] = {}
+    if args.pseudopotential is not None:
+        pseudopotentials[args.element] = args.pseudopotential
+    for specification in args.pseudo:
+        if "=" not in specification:
+            parser.error("--pseudo must have the form ELEMENT=PATH")
+        element, raw_path = specification.split("=", 1)
+        if not element or element in pseudopotentials:
+            parser.error(f"duplicate or empty pseudopotential element: {element!r}")
+        pseudopotentials[element] = Path(raw_path)
+    if not pseudopotentials:
+        parser.error("supply the legacy pseudopotential path or at least one --pseudo")
+    missing = [str(path) for path in pseudopotentials.values() if not path.is_file()]
+    if missing:
+        parser.error(f"pseudopotential file does not exist: {', '.join(missing)}")
 
     root = ET.parse(args.xml).getroot()
     total_energy = descendant(root, "total_energy")
@@ -113,7 +141,10 @@ def main() -> None:
                 "energy": "f64",
             },
             "input_sha256": sha256(args.input),
-            "pseudopotential_sha256": {args.element: sha256(args.pseudopotential)},
+            "pseudopotential_sha256": {
+                element: sha256(path)
+                for element, path in sorted(pseudopotentials.items())
+            },
             "git_revision": args.qe_revision,
         },
     }

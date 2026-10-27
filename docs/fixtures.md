@@ -11,7 +11,7 @@ rust-pw-dft verify-fixtures
 The verifier rejects unknown manifest fields, unsupported schema versions,
 duplicate identifiers, missing provenance, malformed hashes, absolute paths,
 parent-directory traversal, missing files, and checksum mismatches. CI runs it
-after downloading the two intentionally untracked fixtures.
+after downloading the four intentionally untracked fixtures.
 
 ## Silicon pseudopotential
 
@@ -91,3 +91,35 @@ clang tools/libxc_xc_reference.c -I/opt/homebrew/include \
 
 The generator is project code under MIT/Apache-2.0. The recorded Libxc-derived
 reference data is identified as MPL-2.0 in the manifest.
+
+## Multi-species MgO reference
+
+The first chemical-transfer fixture uses the ten-electron Mg and six-electron
+O ONCV PBE files from `d3q` commit
+`6e5f97816af439702196c248ec2ad0092c561b89`, the revision pinned by QE 7.6.
+The upstream files do not state a separate data license, so the project records
+`NOASSERTION` and does not redistribute them.
+
+[`fixtures/qe/mgo2-pbe-reference.in`](../fixtures/qe/mgo2-pbe-reference.in)
+and [`examples/mgo2-pbe.toml`](../examples/mgo2-pbe.toml) use the same
+two-atom rock-salt primitive cell, 100 Ry wavefunction cutoff, PBE functional,
+fixed occupations, Gamma point, disabled symmetry, and `0.2` linear-mixing
+factor. The reference converged with QE 7.6 source commit
+`9f93ddec427d2b9a45bb72d828c6d324f62fcabd`.
+
+Normalize its full-precision XML with both pseudopotential identities:
+
+```sh
+python3 tools/normalize_qe_xml.py \
+  qe-mgo2-pbe-reference-tmp/mgo2-pbe-gamma-reference.save/data-file-schema.xml \
+  qe-mgo2-pbe-reference.out fixtures/qe/mgo2-pbe-reference.in \
+  results/qe-mgo2-pbe-reference.json \
+  --qe-revision 9f93ddec427d2b9a45bb72d828c6d324f62fcabd \
+  --pseudo Mg=pseudopotentials/Mg_ONCV_PBE-1.0.UPF \
+  --pseudo O=pseudopotentials/O_ONCV_PBE-1.0.UPF
+```
+
+The UPF reciprocal transform follows the standard QE convention: truncate
+large-radius cancellation noise beyond 10 bohr and force an odd Simpson mesh.
+This convention is covered by the independent total-energy and eigenvalue
+comparison rather than hidden as an empirical energy correction.

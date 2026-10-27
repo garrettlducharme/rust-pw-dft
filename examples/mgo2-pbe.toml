@@ -1,0 +1,33 @@
+schema_version = 1
+cutoff_ry = 100.0
+xc = "pbe"
+k_points = "gamma"
+spin_components = 1
+pseudopotentials = {
+  Mg = "../pseudopotentials/Mg_ONCV_PBE-1.0.UPF",
+  O = "../pseudopotentials/O_ONCV_PBE-1.0.UPF",
+}
+
+[cell]
+lattice_bohr = [
+  [0.0, 3.992424385254755, 3.992424385254755],
+  [3.992424385254755, 0.0, 3.992424385254755],
+  [3.992424385254755, 3.992424385254755, 0.0],
+]
+fixed = true
+
+[[atoms]]
+element = "Mg"
+fractional = [0.0, 0.0, 0.0]
+
+[[atoms]]
+element = "O"
+fractional = [0.5, 0.5, 0.5]
+
+[scf_options]
+max_iterations = 150
+energy_tolerance_ry = 1.0e-8
+density_tolerance = 1.0e-8
+orbital_residual_tolerance = 1.0e-8
+mixing_beta = 0.2
+seed = 99400983

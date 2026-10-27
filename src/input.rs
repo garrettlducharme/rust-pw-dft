@@ -1,7 +1,7 @@
 use crate::xc::XcFunctional;
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -144,10 +144,12 @@ impl SimulationInput {
                 && self.scf_options.mixing_beta > 0.0,
             "mixing_beta must be in (0, 1]"
         );
+        let mut used_elements = BTreeSet::new();
         for atom in &self.atoms {
-            if atom.element != "Si" {
-                bail!("only silicon is supported; found {}", atom.element);
-            }
+            ensure!(
+                !atom.element.trim().is_empty() && atom.element == atom.element.trim(),
+                "atom element labels must be nonempty and have no surrounding whitespace"
+            );
             ensure!(
                 self.pseudopotentials.contains_key(&atom.element),
                 "no pseudopotential was supplied for {}",
@@ -157,7 +159,14 @@ impl SimulationInput {
                 atom.fractional.iter().all(|x| x.is_finite()),
                 "atom coordinates must be finite"
             );
+            used_elements.insert(atom.element.as_str());
         }
+        ensure!(
+            self.pseudopotentials
+                .keys()
+                .all(|element| used_elements.contains(element.as_str())),
+            "pseudopotential map contains an element absent from the atom list"
+        );
         Ok(())
     }
 }
@@ -233,6 +242,11 @@ lattice_bohr = [[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]]
         input.cell.fixed = true;
         input.atoms[0].element = "Al".into();
         assert!(input.validate().is_err());
+        input.pseudopotentials.insert("Al".into(), "Al.UPF".into());
+        input.pseudopotentials.remove("Si");
+        assert!(input.validate().is_ok());
+        input.pseudopotentials.insert("O".into(), "O.UPF".into());
+        assert!(input.validate().is_err());
     }
 
     #[test]
@@ -250,5 +264,25 @@ lattice_bohr = [[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]]
         assert_eq!(parsed.xc, XcFunctional::Pbe);
         let error = toml::from_str::<SimulationInput>(&pbe.replace("pbe", "scan")).unwrap_err();
         assert!(error.to_string().contains("unknown variant `scan`"));
+    }
+
+    #[test]
+    fn admits_exact_multi_species_pseudopotential_map() {
+        let input: SimulationInput = toml::from_str(
+            r#"
+cutoff_ry = 100.0
+schema_version = 1
+xc = "pbe"
+pseudopotentials = { Mg = "Mg.UPF", O = "O.UPF" }
+atoms = [
+  { element = "Mg", fractional = [0.0, 0.0, 0.0] },
+  { element = "O", fractional = [0.5, 0.5, 0.5] },
+]
+[cell]
+lattice_bohr = [[0.0,4.0,4.0],[4.0,0.0,4.0],[4.0,4.0,0.0]]
+"#,
+        )
+        .unwrap();
+        input.validate().unwrap();
     }
 }
