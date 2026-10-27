@@ -20,6 +20,9 @@ machine-readable evidence rather than feature presence alone.
 - LDA-PZ exchange-correlation energy and potential;
 - a typed, fail-closed grid-level exchange-correlation boundary with analytic
   potential-versus-energy-derivative tests, ready for semilocal gradient terms;
+- a native unpolarized PBE point kernel whose energy, density derivative, and
+  squared-gradient derivative match a pinned Libxc 7.1.2 oracle; PBE remains
+  unavailable to SCF input until its FFT gradient/divergence path is accepted;
 - strict parser for QE's legacy `Si.pz-vbc.UPF` and scalar/non-relativistic
   norm-conserving UPF v2 PZ files, including local potential, radial mesh,
   separable projectors, and `Dij`;

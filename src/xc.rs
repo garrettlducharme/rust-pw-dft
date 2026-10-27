@@ -3,6 +3,7 @@ use crate::lattice::Lattice;
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
+use std::ops::{Add, Div, Mul, Neg, Sub};
 
 /// Exchange-correlation models admitted by the versioned input contract.
 ///
@@ -45,6 +46,269 @@ pub struct XcEvaluation {
     pub potential_ry: Vec<f64>,
     pub energy_ry: f64,
     pub integral_rho_vxc_ry: f64,
+}
+
+/// Pointwise unpolarized GGA result in Hartree atomic units. `sigma` denotes
+/// `|grad n|^2`, so `vsigma` is the derivative of the energy density with
+/// respect to that squared gradient.
+#[derive(Debug, Clone, Copy)]
+pub struct GgaPoint {
+    pub epsilon_xc_ha: f64,
+    pub vrho_ha: f64,
+    pub vsigma_ha_bohr5: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Dual2 {
+    value: f64,
+    density_derivative: f64,
+    sigma_derivative: f64,
+}
+
+impl Dual2 {
+    const fn constant(value: f64) -> Self {
+        Self {
+            value,
+            density_derivative: 0.0,
+            sigma_derivative: 0.0,
+        }
+    }
+
+    const fn density(value: f64) -> Self {
+        Self {
+            value,
+            density_derivative: 1.0,
+            sigma_derivative: 0.0,
+        }
+    }
+
+    const fn sigma(value: f64) -> Self {
+        Self {
+            value,
+            density_derivative: 0.0,
+            sigma_derivative: 1.0,
+        }
+    }
+
+    fn ln(self) -> Self {
+        let scale = self.value.recip();
+        Self {
+            value: self.value.ln(),
+            density_derivative: self.density_derivative * scale,
+            sigma_derivative: self.sigma_derivative * scale,
+        }
+    }
+
+    fn exp(self) -> Self {
+        let value = self.value.exp();
+        Self {
+            value,
+            density_derivative: self.density_derivative * value,
+            sigma_derivative: self.sigma_derivative * value,
+        }
+    }
+
+    fn powf(self, exponent: f64) -> Self {
+        let value = self.value.powf(exponent);
+        let scale = exponent * self.value.powf(exponent - 1.0);
+        Self {
+            value,
+            density_derivative: self.density_derivative * scale,
+            sigma_derivative: self.sigma_derivative * scale,
+        }
+    }
+}
+
+impl From<f64> for Dual2 {
+    fn from(value: f64) -> Self {
+        Self::constant(value)
+    }
+}
+
+impl Add for Dual2 {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Self {
+            value: self.value + rhs.value,
+            density_derivative: self.density_derivative + rhs.density_derivative,
+            sigma_derivative: self.sigma_derivative + rhs.sigma_derivative,
+        }
+    }
+}
+
+impl Add<f64> for Dual2 {
+    type Output = Self;
+
+    fn add(self, rhs: f64) -> Self::Output {
+        self + Self::constant(rhs)
+    }
+}
+
+impl Add<Dual2> for f64 {
+    type Output = Dual2;
+
+    fn add(self, rhs: Dual2) -> Self::Output {
+        Dual2::constant(self) + rhs
+    }
+}
+
+impl Sub for Dual2 {
+    type Output = Self;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        Self {
+            value: self.value - rhs.value,
+            density_derivative: self.density_derivative - rhs.density_derivative,
+            sigma_derivative: self.sigma_derivative - rhs.sigma_derivative,
+        }
+    }
+}
+
+impl Sub<f64> for Dual2 {
+    type Output = Self;
+
+    fn sub(self, rhs: f64) -> Self::Output {
+        self - Self::constant(rhs)
+    }
+}
+
+impl Sub<Dual2> for f64 {
+    type Output = Dual2;
+
+    fn sub(self, rhs: Dual2) -> Self::Output {
+        Dual2::constant(self) - rhs
+    }
+}
+
+impl Mul for Dual2 {
+    type Output = Self;
+
+    fn mul(self, rhs: Self) -> Self::Output {
+        Self {
+            value: self.value * rhs.value,
+            density_derivative: self.density_derivative * rhs.value
+                + self.value * rhs.density_derivative,
+            sigma_derivative: self.sigma_derivative * rhs.value + self.value * rhs.sigma_derivative,
+        }
+    }
+}
+
+impl Mul<f64> for Dual2 {
+    type Output = Self;
+
+    fn mul(self, rhs: f64) -> Self::Output {
+        self * Self::constant(rhs)
+    }
+}
+
+impl Mul<Dual2> for f64 {
+    type Output = Dual2;
+
+    fn mul(self, rhs: Dual2) -> Self::Output {
+        Dual2::constant(self) * rhs
+    }
+}
+
+impl Div for Dual2 {
+    type Output = Self;
+
+    fn div(self, rhs: Self) -> Self::Output {
+        self * rhs.powf(-1.0)
+    }
+}
+
+impl Div<f64> for Dual2 {
+    type Output = Self;
+
+    fn div(self, rhs: f64) -> Self::Output {
+        self / Self::constant(rhs)
+    }
+}
+
+impl Div<Dual2> for f64 {
+    type Output = Dual2;
+
+    fn div(self, rhs: Dual2) -> Self::Output {
+        Dual2::constant(self) / rhs
+    }
+}
+
+impl Neg for Dual2 {
+    type Output = Self;
+
+    fn neg(self) -> Self::Output {
+        Self {
+            value: -self.value,
+            density_derivative: -self.density_derivative,
+            sigma_derivative: -self.sigma_derivative,
+        }
+    }
+}
+
+fn pw92_unpolarized_correlation(density: Dual2) -> Dual2 {
+    let rs = (3.0 / (4.0 * PI * density)).powf(1.0 / 3.0);
+    let sqrt_rs = rs.powf(0.5);
+    let denominator = 2.0
+        * 0.031_090_7
+        * (7.5957 * sqrt_rs + 3.5876 * rs + 1.6382 * rs * sqrt_rs + 0.49294 * rs * rs);
+    -2.0 * 0.031_090_7 * (1.0 + 0.21370 * rs) * (1.0 + denominator.powf(-1.0)).ln()
+}
+
+/// Unpolarized PBE exchange plus correlation for one density/gradient point.
+///
+/// The implementation follows the original PBE form and differentiates the
+/// energy density by forward-mode dual numbers. PBE is not yet an admitted SCF
+/// input; this point kernel is validated first against a pinned Libxc oracle.
+pub fn pbe_unpolarized_point(density: f64, sigma: f64) -> Result<GgaPoint> {
+    ensure!(
+        density.is_finite() && density > 0.0,
+        "PBE density must be positive and finite"
+    );
+    ensure!(
+        sigma.is_finite() && sigma >= 0.0,
+        "PBE sigma must be nonnegative and finite"
+    );
+
+    let density_dual = Dual2::density(density);
+    let sigma_dual = Dual2::sigma(sigma);
+    let kf = (3.0 * PI * PI * density_dual).powf(1.0 / 3.0);
+
+    const KAPPA: f64 = 0.804;
+    const MU: f64 = 0.219_514_972_764_517_1;
+    let exchange_lda = -3.0 * kf / (4.0 * PI);
+    let reduced_exchange_gradient_squared =
+        sigma_dual / (4.0 * kf * kf * density_dual * density_dual);
+    let exchange_enhancement =
+        1.0 + KAPPA - KAPPA / (1.0 + (MU / KAPPA) * reduced_exchange_gradient_squared);
+    let exchange_energy_density = density_dual * exchange_lda * exchange_enhancement;
+
+    const BETA: f64 = 0.066_724_550_603_149_22;
+    const GAMMA: f64 = 0.031_090_690_869_654_895;
+    let correlation_lda = pw92_unpolarized_correlation(density_dual);
+    let ks = (4.0 * kf / PI).powf(0.5);
+    let reduced_correlation_gradient_squared =
+        sigma_dual / (4.0 * ks * ks * density_dual * density_dual);
+    let a = (BETA / GAMMA) / ((-correlation_lda / GAMMA).exp() - 1.0);
+    let at2 = a * reduced_correlation_gradient_squared;
+    let correlation_gradient = GAMMA
+        * (1.0
+            + (BETA / GAMMA) * reduced_correlation_gradient_squared * (1.0 + at2)
+                / (1.0 + at2 + at2 * at2))
+            .ln();
+    let correlation_energy_density = density_dual * (correlation_lda + correlation_gradient);
+    let total = exchange_energy_density + correlation_energy_density;
+    ensure!(
+        total.value.is_finite()
+            && total.density_derivative.is_finite()
+            && total.sigma_derivative.is_finite(),
+        "PBE evaluation produced a non-finite value"
+    );
+    Ok(GgaPoint {
+        epsilon_xc_ha: total.value / density,
+        vrho_ha: total.density_derivative,
+        vsigma_ha_bohr5: total.sigma_derivative,
+    })
 }
 
 /// Grid-level XC boundary. PBE and later semilocal models can use the FFT and
@@ -140,7 +404,28 @@ pub fn lda_pz_unpolarized(density: f64) -> (f64, f64) {
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+    use serde::Deserialize;
     use std::f64::consts::TAU;
+    use std::fs;
+
+    #[derive(Deserialize)]
+    struct PbeReference {
+        schema_version: u32,
+        generator: String,
+        exchange_functional: String,
+        correlation_functional: String,
+        spin: String,
+        points: Vec<PbeReferencePoint>,
+    }
+
+    #[derive(Deserialize)]
+    struct PbeReferencePoint {
+        density_bohr3: f64,
+        sigma_bohr8: f64,
+        epsilon_xc_ha: f64,
+        vrho_ha: f64,
+        vsigma_ha_bohr5: f64,
+    }
 
     #[test]
     fn known_rs_two_value_is_stable() {
@@ -188,6 +473,74 @@ mod tests {
             result.integral_rho_vxc_ry,
             lattice.volume * 0.02 * 2.0 * potential_ha,
             epsilon = 1.0e-13
+        );
+    }
+
+    #[test]
+    fn pbe_points_match_libxc_7_1_2() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/xc/libxc-7.1.2-pbe-unpolarized.json");
+        let reference: PbeReference =
+            serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(reference.schema_version, 1);
+        assert_eq!(reference.generator, "Libxc 7.1.2");
+        assert_eq!(reference.exchange_functional, "GGA_X_PBE (101)");
+        assert_eq!(reference.correlation_functional, "GGA_C_PBE (130)");
+        assert_eq!(reference.spin, "unpolarized");
+        assert_eq!(reference.points.len(), 7);
+        for expected in reference.points {
+            let actual =
+                pbe_unpolarized_point(expected.density_bohr3, expected.sigma_bohr8).unwrap();
+            assert_relative_eq!(
+                actual.epsilon_xc_ha,
+                expected.epsilon_xc_ha,
+                epsilon = 2.0e-8,
+                max_relative = 2.0e-8
+            );
+            assert_relative_eq!(
+                actual.vrho_ha,
+                expected.vrho_ha,
+                epsilon = 3.0e-8,
+                max_relative = 3.0e-8
+            );
+            assert_relative_eq!(
+                actual.vsigma_ha_bohr5,
+                expected.vsigma_ha_bohr5,
+                epsilon = 2.0e-8,
+                max_relative = 2.0e-8
+            );
+        }
+    }
+
+    #[test]
+    fn pbe_derivatives_match_energy_finite_differences() {
+        let density = 0.03;
+        let sigma = 0.002;
+        let density_step = density * 1.0e-5;
+        let sigma_step = sigma * 1.0e-5;
+        let energy_density = |rho: f64, gradient_squared: f64| {
+            rho * pbe_unpolarized_point(rho, gradient_squared)
+                .unwrap()
+                .epsilon_xc_ha
+        };
+        let density_derivative = (energy_density(density + density_step, sigma)
+            - energy_density(density - density_step, sigma))
+            / (2.0 * density_step);
+        let sigma_derivative = (energy_density(density, sigma + sigma_step)
+            - energy_density(density, sigma - sigma_step))
+            / (2.0 * sigma_step);
+        let analytic = pbe_unpolarized_point(density, sigma).unwrap();
+        assert_relative_eq!(
+            analytic.vrho_ha,
+            density_derivative,
+            epsilon = 1.0e-9,
+            max_relative = 1.0e-8
+        );
+        assert_relative_eq!(
+            analytic.vsigma_ha_bohr5,
+            sigma_derivative,
+            epsilon = 1.0e-9,
+            max_relative = 1.0e-8
         );
     }
 
