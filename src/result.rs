@@ -127,11 +127,13 @@ impl ScfResult {
                 self.converged == (final_record.status == ScfIterationStatus::Converged),
                 "result convergence disagrees with SCF history"
             );
-            ensure!(
-                final_record.total_energy_ry == self.total_energy_ry
-                    && final_record.electron_count == self.electron_count,
-                "final scientific values disagree with SCF history"
-            );
+            if final_record.status != ScfIterationStatus::EigensolverNotConverged {
+                ensure!(
+                    final_record.total_energy_ry == self.total_energy_ry
+                        && final_record.electron_count == self.electron_count,
+                    "final scientific values disagree with SCF history"
+                );
+            }
             if let Some(value) = self.energy_terms.get("davidson_iterations") {
                 let recorded: usize = self
                     .history
@@ -176,4 +178,67 @@ pub struct Provenance {
     pub git_revision: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub restart: Option<RestartProvenance>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn failed_result() -> ScfResult {
+        ScfResult {
+            schema_version: RESULT_SCHEMA_VERSION,
+            converged: false,
+            iterations: 1,
+            atom_count: 1,
+            total_energy_ry: Some(-1.0),
+            energy_terms: BTreeMap::from([
+                ("davidson_iterations".into(), 3.0),
+                ("hamiltonian_applications".into(), 5.0),
+            ]),
+            eigenvalues_ry: vec![0.25],
+            electron_count: Some(2.0),
+            residuals: vec![0.1],
+            history: vec![ScfIterationRecord {
+                iteration: 1,
+                status: ScfIterationStatus::EigensolverNotConverged,
+                total_energy_ry: None,
+                energy_change_ry: None,
+                density_residual: None,
+                maximum_orbital_residual_ry: 0.1,
+                electron_count: None,
+                highest_occupied_eigenvalue_ry: Some(0.25),
+                davidson_iterations: 3,
+                hamiltonian_applications: 5,
+            }],
+            history_complete: true,
+            timings: BTreeMap::from([("total_seconds".into(), 0.1)]),
+            provenance: Provenance {
+                requested_backend: BackendKind::CpuF64,
+                actual_backend: BackendKind::CpuF64,
+                actual_device: "test".into(),
+                precision_policy: PrecisionPolicy::cpu_f64(),
+                input_sha256: "input".into(),
+                pseudopotential_sha256: BTreeMap::new(),
+                git_revision: "test".into(),
+                restart: None,
+            },
+            stop_reason: Some("eigensolver did not converge".into()),
+        }
+    }
+
+    #[test]
+    fn validates_failed_iteration_and_rejects_counter_mismatch() {
+        let mut result = failed_result();
+        result.validate().unwrap();
+        result
+            .energy_terms
+            .insert("davidson_iterations".into(), 4.0);
+        assert!(
+            result
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("Davidson history total differs")
+        );
+    }
 }
