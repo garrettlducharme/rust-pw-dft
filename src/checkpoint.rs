@@ -1,4 +1,5 @@
 use crate::backend::{BackendKind, PrecisionPolicy};
+use crate::result::ScfIterationRecord;
 use anyhow::{Context, Result, ensure};
 use num_complex::Complex64;
 use serde::{Deserialize, Serialize};
@@ -9,8 +10,8 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const CHECKPOINT_SCHEMA_VERSION: u32 = 1;
-const MAGIC: &[u8; 8] = b"RPDFTCK1";
+pub const CHECKPOINT_SCHEMA_VERSION: u32 = 2;
+const MAGIC: &[u8; 8] = b"RPDFTCK2";
 const HEADER_BYTES: usize = 8 + 4 + 8 + 32;
 const MAX_CHECKPOINT_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -34,6 +35,7 @@ pub struct ScfCheckpoint {
     pub orbitals: Vec<Vec<Complex64>>,
     pub davidson_iterations: usize,
     pub hamiltonian_applications: usize,
+    pub history: Vec<ScfIterationRecord>,
     pub timings: BTreeMap<String, f64>,
     pub elapsed_seconds: f64,
     pub backend_metrics: BTreeMap<String, f64>,
@@ -180,6 +182,7 @@ mod tests {
             orbitals: vec![vec![Complex64::new(1.0, 0.0); 7]; 2],
             davidson_iterations: 8,
             hamiltonian_applications: 14,
+            history: Vec::new(),
             timings: BTreeMap::from([("setup_seconds".into(), 0.1)]),
             elapsed_seconds: 0.2,
             backend_metrics: BTreeMap::new(),

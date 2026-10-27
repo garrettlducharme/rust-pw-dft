@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "converged": true,
   "iterations": 27,
   "atom_count": 2,
@@ -19,6 +19,8 @@
   ],
   "electron_count": 8.0,
   "residuals": [],
+  "history": [],
+  "history_complete": false,
   "timings": {
     "wall_seconds": 0.3192031383514404
   },

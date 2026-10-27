@@ -4,6 +4,10 @@ An educational, fail-closed plane-wave DFT prototype aimed at Apple Silicon.
 It is dual-licensed under MIT or Apache-2.0 and contains no code copied from
 GPL DFT implementations.
 
+Version 0.3 adds complete SCF convergence histories and a CI-enforced
+scientific-fixture provenance manifest; version 0.2 introduced atomic,
+checksummed CPU/Metal restart checkpoints.
+
 The path from the validated silicon prototype to a research-ready Mac package
 is tracked in [`ROADMAP.md`](ROADMAP.md). Claims are tied to committed,
 machine-readable evidence rather than feature presence alone.
@@ -23,6 +27,12 @@ machine-readable evidence rather than feature presence alone.
 - checksummed binary SCF checkpoints with atomic replacement, strict
   compatibility validation, cumulative timing/counter restoration, compact
   inspection, and deterministic CPU and Metal interruption/resume tests;
+- complete per-iteration SCF histories with explicit continue/converged/
+  eigensolver-failure states, energy and density changes, charge, orbital
+  residuals, and per-step Davidson/Hamiltonian work; histories survive resume;
+- a versioned fixture manifest covering inputs, upstream provenance, licenses,
+  redistribution policy, reference commands, and hashes, enforced locally and
+  in CI by `verify-fixtures`;
 - a long-lived MPSGraph complex-FP32 context with persistent input, potential,
   kinetic, and projector buffers behind the macOS-only `metal` feature;
 - compact separable `B D B-dagger` nonlocal application, avoiding the former
@@ -122,6 +132,7 @@ cargo run -- run examples/si2.toml --backend cpu --output result.json
 cargo run --release -- compare results/cpu-scf.json results/qe-reference.json
 cargo run --release --features metal -- run examples/si2.toml --backend metal --output result-metal.json
 cargo run --release --features metal -- bench-compare examples/si16.toml --repetitions 5 --output benchmark-comparison.json
+cargo run --release -- verify-fixtures
 cargo run --release --features metal -- run examples/si16.toml --backend metal --output paused.json --checkpoint si16.chk --stop-after 10
 cargo run --release -- inspect-checkpoint si16.chk
 cargo run --release --features metal -- resume examples/si16.toml si16.chk --backend metal --output resumed.json
@@ -132,6 +143,9 @@ Checkpoint format, atomicity, and compatibility rules are documented in
 bound to its input, pseudopotentials, backend, precision policy, run profile,
 source revision, FFT grid, and basis dimensions; incompatible state is rejected
 rather than approximately resumed.
+Fixture provenance and reproduction commands are documented in
+[`docs/fixtures.md`](docs/fixtures.md); [`fixtures/manifest.toml`](fixtures/manifest.toml)
+is the machine-readable authority.
 
 The CPU scientific milestone and resident Metal Si2/Si16 accuracy, transfer,
 and matched-performance milestones are accepted. The stateful driver is

@@ -2,7 +2,8 @@ use anyhow::{Context, Result, bail, ensure};
 use clap::{Parser, Subcommand, ValueEnum};
 use rust_pw_dft::backend::BackendKind;
 use rust_pw_dft::checkpoint;
-use rust_pw_dft::result::{Provenance, RESULT_SCHEMA_VERSION, ScfResult};
+use rust_pw_dft::fixtures;
+use rust_pw_dft::result::{Provenance, ScfResult};
 use rust_pw_dft::scf::{ScfRunControl, run_matched_benchmark, run_with_control};
 use serde::Serialize;
 use std::fs;
@@ -50,6 +51,12 @@ enum Command {
     },
     InspectCheckpoint {
         checkpoint: PathBuf,
+    },
+    VerifyFixtures {
+        #[arg(long, default_value = "fixtures/manifest.toml")]
+        manifest: PathBuf,
+        #[arg(long, default_value = ".")]
+        repository_root: PathBuf,
     },
     Compare {
         result: PathBuf,
@@ -149,16 +156,12 @@ fn read_result(path: &Path) -> Result<ScfResult> {
         &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
     )
     .with_context(|| format!("invalid result {}", path.display()))?;
-    ensure!(
-        result.schema_version == RESULT_SCHEMA_VERSION,
-        "unsupported result schema_version {}; expected {}",
-        result.schema_version,
-        RESULT_SCHEMA_VERSION
-    );
+    result.validate()?;
     Ok(result)
 }
 
 fn write_result(path: &Path, result: &ScfResult) -> Result<()> {
+    result.validate()?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -345,6 +348,13 @@ fn main() -> Result<()> {
             };
             println!("{}", serde_json::to_string_pretty(&summary)?);
         }
+        Command::VerifyFixtures {
+            manifest,
+            repository_root,
+        } => println!(
+            "{}",
+            serde_json::to_string_pretty(&fixtures::verify_manifest(&manifest, &repository_root)?)?
+        ),
         Command::Compare { result, reference } => println!(
             "{}",
             serde_json::to_string_pretty(&compare(&result, &reference)?)?

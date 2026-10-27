@@ -36,7 +36,7 @@ continuation state elsewhere.
 
 ## Stored state
 
-The version-1 payload contains:
+The version-2 payload contains:
 
 - exact input and pseudopotential SHA-256 hashes;
 - writer Git revision, requested backend, precision policy, and run profile;
@@ -45,8 +45,10 @@ The version-1 payload contains:
 - mixed CPU-FP64 density, previous total energy, and CPU complex-FP64 orbitals;
 - cumulative Davidson/Hamiltonian counts, phase timings, elapsed time, and
   Metal transfer/operation counters.
+- the complete structured SCF convergence history through the checkpoint
+  iteration.
 
-The file starts with the `RPDFTCK1` magic, a little-endian envelope version and
+The file starts with the `RPDFTCK2` magic, a little-endian envelope version and
 payload length, and a SHA-256 digest of a bincode/Serde payload. Files larger
 than 16 GiB are rejected before decoding.
 
@@ -66,7 +68,7 @@ Resume rejects a checkpoint if any of these differ or are invalid:
   finiteness;
 - iteration bounds or unsupported checkpoint size.
 
-Source revision matching is deliberately strict in version 1. A future schema
+Source revision matching is deliberately strict in version 2. A future schema
 may permit migrations, but silently carrying numerical state across code
 changes would weaken reproducibility.
 

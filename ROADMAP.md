@@ -54,11 +54,15 @@ Build the machinery required to add physics without weakening evidence.
   compact inspection, and CPU/Metal interruption equivalence tests;
   **implemented for the current SCF state boundary**
 - provide a fixture manifest that records licenses, origins, download hashes,
-  and independent reference commands;
+  redistribution policy, and independent reference commands; **implemented
+  and enforced in CI**
 - separate smoke, invariant, scientific, and performance suites;
 - publish machine-readable accuracy and timing histories by hardware model;
 - add deterministic replay tests and interruption/restart equivalence tests;
-- add structured diagnostics for SCF, eigensolver, memory, and transfer behavior.
+  **CPU and Metal interruption equivalence implemented**
+- add structured diagnostics for SCF, eigensolver, memory, and transfer
+  behavior; **per-iteration SCF/eigensolver histories and aggregate Metal
+  memory/transfer counters implemented**
 
 Exit criteria include restart equivalence within the active precision policy,
 fixture reproducibility from a clean checkout, and no unversioned result fields.

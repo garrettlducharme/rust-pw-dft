@@ -14,3 +14,6 @@ echo 'd75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d  pseudopo
 
 The solver records this SHA-256 in every result and rejects unsupported
 pseudopotential types and functionals rather than substituting another model.
+The source URL, upstream revision, redistribution policy, and checksum are also
+recorded in [`../fixtures/manifest.toml`](../fixtures/manifest.toml) and checked
+by `rust-pw-dft verify-fixtures` in CI.

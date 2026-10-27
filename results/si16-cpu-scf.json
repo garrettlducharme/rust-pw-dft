@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "converged": true,
   "iterations": 47,
   "atom_count": 16,
@@ -90,6 +90,8 @@
     4.8006731344142016e-11,
     4.800663622724251e-11
   ],
+  "history": [],
+  "history_complete": false,
   "timings": {
     "density_seconds": 0.3265317439999999,
     "eigensolve_seconds": 21.737248417,

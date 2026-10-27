@@ -1,0 +1,60 @@
+schema_version = 1
+
+[[fixtures]]
+id = "si-pz-vbc-upf"
+kind = "pseudopotential"
+path = "pseudopotentials/Si.pz-vbc.UPF"
+sha256 = "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d"
+source = "https://gitlab.com/QEF/q-e/-/raw/qe-7.6/EPW/examples/sic/pp/Si.pz-vbc.UPF"
+source_revision = "Quantum ESPRESSO qe-7.6"
+license = "NOASSERTION"
+redistribution = "not-redistributed"
+description = "Legacy scalar-relativistic norm-conserving silicon LDA-PZ pseudopotential used by all validated workloads."
+
+[[fixtures]]
+id = "rust-pw-dft-si2-input"
+kind = "input"
+path = "examples/si2.toml"
+sha256 = "d5d07a79f1176932884dc0d4d9492094bd26aa39fe1e9ac9de48739a41dcac62"
+source = "repository"
+source_revision = "input-schema-1"
+license = "MIT OR Apache-2.0"
+redistribution = "project-tracked"
+description = "Two-atom Gamma-point silicon scientific acceptance input."
+
+[[fixtures]]
+id = "rust-pw-dft-si16-input"
+kind = "input"
+path = "examples/si16.toml"
+sha256 = "3f251a70b0b93ecccf2affd15d435ecf93932c8f634ce79f3d2385107ab46c8e"
+source = "repository"
+source_revision = "input-schema-1"
+license = "MIT OR Apache-2.0"
+redistribution = "project-tracked"
+description = "Sixteen-atom Gamma-point silicon matched-performance input."
+
+[[fixtures]]
+id = "qe-7.6-si2-portable-input"
+kind = "input"
+path = "fixtures/qe/si2-reference.in"
+sha256 = "6c1ce888f70dfc8390f19ada13fd4ca8663744a27e522c9daa7acabb7ec392a4"
+source = "repository adaptation of the accepted QE 7.6 reference input"
+source_revision = "Quantum ESPRESSO qe-7.6"
+license = "MIT OR Apache-2.0"
+redistribution = "project-tracked"
+description = "Portable QE input with relative pseudo/outdir paths; the accepted run used identical physics with machine-local paths."
+reference_command = "pw.x -in fixtures/qe/si2-reference.in"
+reference_input_sha256 = "9b302b5617fff4ca77edc5af118c17b91ebc1c69e661f8156cf0f96b3bfb8004"
+
+[[fixtures]]
+id = "qe-7.6-si2-normalized-result"
+kind = "reference-result"
+path = "results/qe-reference.json"
+sha256 = "6aac325d557d958dc7d3d08eba287d38717e635be9062c48938855739fdeb1a7"
+source = "Quantum ESPRESSO 7.6 pw.x output normalized into rust-pw-dft result schema"
+source_revision = "QE source commit 9f93ddec427d2b9a45bb72d828c6d324f62fcabd"
+license = "NOASSERTION"
+redistribution = "project-tracked"
+description = "Independent CPU-FP64 Si2 total-energy, eigenvalue, electron-count, and energy-component reference."
+reference_command = "pw.x -in fixtures/qe/si2-reference.in"
+reference_input_sha256 = "9b302b5617fff4ca77edc5af118c17b91ebc1c69e661f8156cf0f96b3bfb8004"

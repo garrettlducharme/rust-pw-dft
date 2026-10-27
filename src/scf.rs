@@ -11,7 +11,10 @@ use crate::operator::{
 };
 use crate::provenance::{git_revision, sha256};
 use crate::pseudo::NormConservingPseudo;
-use crate::result::{Provenance, RESULT_SCHEMA_VERSION, RestartProvenance, ScfResult};
+use crate::result::{
+    Provenance, RESULT_SCHEMA_VERSION, RestartProvenance, ScfIterationRecord, ScfIterationStatus,
+    ScfResult, validate_scf_history,
+};
 use anyhow::{Context, Result, ensure};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -427,6 +430,7 @@ fn run_with_profile(
     let mut davidson_iterations = 0_usize;
     let mut hamiltonian_applications = 0_usize;
     let mut eigensolver_stop_reason = None;
+    let mut history = Vec::new();
     let mut paused = false;
     let mut prior_elapsed_seconds = 0.0_f64;
     let mut baseline_backend_metrics = BTreeMap::new();
@@ -501,12 +505,30 @@ fn run_with_profile(
                     .all(|value| value.is_finite() && *value >= 0.0),
             "checkpoint scalar state is invalid"
         );
+        validate_scf_history(&checkpoint.history, Some(checkpoint.iteration_completed))
+            .context("checkpoint SCF history is inconsistent")?;
+        ensure!(
+            checkpoint
+                .history
+                .iter()
+                .map(|record| record.davidson_iterations)
+                .sum::<usize>()
+                == checkpoint.davidson_iterations
+                && checkpoint
+                    .history
+                    .iter()
+                    .map(|record| record.hamiltonian_applications)
+                    .sum::<usize>()
+                    == checkpoint.hamiltonian_applications,
+            "checkpoint SCF history counters are inconsistent"
+        );
         completed_iterations = checkpoint.iteration_completed;
         density = checkpoint.density;
         previous_energy = Some(checkpoint.previous_energy_ry);
         previous_orbitals = Some(checkpoint.orbitals);
         davidson_iterations = checkpoint.davidson_iterations;
         hamiltonian_applications = checkpoint.hamiltonian_applications;
+        history = checkpoint.history;
         timings = checkpoint.timings;
         prior_elapsed_seconds = checkpoint.elapsed_seconds;
         baseline_backend_metrics = checkpoint.backend_metrics;
@@ -586,6 +608,21 @@ fn run_with_profile(
                 eigenpairs.iterations,
                 final_residuals.iter().copied().fold(0.0_f64, f64::max)
             ));
+            history.push(ScfIterationRecord {
+                iteration,
+                status: ScfIterationStatus::EigensolverNotConverged,
+                total_energy_ry: None,
+                energy_change_ry: None,
+                density_residual: None,
+                maximum_orbital_residual_ry: final_residuals
+                    .iter()
+                    .copied()
+                    .fold(0.0_f64, f64::max),
+                electron_count: None,
+                highest_occupied_eigenvalue_ry: final_eigenvalues.last().copied(),
+                davidson_iterations: eigenpairs.iterations,
+                hamiltonian_applications: eigenpairs.hamiltonian_applications,
+            });
             break;
         }
         let eigenvalues = eigenpairs.eigenvalues;
@@ -613,9 +650,9 @@ fn run_with_profile(
         let total_energy_ry = band_energy_ry - potential.hartree_energy_ry + potential.xc_energy_ry
             - potential.integral_rho_vxc_ry
             + ewald_ry;
-        final_energy_change = previous_energy
-            .map(|previous| (total_energy_ry - previous).abs())
-            .unwrap_or(f64::INFINITY);
+        let iteration_energy_change =
+            previous_energy.map(|previous| (total_energy_ry - previous).abs());
+        final_energy_change = iteration_energy_change.unwrap_or(f64::INFINITY);
         previous_energy = Some(total_energy_ry);
         final_energy = Some(total_energy_ry);
         final_eigenvalues = eigenvalues;
@@ -637,12 +674,31 @@ fn run_with_profile(
                 scf_orbital_tolerance,
             ),
         ]);
+        if iteration_energy_change.is_none() {
+            final_terms.remove("energy_change_ry");
+        }
 
         let maximum_orbital_residual = final_residuals.iter().copied().fold(0.0_f64, f64::max);
-        if final_density_residual <= scf_density_tolerance
+        let iteration_converged = final_density_residual <= scf_density_tolerance
             && final_energy_change <= scf_energy_tolerance
-            && maximum_orbital_residual <= scf_orbital_tolerance
-        {
+            && maximum_orbital_residual <= scf_orbital_tolerance;
+        history.push(ScfIterationRecord {
+            iteration,
+            status: if iteration_converged {
+                ScfIterationStatus::Converged
+            } else {
+                ScfIterationStatus::Continue
+            },
+            total_energy_ry: Some(total_energy_ry),
+            energy_change_ry: iteration_energy_change,
+            density_residual: Some(final_density_residual),
+            maximum_orbital_residual_ry: maximum_orbital_residual,
+            electron_count: Some(final_charge),
+            highest_occupied_eigenvalue_ry: final_eigenvalues.last().copied(),
+            davidson_iterations: eigenpairs.iterations,
+            hamiltonian_applications: eigenpairs.hamiltonian_applications,
+        });
+        if iteration_converged {
             converged = true;
             break;
         }
@@ -676,6 +732,7 @@ fn run_with_profile(
                     .context("checkpoint requested without orbitals")?,
                 davidson_iterations,
                 hamiltonian_applications,
+                history: history.clone(),
                 timings: timings.clone(),
                 elapsed_seconds: prior_elapsed_seconds + total_started.elapsed().as_secs_f64(),
                 backend_metrics: accumulated_metrics(
@@ -739,6 +796,8 @@ fn run_with_profile(
         eigenvalues_ry: final_eigenvalues,
         electron_count: Some(final_charge),
         residuals: final_residuals,
+        history,
+        history_complete: true,
         timings,
         provenance: Provenance {
             requested_backend,
@@ -791,6 +850,11 @@ mod checkpoint_tests {
         .unwrap();
         assert!(!paused.converged);
         assert_eq!(paused.iterations, 5);
+        assert_eq!(paused.history.len(), 5);
+        assert_eq!(
+            paused.history.last().unwrap().status,
+            ScfIterationStatus::Continue
+        );
         assert!(paused.stop_reason.unwrap().contains("paused"));
 
         let loaded = checkpoint::read(&checkpoint_path).unwrap();
@@ -806,6 +870,8 @@ mod checkpoint_tests {
         .unwrap();
         assert!(resumed.converged);
         assert_eq!(resumed.iterations, uninterrupted.iterations);
+        assert_eq!(resumed.history, uninterrupted.history);
+        resumed.validate().unwrap();
         assert!(
             (resumed.total_energy_ry.unwrap() - uninterrupted.total_energy_ry.unwrap()).abs()
                 < 1.0e-13
@@ -860,6 +926,10 @@ mod tests {
         let metal = run(input_path, BackendKind::MetalMixed).unwrap();
         assert!(cpu.converged);
         assert!(metal.converged);
+        cpu.validate().unwrap();
+        metal.validate().unwrap();
+        assert_eq!(cpu.history.len(), cpu.iterations);
+        assert_eq!(metal.history.len(), metal.iterations);
         let energy_error_mev_atom = (metal.total_energy_ry.unwrap() - cpu.total_energy_ry.unwrap())
             .abs()
             * 13_605.693_122_994
@@ -931,6 +1001,21 @@ mod tests {
         .unwrap();
         assert!(resumed.converged);
         assert_eq!(resumed.iterations, metal.iterations);
+        assert_eq!(resumed.history.len(), metal.history.len());
+        assert!(
+            resumed
+                .history
+                .iter()
+                .zip(&metal.history)
+                .all(|(left, right)| {
+                    left.iteration == right.iteration
+                        && left.status == right.status
+                        && (left.total_energy_ry.unwrap() - right.total_energy_ry.unwrap()).abs()
+                            < 1.0e-10
+                        && (left.density_residual.unwrap() - right.density_residual.unwrap()).abs()
+                            < 1.0e-9
+                })
+        );
         assert!(
             (resumed.total_energy_ry.unwrap() - metal.total_energy_ry.unwrap()).abs() < 1.0e-10
         );
