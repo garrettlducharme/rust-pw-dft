@@ -910,6 +910,35 @@ mod checkpoint_tests {
         std::fs::remove_file(checkpoint_path).unwrap();
         std::fs::remove_file(bad_checkpoint_path).unwrap();
     }
+
+    #[test]
+    fn pbe_cpu_scf_matches_pinned_qe_reference() {
+        let input_path = Path::new("examples/si2-pbe.toml");
+        if !Path::new("pseudopotentials/Si_ONCV_PBE-1.0.upf").exists() {
+            return;
+        }
+        let result = run(input_path, BackendKind::CpuF64).unwrap();
+        result.validate().unwrap();
+        assert!(result.converged);
+
+        let reference: ScfResult = serde_json::from_str(
+            &std::fs::read_to_string("results/qe-pbe-reference.json").unwrap(),
+        )
+        .unwrap();
+        let energy_error_mev_atom =
+            (result.total_energy_ry.unwrap() - reference.total_energy_ry.unwrap()).abs()
+                * 13_605.693_122_994
+                / result.atom_count as f64;
+        let eigenvalue_error_mev = result
+            .eigenvalues_ry
+            .iter()
+            .zip(&reference.eigenvalues_ry)
+            .map(|(left, right)| (left - right).abs() * 13_605.693_122_994)
+            .fold(0.0_f64, f64::max);
+        assert!(energy_error_mev_atom <= 2.0, "{energy_error_mev_atom:e}");
+        assert!(eigenvalue_error_mev <= 5.0, "{eigenvalue_error_mev:e}");
+        assert!((result.electron_count.unwrap() - reference.electron_count.unwrap()).abs() <= 1e-8);
+    }
 }
 
 #[cfg(all(test, feature = "metal", target_os = "macos"))]
@@ -1050,5 +1079,37 @@ mod tests {
             5
         );
         std::fs::remove_file(checkpoint_path).unwrap();
+    }
+
+    #[test]
+    fn resident_metal_pbe_scf_matches_cpu() {
+        let input_path = Path::new("examples/si2-pbe.toml");
+        if !Path::new("pseudopotentials/Si_ONCV_PBE-1.0.upf").exists() {
+            return;
+        }
+        let cpu = run(input_path, BackendKind::CpuF64).unwrap();
+        let metal = run(input_path, BackendKind::MetalMixed).unwrap();
+        cpu.validate().unwrap();
+        metal.validate().unwrap();
+        assert!(cpu.converged && metal.converged);
+
+        let energy_error_mev_atom = (metal.total_energy_ry.unwrap() - cpu.total_energy_ry.unwrap())
+            .abs()
+            * 13_605.693_122_994
+            / metal.atom_count as f64;
+        let eigenvalue_error_mev = metal
+            .eigenvalues_ry
+            .iter()
+            .zip(&cpu.eigenvalues_ry)
+            .map(|(left, right)| (left - right).abs() * 13_605.693_122_994)
+            .fold(0.0_f64, f64::max);
+        assert!(energy_error_mev_atom <= 1.0, "{energy_error_mev_atom:e}");
+        assert!(eigenvalue_error_mev <= 5.0, "{eigenvalue_error_mev:e}");
+        assert!((metal.electron_count.unwrap() - cpu.electron_count.unwrap()).abs() <= 1e-5);
+        assert_eq!(metal.energy_terms["metal_resident_projection_resyncs"], 0.0);
+        assert_eq!(
+            metal.energy_terms["metal_resident_transfer_invariant_checks"],
+            metal.energy_terms["davidson_iterations"]
+        );
     }
 }

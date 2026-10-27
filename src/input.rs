@@ -236,8 +236,8 @@ lattice_bohr = [[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]]
     }
 
     #[test]
-    fn rejects_unimplemented_xc_during_parsing() {
-        let unsupported = r#"
+    fn admits_pbe_and_rejects_unknown_xc_during_parsing() {
+        let pbe = r#"
 cutoff_ry = 12.0
 schema_version = 1
 xc = "pbe"
@@ -246,7 +246,9 @@ atoms = [{ element = "Si", fractional = [0.0, 0.0, 0.0] }]
 [cell]
 lattice_bohr = [[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]]
 "#;
-        let error = toml::from_str::<SimulationInput>(unsupported).unwrap_err();
-        assert!(error.to_string().contains("unknown variant `pbe`"));
+        let parsed = toml::from_str::<SimulationInput>(pbe).unwrap();
+        assert_eq!(parsed.xc, XcFunctional::Pbe);
+        let error = toml::from_str::<SimulationInput>(&pbe.replace("pbe", "scan")).unwrap_err();
+        assert!(error.to_string().contains("unknown variant `scan`"));
     }
 }

@@ -4,9 +4,11 @@ An educational, fail-closed plane-wave DFT prototype aimed at Apple Silicon.
 It is dual-licensed under MIT or Apache-2.0 and contains no code copied from
 GPL DFT implementations.
 
-Version 0.3 adds complete SCF convergence histories and a CI-enforced
-scientific-fixture provenance manifest; version 0.2 introduced atomic,
-checksummed CPU/Metal restart checkpoints.
+Version 0.4 adds a native variational PBE implementation, strict PBE UPF
+admission, and independently validated CPU and Metal PBE silicon SCFs. Version
+0.3 added complete SCF convergence histories and a CI-enforced scientific-
+fixture provenance manifest; version 0.2 introduced atomic, checksummed
+CPU/Metal restart checkpoints.
 
 The path from the validated silicon prototype to a research-ready Mac package
 is tracked in [`ROADMAP.md`](ROADMAP.md). Claims are tied to committed,
@@ -14,7 +16,7 @@ machine-readable evidence rather than feature presence alone.
 
 ## Implemented
 
-- strict fixed-cell, spinless, Gamma-only LDA-PZ silicon input contract;
+- strict fixed-cell, spinless, Gamma-only LDA-PZ or PBE silicon input contract;
 - direct/reciprocal lattice construction and cutoff-safe G-vector enumeration;
 - FP64 multidimensional CPU FFT with Parseval and round-trip tests;
 - LDA-PZ exchange-correlation energy and potential;
@@ -22,10 +24,10 @@ machine-readable evidence rather than feature presence alone.
   potential-versus-energy-derivative tests, ready for semilocal gradient terms;
 - a native unpolarized PBE functional whose point energy and derivatives match
   a pinned Libxc 7.1.2 oracle and whose spectral grid potential passes a
-  whole-functional finite-difference test; PBE remains unavailable to SCF
-  input until a compatible UPF and independent full-SCF comparison pass;
+  whole-functional finite-difference test; a pinned ONCV UPF and independent
+  QE 7.6 full-SCF comparison now accept the Si2 PBE workload;
 - strict parser for QE's legacy `Si.pz-vbc.UPF` and scalar/non-relativistic
-  norm-conserving UPF v2 PZ files, including local potential, radial mesh,
+  norm-conserving UPF v2 PZ/PBE files, including local potential, radial mesh,
   separable projectors, and `Dij`;
 - explicit provenance and precision policy in JSON results;
 - required version identifiers for input, result, comparison, benchmark, and
@@ -124,6 +126,17 @@ There is no silent CPU Hamiltonian or reduction fallback; the actual device,
 effective mixed-precision convergence tolerances, resident/resynchronization
 counts, memory measurements, and precision policy are recorded in every result.
 
+## Accepted PBE result
+
+For the pinned two-atom silicon PBE/ONCV case, the CPU solver converges to
+`-14.4679818597 Ry`. Against full-precision QE 7.6 XML it differs by
+`0.01001 meV/atom`; the maximum occupied-eigenvalue error is `0.003352 meV`,
+and the integrated charge error is `1.1e-14` electrons. The resident Metal SCF
+differs from CPU by `0.00823 meV/atom`, `0.000668 meV` for occupied
+eigenvalues, and `8.9e-16` electrons, with zero projection resynchronizations.
+These results admit PBE only for this exact silicon workload; they do not
+establish chemical transferability.
+
 ## Commands
 
 First download and verify the external QE 7.6 fixture as described in
@@ -136,6 +149,8 @@ cargo test
 cargo test --features metal
 cargo run -- run examples/si2.toml --backend cpu --output result.json
 cargo run --release -- compare results/cpu-scf.json results/qe-reference.json
+cargo run --release -- run examples/si2-pbe.toml --backend cpu --output result-pbe.json
+cargo run --release -- compare result-pbe.json results/qe-pbe-reference.json
 cargo run --release --features metal -- run examples/si2.toml --backend metal --output result-metal.json
 cargo run --release --features metal -- bench-compare examples/si16.toml --repetitions 5 --output benchmark-comparison.json
 cargo run --release -- verify-fixtures
@@ -153,8 +168,9 @@ Fixture provenance and reproduction commands are documented in
 [`docs/fixtures.md`](docs/fixtures.md); [`fixtures/manifest.toml`](fixtures/manifest.toml)
 is the machine-readable authority.
 
-The CPU scientific milestone and resident Metal Si2/Si16 accuracy, transfer,
-and matched-performance milestones are accepted. The stateful driver is
+The LDA and PBE Si2 CPU scientific milestones and resident Metal accuracy
+milestones are accepted. The LDA Si16 transfer and matched-performance
+milestones are also accepted. The stateful driver is
 integrated into production SCF, and its normal-iteration
 zero-full-vector-transfer contract is checked at runtime and in portable and
 Apple-GPU tests. Phase 2 now focuses on versioned schemas, checkpoints,

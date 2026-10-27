@@ -118,7 +118,7 @@ fn repeated_sections<'a>(text: &'a str, name: &str) -> Result<Vec<&'a str>> {
 
 impl NormConservingPseudo {
     /// Read either the pinned legacy silicon representation or a strict
-    /// scalar/non-relativistic norm-conserving UPF v2 PZ representation.
+    /// scalar/non-relativistic norm-conserving UPF v2 PZ or PBE representation.
     pub fn from_upf(path: &Path) -> Result<Self> {
         let text = fs::read_to_string(path)
             .with_context(|| format!("failed to read pseudopotential {}", path.display()))?;
@@ -313,8 +313,8 @@ impl NormConservingPseudo {
         );
         let functional = attribute(header, "functional")?.to_string();
         ensure!(
-            functional.eq_ignore_ascii_case("PZ"),
-            "only the PZ LDA pseudopotential is supported"
+            functional.eq_ignore_ascii_case("PZ") || functional.eq_ignore_ascii_case("PBE"),
+            "only PZ LDA and PBE pseudopotentials are supported"
         );
         let element = attribute(header, "element")?.to_string();
         ensure!(!element.is_empty(), "UPF v2 element is empty");
@@ -474,6 +474,34 @@ mod tests {
     }
 
     #[test]
+    fn parses_strict_pbe_norm_conserving_upf_v2() {
+        let text = r#"
+<UPF version="2.0.1">
+<PP_HEADER element="Si" pseudo_type="NC" relativistic="scalar"
+ is_ultrasoft="F" is_paw="F" core_correction="F" has_so="F"
+ functional="PBE" z_valence="4.0" mesh_size="3" number_of_proj="1"/>
+<PP_MESH>
+<PP_R>0.0 0.5 1.0</PP_R>
+<PP_RAB>0.25 0.5 0.5</PP_RAB>
+</PP_MESH>
+<PP_LOCAL>-2.0 -1.0 -0.5</PP_LOCAL>
+<PP_NONLOCAL>
+<PP_BETA.1 index="1" angular_momentum="0" cutoff_radius_index="2">
+0.0 1.0 0.0
+</PP_BETA.1>
+<PP_DIJ>1.5</PP_DIJ>
+</PP_NONLOCAL>
+<PP_RHOATOM>0.0 2.0 0.0</PP_RHOATOM>
+</UPF>
+"#;
+        let pseudo = NormConservingPseudo::from_v2_text(text).unwrap();
+        assert_eq!(pseudo.element, "Si");
+        assert_eq!(pseudo.functional, "PBE");
+        assert_eq!(pseudo.valence_charge, 4.0);
+        assert_eq!(pseudo.projectors.len(), 1);
+    }
+
+    #[test]
     fn parses_pinned_upf_v2_and_rejects_out_of_scope_v2_when_available() {
         let lda_path =
             Path::new("../dft studies/checkouts/q-e-7.6/EPW/examples/gan/pp/N_ONCV_LDA-1.0.upf");
@@ -491,6 +519,18 @@ mod tests {
         if spin_orbit_path.exists() {
             let error = NormConservingPseudo::from_upf(spin_orbit_path).unwrap_err();
             assert!(error.to_string().contains("core corrections"));
+        }
+
+        let pbe_path = Path::new(
+            "../dft studies/checkouts/q-e-7.6/external/wannier90/pseudo/Si_ONCV_PBE-1.0.upf",
+        );
+        if pbe_path.exists() {
+            let pseudo = NormConservingPseudo::from_upf(pbe_path).unwrap();
+            assert_eq!(pseudo.element, "Si");
+            assert_eq!(pseudo.functional, "PBE");
+            assert_eq!(pseudo.valence_charge, 4.0);
+            assert_eq!(pseudo.radial_grid.len(), 602);
+            assert_eq!(pseudo.projectors.len(), 4);
         }
     }
 }

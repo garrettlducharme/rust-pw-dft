@@ -15,9 +15,6 @@ use std::ops::{Add, Div, Mul, Neg, Sub};
 #[serde(rename_all = "kebab-case")]
 pub enum XcFunctional {
     LdaPz,
-    /// Internal validation surface. Serde must not admit PBE input until the
-    /// pseudopotential and full-SCF acceptance gates pass.
-    #[serde(skip)]
     Pbe,
 }
 

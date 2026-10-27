@@ -76,8 +76,10 @@ validation and independent fixtures.
    potential checks. **Typed grid-level abstraction and variational LDA-PZ
    checks implemented; the native PBE point energy and derivatives match a
    pinned Libxc 7.1.2 table, and the spectral grid potential passes a
-   whole-functional finite-difference test. PBE UPF and full-SCF validation
-   remain pending.**
+   whole-functional finite-difference test. A pinned ONCV PBE UPF now passes
+   strict parsing, and the Si2 CPU and Metal full-SCF comparisons pass their
+   independent QE and mixed-precision gates. PBE is accepted only for that
+   explicitly validated silicon workload.**
 2. Monkhorst-Pack and explicit k-point lists, weights, time-reversal handling,
    and band/density accumulation.
 3. Fractional occupations and finite-temperature smearing for metals.

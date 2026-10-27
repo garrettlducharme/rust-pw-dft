@@ -1,0 +1,38 @@
+&CONTROL
+  calculation = 'scf'
+  prefix = 'si2-pbe-gamma-reference'
+  restart_mode = 'from_scratch'
+  pseudo_dir = './pseudopotentials'
+  outdir = './qe-si2-pbe-reference-tmp'
+  tprnfor = .false.
+  tstress = .false.
+/
+&SYSTEM
+  ibrav = 0
+  nat = 2
+  ntyp = 1
+  ecutwfc = 12.0
+  ecutrho = 48.0
+  input_dft = 'pbe'
+  occupations = 'fixed'
+  nspin = 1
+  nosym = .true.
+  noinv = .true.
+/
+&ELECTRONS
+  conv_thr = 1.0d-12
+  electron_maxstep = 100
+  mixing_mode = 'plain'
+  mixing_beta = 0.3
+  diagonalization = 'david'
+/
+ATOMIC_SPECIES
+Si 28.0855 Si_ONCV_PBE-1.0.upf
+CELL_PARAMETERS bohr
+0.0000000000 5.1250000000 5.1250000000
+5.1250000000 0.0000000000 5.1250000000
+5.1250000000 5.1250000000 0.0000000000
+ATOMIC_POSITIONS crystal
+Si 0.0000000000 0.0000000000 0.0000000000
+Si 0.2500000000 0.2500000000 0.2500000000
+K_POINTS gamma
