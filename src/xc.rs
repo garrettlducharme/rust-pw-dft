@@ -1,6 +1,7 @@
 use crate::fft::Fft3d;
 use crate::lattice::Lattice;
 use anyhow::{Result, ensure};
+use num_complex::Complex64;
 use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 use std::ops::{Add, Div, Mul, Neg, Sub};
@@ -14,18 +15,24 @@ use std::ops::{Add, Div, Mul, Neg, Sub};
 #[serde(rename_all = "kebab-case")]
 pub enum XcFunctional {
     LdaPz,
+    /// Internal validation surface. Serde must not admit PBE input until the
+    /// pseudopotential and full-SCF acceptance gates pass.
+    #[serde(skip)]
+    Pbe,
 }
 
 impl XcFunctional {
     pub const fn identifier(self) -> &'static str {
         match self {
             Self::LdaPz => "lda-pz",
+            Self::Pbe => "pbe",
         }
     }
 
     pub fn matches_upf_label(self, label: &str) -> bool {
         match self {
             Self::LdaPz => label.eq_ignore_ascii_case("PZ"),
+            Self::Pbe => label.eq_ignore_ascii_case("PBE"),
         }
     }
 
@@ -37,6 +44,7 @@ impl XcFunctional {
     ) -> Result<XcEvaluation> {
         match self {
             Self::LdaPz => LdaPz.evaluate_unpolarized(fft, lattice, density),
+            Self::Pbe => Pbe.evaluate_unpolarized(fft, lattice, density),
         }
     }
 }
@@ -375,6 +383,177 @@ impl ExchangeCorrelation for LdaPz {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Pbe;
+
+fn derivative_frequency(index: usize, extent: usize) -> i32 {
+    if extent.is_multiple_of(2) && index == extent / 2 {
+        // The Nyquist mode has no unique sign on an even real grid. Setting it
+        // to zero preserves a real, anti-Hermitian discrete derivative.
+        0
+    } else if index <= extent / 2 {
+        index as i32
+    } else {
+        index as i32 - extent as i32
+    }
+}
+
+fn reciprocal_at_flat_index(lattice: &Lattice, shape: [usize; 3], flat: usize) -> [f64; 3] {
+    let yz = shape[1] * shape[2];
+    let x = flat / yz;
+    let remainder = flat % yz;
+    let y = remainder / shape[2];
+    let z = remainder % shape[2];
+    lattice.cartesian_g([
+        derivative_frequency(x, shape[0]),
+        derivative_frequency(y, shape[1]),
+        derivative_frequency(z, shape[2]),
+    ])
+}
+
+fn spectral_gradient(fft: &Fft3d, lattice: &Lattice, values: &[f64]) -> Result<[Vec<f64>; 3]> {
+    ensure!(values.len() == fft.len(), "gradient input has wrong size");
+    ensure!(
+        values.iter().all(|value| value.is_finite()),
+        "gradient input contains non-finite values"
+    );
+    let mut coefficients: Vec<_> = values
+        .iter()
+        .map(|&value| Complex64::new(value, 0.0))
+        .collect();
+    fft.forward(&mut coefficients)?;
+    let shape = fft.shape();
+    let mut gradient: [Vec<f64>; 3] = std::array::from_fn(|_| vec![0.0; fft.len()]);
+    for axis in 0..3 {
+        let mut derivative = coefficients.clone();
+        for (flat, value) in derivative.iter_mut().enumerate() {
+            let g = reciprocal_at_flat_index(lattice, shape, flat);
+            *value *= Complex64::new(0.0, g[axis]);
+        }
+        fft.inverse(&mut derivative)?;
+        let maximum_real = derivative
+            .iter()
+            .map(|value| value.re.abs())
+            .fold(0.0_f64, f64::max);
+        let maximum_imaginary = derivative
+            .iter()
+            .map(|value| value.im.abs())
+            .fold(0.0_f64, f64::max);
+        ensure!(
+            maximum_imaginary <= 1.0e-11 * maximum_real.max(1.0),
+            "spectral gradient has a material imaginary component"
+        );
+        for (output, value) in gradient[axis].iter_mut().zip(derivative) {
+            *output = value.re;
+        }
+    }
+    Ok(gradient)
+}
+
+fn spectral_divergence(fft: &Fft3d, lattice: &Lattice, vector: &[Vec<f64>; 3]) -> Result<Vec<f64>> {
+    ensure!(
+        vector.iter().all(|component| component.len() == fft.len()),
+        "divergence input has wrong size"
+    );
+    let shape = fft.shape();
+    let mut divergence = vec![0.0; fft.len()];
+    for axis in 0..3 {
+        let mut coefficients: Vec<_> = vector[axis]
+            .iter()
+            .map(|&value| Complex64::new(value, 0.0))
+            .collect();
+        fft.forward(&mut coefficients)?;
+        for (flat, value) in coefficients.iter_mut().enumerate() {
+            let g = reciprocal_at_flat_index(lattice, shape, flat);
+            *value *= Complex64::new(0.0, g[axis]);
+        }
+        fft.inverse(&mut coefficients)?;
+        let maximum_real = coefficients
+            .iter()
+            .map(|value| value.re.abs())
+            .fold(0.0_f64, f64::max);
+        let maximum_imaginary = coefficients
+            .iter()
+            .map(|value| value.im.abs())
+            .fold(0.0_f64, f64::max);
+        ensure!(
+            maximum_imaginary <= 1.0e-11 * maximum_real.max(1.0),
+            "spectral divergence has a material imaginary component"
+        );
+        for (output, value) in divergence.iter_mut().zip(coefficients) {
+            *output += value.re;
+        }
+    }
+    Ok(divergence)
+}
+
+impl ExchangeCorrelation for Pbe {
+    fn functional(&self) -> XcFunctional {
+        XcFunctional::Pbe
+    }
+
+    fn evaluate_unpolarized(
+        &self,
+        fft: &Fft3d,
+        lattice: &Lattice,
+        density: &[f64],
+    ) -> Result<XcEvaluation> {
+        ensure!(
+            density.len() == fft.len(),
+            "XC density has the wrong grid size"
+        );
+        ensure!(
+            density
+                .iter()
+                .all(|value| value.is_finite() && *value >= -1.0e-12),
+            "PBE grid density is non-finite or materially negative"
+        );
+        let gradient = spectral_gradient(fft, lattice, density)?;
+        let cell_weight = lattice.volume / fft.len() as f64;
+        let mut energy_ry = 0.0;
+        let mut vrho_ha = Vec::with_capacity(fft.len());
+        let mut flux: [Vec<f64>; 3] = std::array::from_fn(|_| vec![0.0; fft.len()]);
+        for flat in 0..fft.len() {
+            if density[flat] <= 1.0e-14 {
+                vrho_ha.push(0.0);
+                continue;
+            }
+            let sigma = gradient
+                .iter()
+                .map(|component| component[flat] * component[flat])
+                .sum();
+            let point = pbe_unpolarized_point(density[flat], sigma)?;
+            energy_ry += 2.0 * density[flat] * point.epsilon_xc_ha * cell_weight;
+            vrho_ha.push(point.vrho_ha);
+            for axis in 0..3 {
+                flux[axis][flat] = 2.0 * point.vsigma_ha_bohr5 * gradient[axis][flat];
+            }
+        }
+        let divergence_ha = spectral_divergence(fft, lattice, &flux)?;
+        let potential_ry: Vec<_> = vrho_ha
+            .into_iter()
+            .zip(divergence_ha)
+            .map(|(vrho, divergence)| 2.0 * (vrho - divergence))
+            .collect();
+        let integral_rho_vxc_ry: f64 = density
+            .iter()
+            .zip(&potential_ry)
+            .map(|(&rho, &potential)| rho.max(0.0) * potential * cell_weight)
+            .sum();
+        ensure!(
+            energy_ry.is_finite()
+                && integral_rho_vxc_ry.is_finite()
+                && potential_ry.iter().all(|value| value.is_finite()),
+            "PBE grid evaluation produced a non-finite value"
+        );
+        Ok(XcEvaluation {
+            potential_ry,
+            energy_ry,
+            integral_rho_vxc_ry,
+        })
+    }
+}
+
 /// Perdew-Zunger (1981) parameterization of the unpolarized Ceperley-Alder LDA.
 /// Returns `(epsilon_xc, v_xc)` in Hartree for a density in electrons/bohr^3.
 pub fn lda_pz_unpolarized(density: f64) -> (f64, f64) {
@@ -542,6 +721,97 @@ mod tests {
             epsilon = 1.0e-9,
             max_relative = 1.0e-8
         );
+    }
+
+    #[test]
+    fn pbe_grid_uniform_limit_matches_point_kernel() {
+        let fft = Fft3d::new([5, 5, 5]).unwrap();
+        let lattice = Lattice::new([[TAU, 0.0, 0.0], [0.0, TAU, 0.0], [0.0, 0.0, TAU]]).unwrap();
+        let density_value = 0.02;
+        let density = vec![density_value; fft.len()];
+        let grid = Pbe.evaluate_unpolarized(&fft, &lattice, &density).unwrap();
+        let point = pbe_unpolarized_point(density_value, 0.0).unwrap();
+        assert_relative_eq!(
+            grid.energy_ry,
+            2.0 * lattice.volume * density_value * point.epsilon_xc_ha,
+            epsilon = 2.0e-13
+        );
+        for potential in grid.potential_ry {
+            assert_relative_eq!(potential, 2.0 * point.vrho_ha, epsilon = 2.0e-13);
+        }
+        assert_relative_eq!(
+            grid.integral_rho_vxc_ry,
+            2.0 * lattice.volume * density_value * point.vrho_ha,
+            epsilon = 2.0e-13
+        );
+    }
+
+    #[test]
+    fn pbe_grid_potential_is_variational_derivative() {
+        let shape = [9, 7, 5];
+        let fft = Fft3d::new(shape).unwrap();
+        let lattice = Lattice::new([[TAU, 0.0, 0.0], [0.0, TAU, 0.0], [0.0, 0.0, TAU]]).unwrap();
+        let mut density = Vec::with_capacity(fft.len());
+        let mut perturbation = Vec::with_capacity(fft.len());
+        for x in 0..shape[0] {
+            for y in 0..shape[1] {
+                for z in 0..shape[2] {
+                    let rx = TAU * x as f64 / shape[0] as f64;
+                    let ry = TAU * y as f64 / shape[1] as f64;
+                    let rz = TAU * z as f64 / shape[2] as f64;
+                    density.push(
+                        0.05 + 0.010 * rx.cos() + 0.006 * (2.0 * ry).sin() + 0.004 * rz.cos(),
+                    );
+                    perturbation.push((2.0 * rx).cos() - 0.3 * ry.sin() + 0.2 * (2.0 * rz).cos());
+                }
+            }
+        }
+        let evaluation = Pbe.evaluate_unpolarized(&fft, &lattice, &density).unwrap();
+        let step = 1.0e-6;
+        let density_plus: Vec<_> = density
+            .iter()
+            .zip(&perturbation)
+            .map(|(&rho, &direction)| rho + step * direction)
+            .collect();
+        let density_minus: Vec<_> = density
+            .iter()
+            .zip(&perturbation)
+            .map(|(&rho, &direction)| rho - step * direction)
+            .collect();
+        let energy_plus = Pbe
+            .evaluate_unpolarized(&fft, &lattice, &density_plus)
+            .unwrap()
+            .energy_ry;
+        let energy_minus = Pbe
+            .evaluate_unpolarized(&fft, &lattice, &density_minus)
+            .unwrap()
+            .energy_ry;
+        let finite_difference = (energy_plus - energy_minus) / (2.0 * step);
+        let cell_weight = lattice.volume / fft.len() as f64;
+        let potential_derivative: f64 = evaluation
+            .potential_ry
+            .iter()
+            .zip(&perturbation)
+            .map(|(&potential, &direction)| potential * direction * cell_weight)
+            .sum();
+        assert_relative_eq!(
+            potential_derivative,
+            finite_difference,
+            epsilon = 2.0e-8,
+            max_relative = 2.0e-8
+        );
+    }
+
+    #[test]
+    fn pbe_grid_vacuum_is_finite() {
+        let fft = Fft3d::new([5, 5, 5]).unwrap();
+        let lattice = Lattice::new([[TAU, 0.0, 0.0], [0.0, TAU, 0.0], [0.0, 0.0, TAU]]).unwrap();
+        let result = Pbe
+            .evaluate_unpolarized(&fft, &lattice, &vec![0.0; fft.len()])
+            .unwrap();
+        assert_eq!(result.energy_ry, 0.0);
+        assert_eq!(result.integral_rho_vxc_ry, 0.0);
+        assert!(result.potential_ry.iter().all(|value| *value == 0.0));
     }
 
     #[test]

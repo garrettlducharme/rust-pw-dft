@@ -51,9 +51,10 @@ history.
 exchange plus correlation values from Libxc 7.1.2: energy per particle,
 the density derivative, and the squared-gradient derivative. It covers the
 uniform-density limit and two finite-gradient points. The fixture is an
-independent numerical oracle for the native PBE point kernel. PBE remains
-unavailable as an input functional until the grid-level gradient/divergence
-implementation and full-SCF comparisons pass.
+independent numerical oracle for the native PBE point kernel. The spectral
+grid-level gradient/divergence implementation is separately checked through a
+whole-functional finite difference. PBE remains unavailable as an input
+functional until a compatible pseudopotential and full-SCF comparison pass.
 
 The small generator in `tools/libxc_xc_reference.c` uses Libxc functional IDs
 101 and 130. With Homebrew Libxc 7.1.2 installed, regenerate it with:

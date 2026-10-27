@@ -75,8 +75,9 @@ validation and independent fixtures.
 1. XC abstraction followed by LDA and PBE reference tables and finite-difference
    potential checks. **Typed grid-level abstraction and variational LDA-PZ
    checks implemented; the native PBE point energy and derivatives match a
-   pinned Libxc 7.1.2 table, while the FFT gradient/divergence path and
-   full-SCF validation remain pending.**
+   pinned Libxc 7.1.2 table, and the spectral grid potential passes a
+   whole-functional finite-difference test. PBE UPF and full-SCF validation
+   remain pending.**
 2. Monkhorst-Pack and explicit k-point lists, weights, time-reversal handling,
    and band/density accumulation.
 3. Fractional occupations and finite-temperature smearing for metals.
