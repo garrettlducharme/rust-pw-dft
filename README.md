@@ -106,8 +106,8 @@ through the persistent compact-projector context differs from CPU by
 
 On the pinned 16-atom workload, `bench-compare` applied the same
 `matched-metal-compatible-v1` convergence policy to both backends. Five warmed
-runs measured CPU min/median/max times of `7.994/8.074/8.130 s` and resident
-Metal times of `6.012/6.051/6.289 s`, a `1.334x` median speedup. The paired run
+runs measured CPU min/median/max times of `7.771/7.830/8.065 s` and resident
+Metal times of `6.172/6.205/6.237 s`, a `1.262x` median speedup. The paired run
 also passed scientific comparison at `0.00976 meV/atom`, `0.00853 meV` maximum
 occupied-eigenvalue error, and `8.1e-13` electrons. This accepts the performance
 claim only for this pinned workload and Apple M5 Pro; it is not a general DFT

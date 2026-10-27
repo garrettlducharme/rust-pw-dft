@@ -1,19 +1,20 @@
 {
-  "schema_version": 9,
-  "source_revision": "30085db7cc88ed2c643b1f56ac9f692e5cee39fd",
+  "schema_version": 10,
+  "source_revision": "b3785e7c40fe61f609fbe50a5b53efb2d9fac2f2",
   "tests": {
-    "cpu_passed": 23,
-    "metal_feature_passed": 27,
+    "cpu_passed": 25,
+    "metal_feature_passed": 29,
     "failed": 0,
     "clippy_all_targets_metal_feature": "passed"
   },
   "schemas": {
     "input": 1,
-    "result": 1,
+    "result": 2,
     "comparison": 1,
     "benchmark": 1,
-    "checkpoint": 1,
-    "validation_manifest": 9
+    "checkpoint": 2,
+    "fixture_manifest": 1,
+    "validation_manifest": 10
   },
   "input_and_pseudopotential": {
     "legacy_si_upf": "accepted",
@@ -75,18 +76,18 @@
     "cold_processes": 1,
     "warmed_repetitions": 5,
     "cpu_seconds": {
-      "min": 7.994449041,
-      "median": 8.073522209,
-      "max": 8.130453083,
+      "min": 7.7710761250000004,
+      "median": 7.829507167,
+      "max": 8.065105292,
       "scf_iterations": 48
     },
     "metal_seconds": {
-      "min": 6.011646792,
-      "median": 6.051196875,
-      "max": 6.289451792,
+      "min": 6.171631917,
+      "median": 6.2052425,
+      "max": 6.236585541,
       "scf_iterations": 52
     },
-    "median_speedup": 1.3342025347671407,
+    "median_speedup": 1.2617568398011842,
     "numeric_1_20x_gate_passed": true,
     "scientific_parity": {
       "energy_error_mev_atom": 0.009762298717713435,
@@ -104,7 +105,7 @@
     "claim_scope": "the pinned Gamma-point LDA norm-conserving Si16 workload on Apple M5 Pro"
   },
   "checkpoint_restart": {
-    "binary_schema_version": 1,
+    "binary_schema_version": 2,
     "atomic_same_filesystem_replace": true,
     "payload_sha256_verified": true,
     "tamper_detection": "passed",
@@ -121,6 +122,36 @@
       "cumulative_full_vector_transfer_counts_equal": true
     }
   },
+  "structured_diagnostics": {
+    "result_schema_version": 2,
+    "history_survives_checkpoint_resume": true,
+    "validated_fields": [
+      "status",
+      "total_energy_ry",
+      "energy_change_ry",
+      "density_residual",
+      "maximum_orbital_residual_ry",
+      "electron_count",
+      "highest_occupied_eigenvalue_ry",
+      "davidson_iterations",
+      "hamiltonian_applications"
+    ],
+    "si2_cpu_history_records": 49,
+    "si2_metal_history_records": 45,
+    "si16_cpu_history_records": 47,
+    "si16_metal_history_records": 52,
+    "native_histories_complete": true,
+    "independent_qe_history_complete": false
+  },
+  "fixture_provenance": {
+    "manifest_schema_version": 1,
+    "verified_fixture_count": 5,
+    "ci_enforced": true,
+    "path_traversal_rejected": true,
+    "tamper_detection": "passed",
+    "pseudopotential_redistributed": false,
+    "undeclared_upstream_data_license": "NOASSERTION"
+  },
   "go_no_go": {
     "cpu_educational_solver": "go",
     "persistent_metal_operator": "go for the pinned silicon workloads",
@@ -130,6 +161,8 @@
     "gpu_resident_basis_and_updates": "go for the pinned silicon workloads",
     "phase_1_resident_eigensolver": "go; scientific and matched performance gates passed",
     "phase_2_checkpoint_restart": "go for the current CPU and Metal SCF state boundary",
+    "phase_2_structured_diagnostics": "go for native SCF iteration histories",
+    "phase_2_fixture_manifest": "go; hashes and provenance are enforced in CI",
     "production_science_or_scope_expansion": "no-go beyond the explicitly validated silicon workloads until Phase 2 infrastructure and broader independent fixtures exist"
   }
 }
