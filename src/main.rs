@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-const COMPARISON_SCHEMA_VERSION: u32 = 1;
+const COMPARISON_SCHEMA_VERSION: u32 = 2;
 const BENCHMARK_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Parser)]
@@ -102,7 +102,9 @@ struct Comparison {
     accepted: bool,
     total_energy_error_mev_atom: f64,
     maximum_occupied_eigenvalue_error_mev: f64,
+    maximum_occupation_error: f64,
     electron_count_error: f64,
+    k_point_count: usize,
 }
 
 #[derive(Serialize)]
@@ -199,19 +201,71 @@ fn compare_results(result: &ScfResult, reference: &ScfResult) -> Result<Comparis
         .total_energy_ry
         .context("reference has no total energy")?;
     ensure!(
-        result.eigenvalues_ry.len() == reference.eigenvalues_ry.len(),
-        "eigenvalue counts differ"
-    );
-    ensure!(
         result.atom_count > 0 && result.atom_count == reference.atom_count,
         "comparison requires matching nonzero atom counts"
     );
-    let max_eigen_ry = result
-        .eigenvalues_ry
-        .iter()
-        .zip(&reference.eigenvalues_ry)
-        .map(|(a, b)| (a - b).abs())
-        .fold(0.0_f64, f64::max);
+    let (max_eigen_ry, maximum_occupation_error, k_point_count) =
+        if !result.k_points.is_empty() && !reference.k_points.is_empty() {
+            ensure!(
+                result.k_points.len() == reference.k_points.len(),
+                "k-point counts differ"
+            );
+            let mut maximum_eigenvalue_error = 0.0_f64;
+            let mut maximum_occupation_error = 0.0_f64;
+            for (actual, expected) in result.k_points.iter().zip(&reference.k_points) {
+                ensure!(
+                    actual
+                        .reduced
+                        .iter()
+                        .zip(expected.reduced)
+                        .all(|(&a, b)| (a - b).abs() <= 1.0e-10)
+                        && (actual.weight - expected.weight).abs() <= 1.0e-12,
+                    "k-point coordinates or weights differ"
+                );
+                ensure!(
+                    actual.eigenvalues_ry.len() == expected.eigenvalues_ry.len()
+                        && actual.occupations.len() == expected.occupations.len(),
+                    "per-k-point band counts differ"
+                );
+                for (
+                    ((&actual_eigenvalue, &expected_eigenvalue), &actual_occupation),
+                    &expected_occupation,
+                ) in actual
+                    .eigenvalues_ry
+                    .iter()
+                    .zip(&expected.eigenvalues_ry)
+                    .zip(&actual.occupations)
+                    .zip(&expected.occupations)
+                {
+                    maximum_occupation_error = maximum_occupation_error
+                        .max((actual_occupation - expected_occupation).abs());
+                    if actual_occupation > 1.0e-8 || expected_occupation > 1.0e-8 {
+                        maximum_eigenvalue_error = maximum_eigenvalue_error
+                            .max((actual_eigenvalue - expected_eigenvalue).abs());
+                    }
+                }
+            }
+            (
+                maximum_eigenvalue_error,
+                maximum_occupation_error,
+                result.k_points.len(),
+            )
+        } else {
+            ensure!(
+                result.eigenvalues_ry.len() == reference.eigenvalues_ry.len(),
+                "eigenvalue counts differ"
+            );
+            (
+                result
+                    .eigenvalues_ry
+                    .iter()
+                    .zip(&reference.eigenvalues_ry)
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0_f64, f64::max),
+                0.0,
+                1,
+            )
+        };
     let electron_error = (result
         .electron_count
         .context("result has no electron count")?
@@ -233,10 +287,13 @@ fn compare_results(result: &ScfResult, reference: &ScfResult) -> Result<Comparis
         schema_version: COMPARISON_SCHEMA_VERSION,
         accepted: energy_mev <= energy_tolerance_mev_atom
             && eigen_mev <= 5.0
+            && maximum_occupation_error <= electron_tolerance
             && electron_error <= electron_tolerance,
         total_energy_error_mev_atom: energy_mev,
         maximum_occupied_eigenvalue_error_mev: eigen_mev,
+        maximum_occupation_error,
         electron_count_error: electron_error,
+        k_point_count,
     })
 }
 

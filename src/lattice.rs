@@ -60,17 +60,45 @@ impl Lattice {
         g
     }
 
+    pub fn cartesian_k(&self, reduced: Vec3) -> Vec3 {
+        let mut k = [0.0; 3];
+        for (i, &coefficient) in reduced.iter().enumerate() {
+            for (j, value) in k.iter_mut().enumerate() {
+                *value += coefficient * self.reciprocal[i][j];
+            }
+        }
+        k
+    }
+
     /// Enumerate Gamma-point plane waves using kinetic energy in Rydberg.
     /// In atomic units, `E_kin(Ry) = |G|^2`.
     pub fn enumerate_g_vectors(&self, cutoff_ry: f64) -> Vec<GVector> {
-        let reciprocal_norms = self.reciprocal.map(|v| dot(v, v).sqrt());
-        let bounds = reciprocal_norms.map(|norm| (cutoff_ry.sqrt() / norm).ceil() as i32 + 1);
+        self.enumerate_g_vectors_at_k(cutoff_ry, [0.0; 3])
+    }
+
+    /// Enumerate the k-dependent plane-wave sphere using
+    /// `E_kin(Ry) = |G + k|^2`.
+    ///
+    /// The integer bounds follow from
+    /// `(G + k) · a_i = 2π(n_i + k_i)`, so they remain conservative for
+    /// skewed cells where bounds based only on individual reciprocal-vector
+    /// norms can miss cancellation directions.
+    pub fn enumerate_g_vectors_at_k(&self, cutoff_ry: f64, k_reduced: Vec3) -> Vec<GVector> {
+        let radius = cutoff_ry.sqrt();
+        let bounds: [i32; 3] = std::array::from_fn(|axis| {
+            let direct_norm = dot(self.direct[axis], self.direct[axis]).sqrt();
+            (radius * direct_norm / TAU + k_reduced[axis].abs()).ceil() as i32 + 1
+        });
+        let k_cartesian = self.cartesian_k(k_reduced);
         let mut result = Vec::new();
         for i in -bounds[0]..=bounds[0] {
             for j in -bounds[1]..=bounds[1] {
                 for k in -bounds[2]..=bounds[2] {
-                    let g = self.cartesian_g([i, j, k]);
-                    if dot(g, g) <= cutoff_ry * (1.0 + 16.0 * f64::EPSILON) {
+                    let mut g_plus_k = self.cartesian_g([i, j, k]);
+                    for axis in 0..3 {
+                        g_plus_k[axis] += k_cartesian[axis];
+                    }
+                    if dot(g_plus_k, g_plus_k) <= cutoff_ry * (1.0 + 16.0 * f64::EPSILON) {
                         result.push(GVector { index: [i, j, k] });
                     }
                 }
@@ -131,5 +159,23 @@ mod tests {
         let gs = lattice.enumerate_g_vectors(1.0);
         assert_eq!(gs.len(), 7);
         assert_eq!(Lattice::density_fft_grid(&gs), [5, 5, 5]);
+    }
+
+    #[test]
+    fn shifted_plane_wave_sphere_uses_g_plus_k() {
+        let lattice = Lattice::new([[TAU, 0.0, 0.0], [0.0, TAU, 0.0], [0.0, 0.0, TAU]]).unwrap();
+        let gs = lattice.enumerate_g_vectors_at_k(1.0, [0.5, 0.0, 0.0]);
+        assert_eq!(gs.len(), 2);
+        assert!(gs.iter().any(|g| g.index == [-1, 0, 0]));
+        assert!(gs.iter().any(|g| g.index == [0, 0, 0]));
+    }
+
+    #[test]
+    fn gamma_enumeration_delegates_exactly_to_shifted_path() {
+        let lattice = Lattice::new([[5.0, 0.2, 0.1], [0.0, 4.0, 0.3], [0.0, 0.0, 3.0]]).unwrap();
+        assert_eq!(
+            lattice.enumerate_g_vectors(8.0),
+            lattice.enumerate_g_vectors_at_k(8.0, [0.0; 3])
+        );
     }
 }

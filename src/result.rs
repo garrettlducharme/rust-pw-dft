@@ -3,7 +3,18 @@ use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub const RESULT_SCHEMA_VERSION: u32 = 2;
+pub const RESULT_SCHEMA_VERSION: u32 = 3;
+const MINIMUM_RESULT_SCHEMA_VERSION: u32 = 2;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KPointResult {
+    pub reduced: [f64; 3],
+    pub weight: f64,
+    pub eigenvalues_ry: Vec<f64>,
+    pub occupations: Vec<f64>,
+    pub residuals: Vec<f64>,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -76,6 +87,10 @@ pub struct ScfResult {
     pub eigenvalues_ry: Vec<f64>,
     pub electron_count: Option<f64>,
     pub residuals: Vec<f64>,
+    /// Per-k-point band data. Schema-2 Gamma-only records predate this field
+    /// and deserialize to an empty vector.
+    #[serde(default)]
+    pub k_points: Vec<KPointResult>,
     pub history: Vec<ScfIterationRecord>,
     pub history_complete: bool,
     pub timings: BTreeMap<String, f64>,
@@ -87,11 +102,48 @@ pub struct ScfResult {
 impl ScfResult {
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            self.schema_version == RESULT_SCHEMA_VERSION,
-            "unsupported result schema_version {}; expected {}",
+            (MINIMUM_RESULT_SCHEMA_VERSION..=RESULT_SCHEMA_VERSION).contains(&self.schema_version),
+            "unsupported result schema_version {}; expected {} through {}",
             self.schema_version,
+            MINIMUM_RESULT_SCHEMA_VERSION,
             RESULT_SCHEMA_VERSION
         );
+        if self.schema_version == 2 {
+            ensure!(
+                self.k_points.is_empty(),
+                "schema-2 results cannot contain per-k-point data"
+            );
+        } else {
+            ensure!(
+                !self.k_points.is_empty(),
+                "schema-3 results require per-k-point data"
+            );
+            let weight_sum: f64 = self.k_points.iter().map(|point| point.weight).sum();
+            ensure!(
+                (weight_sum - 1.0).abs() <= 1.0e-12,
+                "result k-point weights do not sum to one"
+            );
+            for point in &self.k_points {
+                ensure!(
+                    point.reduced.iter().all(|value| value.is_finite())
+                        && point.weight.is_finite()
+                        && point.weight > 0.0
+                        && point.eigenvalues_ry.len() == point.occupations.len()
+                        && (point.residuals.is_empty()
+                            || point.eigenvalues_ry.len() == point.residuals.len())
+                        && point.eigenvalues_ry.iter().all(|value| value.is_finite())
+                        && point
+                            .occupations
+                            .iter()
+                            .all(|value| value.is_finite() && (0.0..=2.0).contains(value))
+                        && point
+                            .residuals
+                            .iter()
+                            .all(|value| value.is_finite() && *value >= 0.0),
+                    "result contains invalid per-k-point data"
+                );
+            }
+        }
         ensure!(self.atom_count > 0, "result atom_count must be positive");
         ensure!(
             self.timings
@@ -198,6 +250,13 @@ mod tests {
             eigenvalues_ry: vec![0.25],
             electron_count: Some(2.0),
             residuals: vec![0.1],
+            k_points: vec![KPointResult {
+                reduced: [0.0; 3],
+                weight: 1.0,
+                eigenvalues_ry: vec![0.25],
+                occupations: vec![2.0],
+                residuals: vec![0.1],
+            }],
             history: vec![ScfIterationRecord {
                 iteration: 1,
                 status: ScfIterationStatus::EigensolverNotConverged,

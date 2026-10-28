@@ -42,6 +42,11 @@ jobs:
       - name: Verify fixture provenance manifest
         run: cargo run --locked -- verify-fixtures
       - run: cargo test --locked
+      - name: Run silicon 2x2x2 k-point CPU scientific gate in release mode
+        run: >-
+          cargo test --locked --release
+          scf::checkpoint_tests::pbe_2x2x2_cpu_scf_matches_pinned_qe_reference
+          -- --ignored --exact
       - name: Run 100 Ry MgO CPU scientific gate in release mode
         run: >-
           cargo test --locked --release

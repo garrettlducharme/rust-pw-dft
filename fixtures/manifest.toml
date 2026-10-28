@@ -120,6 +120,43 @@ reference_command = "pw.x -in fixtures/qe/si2-pbe-reference.in"
 reference_input_sha256 = "dad5f7683297265c67cb313a8ced77a3068b3cd8977f0ac3ecc854e95f8f1943"
 
 [[fixtures]]
+id = "rust-pw-dft-si2-pbe-2x2x2-input"
+kind = "input"
+path = "examples/si2-pbe-2x2x2.toml"
+sha256 = "69ca1b7f1f21476039e9ea77a7349d68fe22c795282f737a63c33e4ca2ae9d61"
+source = "repository"
+source_revision = "input-schema-2"
+license = "MIT OR Apache-2.0"
+redistribution = "project-tracked"
+description = "Two-atom silicon PBE scientific acceptance input using a shifted 2x2x2 Monkhorst-Pack mesh reduced by time reversal."
+
+[[fixtures]]
+id = "qe-7.6-si2-pbe-2x2x2-portable-input"
+kind = "input"
+path = "fixtures/qe/si2-pbe-2x2x2-reference.in"
+sha256 = "90817bf72cc535d28ba03540c611ac2b86c0728e8d0bfe43841d67c32664de63"
+source = "repository input used for the accepted QE 7.6 reference run"
+source_revision = "Quantum ESPRESSO qe-7.6"
+license = "MIT OR Apache-2.0"
+redistribution = "project-tracked"
+description = "Matched QE input for the shifted 2x2x2 silicon PBE scientific reference."
+reference_command = "pw.x -in fixtures/qe/si2-pbe-2x2x2-reference.in"
+reference_input_sha256 = "90817bf72cc535d28ba03540c611ac2b86c0728e8d0bfe43841d67c32664de63"
+
+[[fixtures]]
+id = "qe-7.6-si2-pbe-2x2x2-normalized-result"
+kind = "reference-result"
+path = "results/qe-si2-pbe-2x2x2-reference.json"
+sha256 = "a85ed0f9c1a80a6bf6ee2f7c6f2a706fab33fe87fd0a73a0a3cbb1a2fb99e12f"
+source = "Quantum ESPRESSO 7.6 pw.x XML normalized into rust-pw-dft result schema"
+source_revision = "QE source commit 9f93ddec427d2b9a45bb72d828c6d324f62fcabd"
+license = "NOASSERTION"
+redistribution = "project-tracked"
+description = "Independent CPU-FP64 Si2 PBE 2x2x2 k-point total-energy, per-k eigenvalue, occupation, electron-count, and energy-component reference."
+reference_command = "pw.x -in fixtures/qe/si2-pbe-2x2x2-reference.in"
+reference_input_sha256 = "90817bf72cc535d28ba03540c611ac2b86c0728e8d0bfe43841d67c32664de63"
+
+[[fixtures]]
 id = "mg-oncv-pbe-1.0-upf"
 kind = "pseudopotential"
 path = "pseudopotentials/Mg_ONCV_PBE-1.0.UPF"

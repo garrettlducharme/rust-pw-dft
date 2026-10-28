@@ -12,7 +12,7 @@ use anyhow::{Result, ensure};
 #[cfg(all(feature = "metal", target_os = "macos"))]
 use num_complex::Complex32;
 use num_complex::Complex64;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{PI, TAU};
 use std::sync::OnceLock;
 
@@ -270,6 +270,7 @@ struct DenseReferenceData {
 /// reference against which the later FFT-resident CPU and Metal paths can be tested.
 #[derive(Clone)]
 pub struct CpuHamiltonian {
+    k_reduced: [f64; 3],
     kinetic_ry: Vec<f64>,
     local_ry: OnceLock<Vec<Complex64>>,
     dense_reference: DenseReferenceData,
@@ -288,6 +289,26 @@ impl CpuHamiltonian {
         pseudos: &BTreeMap<String, NormConservingPseudo>,
         wavefunction_cutoff_ry: f64,
     ) -> Result<Self> {
+        Self::new_at_k(
+            lattice,
+            g_vectors,
+            atoms,
+            pseudos,
+            wavefunction_cutoff_ry,
+            [0.0; 3],
+            Lattice::density_fft_grid(g_vectors),
+        )
+    }
+
+    pub fn new_at_k(
+        lattice: &Lattice,
+        g_vectors: &[GVector],
+        atoms: &[AtomInput],
+        pseudos: &BTreeMap<String, NormConservingPseudo>,
+        wavefunction_cutoff_ry: f64,
+        k_reduced: [f64; 3],
+        grid_shape: [usize; 3],
+    ) -> Result<Self> {
         ensure!(!g_vectors.is_empty(), "Hamiltonian basis is empty");
         ensure!(
             wavefunction_cutoff_ry.is_finite() && wavefunction_cutoff_ry > 0.0,
@@ -297,18 +318,37 @@ impl CpuHamiltonian {
             atoms.iter().all(|atom| pseudos.contains_key(&atom.element)),
             "an atom has no loaded pseudopotential"
         );
+        ensure!(
+            k_reduced.iter().all(|value| value.is_finite()),
+            "k-point coordinates must be finite"
+        );
+        ensure!(
+            grid_shape.iter().all(|&size| size > 0),
+            "FFT grid dimensions must be positive"
+        );
+        let k_cartesian = lattice.cartesian_k(k_reduced);
         let cartesian: Vec<_> = g_vectors
             .iter()
-            .map(|g| lattice.cartesian_g(g.index))
+            .map(|g| {
+                let mut value = lattice.cartesian_g(g.index);
+                for axis in 0..3 {
+                    value[axis] += k_cartesian[axis];
+                }
+                value
+            })
             .collect();
         let kinetic_ry = cartesian.iter().map(|&g| norm_squared(g)).collect();
         let dimension = g_vectors.len();
-        let grid_shape = Lattice::density_fft_grid(g_vectors);
         let fft = Fft3d::new(grid_shape)?;
         let basis_grid_indices = g_vectors
             .iter()
             .map(|g| flat_index_for_shape(g.index, grid_shape))
-            .collect();
+            .collect::<Vec<_>>();
+        let unique_grid_indices = basis_grid_indices.iter().copied().collect::<BTreeSet<_>>();
+        ensure!(
+            unique_grid_indices.len() == g_vectors.len(),
+            "FFT grid aliases distinct plane waves"
+        );
 
         let mut atom_projectors = Vec::with_capacity(atoms.len());
         for atom in atoms {
@@ -330,8 +370,9 @@ impl CpuHamiltonian {
                             * g_vector
                                 .index
                                 .iter()
+                                .zip(k_reduced)
                                 .zip(atom.fractional)
-                                .map(|(&n, f)| n as f64 * f)
+                                .map(|((&n, k), f)| (n as f64 + k) * f)
                                 .sum::<f64>();
                         coefficients.push(
                             radial * angular * minus_i_to_l * Complex64::from_polar(1.0, phase),
@@ -402,6 +443,7 @@ impl CpuHamiltonian {
             .map(|value| value.re * grid_points)
             .collect();
         Ok(Self {
+            k_reduced,
             kinetic_ry,
             local_ry: OnceLock::new(),
             dense_reference: DenseReferenceData {
@@ -420,6 +462,10 @@ impl CpuHamiltonian {
 
     pub fn dimension(&self) -> usize {
         self.kinetic_ry.len()
+    }
+
+    pub fn k_reduced(&self) -> [f64; 3] {
+        self.k_reduced
     }
 
     pub fn kinetic_ry(&self) -> &[f64] {
@@ -935,17 +981,50 @@ pub fn density_from_orbitals(
     occupations: &[f64],
     volume: f64,
 ) -> Result<Vec<f64>> {
+    let mut density = vec![0.0; fft.len()];
+    accumulate_density_from_orbitals(
+        fft,
+        g_vectors,
+        orbitals,
+        occupations,
+        volume,
+        1.0,
+        &mut density,
+    )?;
+    Ok(density)
+}
+
+pub fn accumulate_density_from_orbitals(
+    fft: &Fft3d,
+    g_vectors: &[GVector],
+    orbitals: &[Vec<Complex64>],
+    occupations: &[f64],
+    volume: f64,
+    k_point_weight: f64,
+    density: &mut [f64],
+) -> Result<()> {
     ensure!(
         orbitals.len() == occupations.len(),
         "occupation count mismatch"
+    );
+    ensure!(
+        density.len() == fft.len(),
+        "density accumulation grid mismatch"
+    );
+    ensure!(
+        k_point_weight.is_finite() && k_point_weight > 0.0,
+        "k-point density weight must be positive and finite"
     );
     let indices: Vec<_> = g_vectors
         .iter()
         .map(|g| flat_index_for_shape(g.index, fft.shape()))
         .collect();
     let normalization = (fft.len() as f64).powi(2) / volume;
-    let mut density = vec![0.0; fft.len()];
     for (orbital, &occupation) in orbitals.iter().zip(occupations) {
+        ensure!(
+            occupation.is_finite() && (0.0..=2.0).contains(&occupation),
+            "orbital occupation must be finite and in [0, 2]"
+        );
         ensure!(
             orbital.len() == g_vectors.len(),
             "orbital dimension mismatch"
@@ -956,10 +1035,10 @@ pub fn density_from_orbitals(
         }
         fft.inverse(&mut grid)?;
         for (rho, value) in density.iter_mut().zip(grid) {
-            *rho += occupation * normalization * value.norm_sqr();
+            *rho += k_point_weight * occupation * normalization * value.norm_sqr();
         }
     }
-    Ok(density)
+    Ok(())
 }
 
 pub fn atomic_starting_density(
@@ -1958,6 +2037,92 @@ mod tests {
             hartree_xc_potential(&fft, &lattice, &density, XcFunctional::LdaPz).unwrap();
         assert!((potential.electron_count - 2.0).abs() < 1.0e-12);
         assert!(potential.hartree_energy_ry.abs() < 1.0e-14);
+    }
+
+    #[test]
+    fn shifted_silicon_hamiltonian_is_hermitian_and_time_reversal_symmetric_when_available() {
+        let input_path = Path::new("examples/si2-pbe.toml");
+        if !input_path.exists() {
+            return;
+        }
+        let input = SimulationInput::from_path(input_path).unwrap();
+        if !input.pseudopotentials["Si"].exists() {
+            return;
+        }
+        let pseudo = NormConservingPseudo::from_upf(&input.pseudopotentials["Si"]).unwrap();
+        let pseudos = BTreeMap::from([("Si".to_owned(), pseudo)]);
+        let lattice = Lattice::new(input.cell.lattice_bohr).unwrap();
+        let k = [0.25, 0.125, 0.0];
+        let plus_g = lattice.enumerate_g_vectors_at_k(input.cutoff_ry, k);
+        let minus_k = k.map(|value| -value);
+        let minus_g = lattice.enumerate_g_vectors_at_k(input.cutoff_ry, minus_k);
+        assert_eq!(plus_g.len(), minus_g.len());
+        let union: Vec<_> = plus_g.iter().chain(&minus_g).copied().collect();
+        let grid_shape = Lattice::density_fft_grid(&union);
+        let plus = CpuHamiltonian::new_at_k(
+            &lattice,
+            &plus_g,
+            &input.atoms,
+            &pseudos,
+            input.cutoff_ry,
+            k,
+            grid_shape,
+        )
+        .unwrap();
+        let minus = CpuHamiltonian::new_at_k(
+            &lattice,
+            &minus_g,
+            &input.atoms,
+            &pseudos,
+            input.cutoff_ry,
+            minus_k,
+            grid_shape,
+        )
+        .unwrap();
+        assert_eq!(plus.k_reduced(), k);
+
+        for (g, &kinetic) in plus_g.iter().zip(plus.kinetic_ry()) {
+            let mut q = lattice.cartesian_g(g.index);
+            let k_cartesian = lattice.cartesian_k(k);
+            for axis in 0..3 {
+                q[axis] += k_cartesian[axis];
+            }
+            assert!((kinetic - norm_squared(q)).abs() < 1.0e-13);
+        }
+
+        let plus_matrix = plus.dense_matrix().unwrap();
+        let scale = plus_matrix
+            .iter()
+            .map(|value| value.norm())
+            .fold(0.0_f64, f64::max);
+        let mut maximum_error = 0.0_f64;
+        for row in 0..plus.dimension() {
+            for column in 0..plus.dimension() {
+                maximum_error = maximum_error.max(
+                    (plus_matrix[row * plus.dimension() + column]
+                        - plus_matrix[column * plus.dimension() + row].conj())
+                    .norm(),
+                );
+            }
+        }
+        assert!(maximum_error / scale < 1.0e-12);
+
+        let plus_eigenvalues = projected_hermitian_eigensolve(&plus_matrix, plus.dimension())
+            .unwrap()
+            .eigenvalues;
+        let minus_matrix = minus.dense_matrix().unwrap();
+        let minus_eigenvalues = projected_hermitian_eigensolve(&minus_matrix, minus.dimension())
+            .unwrap()
+            .eigenvalues;
+        let maximum_spectral_error = plus_eigenvalues
+            .iter()
+            .zip(minus_eigenvalues)
+            .map(|(plus, minus)| (plus - minus).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            maximum_spectral_error < 1.0e-10,
+            "time-reversal eigenvalue error {maximum_spectral_error:e} Ry"
+        );
     }
 
     #[test]
