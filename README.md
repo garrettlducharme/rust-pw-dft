@@ -200,9 +200,13 @@ restart remains fail closed. Exact-source records are
 [`results/si2-pbe-2x2x2-cpu-scf.json`](results/si2-pbe-2x2x2-cpu-scf.json),
 [`results/si2-pbe-2x2x2-metal-scf.json`](results/si2-pbe-2x2x2-metal-scf.json),
 [`results/qe-si2-pbe-2x2x2-reference.json`](results/qe-si2-pbe-2x2x2-reference.json),
-and
 [`results/si2-pbe-2x2x2-cpu-vs-qe.json`](results/si2-pbe-2x2x2-cpu-vs-qe.json),
-plus the committed Metal/CPU comparison report.
+and
+[`results/si2-pbe-2x2x2-metal-vs-cpu.json`](results/si2-pbe-2x2x2-metal-vs-cpu.json).
+The five-run matched benchmark records CPU min/median/max times of
+`0.494/0.811/0.837 s` and Metal times of `3.527/3.818/4.035 s`, a `0.212x`
+speedup that explicitly fails the `1.20x` gate. The report is
+[`results/si2-pbe-2x2x2-matched-benchmark.json`](results/si2-pbe-2x2x2-matched-benchmark.json).
 The input schema and conventions are documented in
 [`docs/kpoints.md`](docs/kpoints.md).
 
@@ -225,7 +229,9 @@ occupation. Exact-source evidence is
 [`results/al1-lda-4x4x4-metal-scf.json`](results/al1-lda-4x4x4-metal-scf.json),
 [`results/qe-al1-lda-4x4x4-reference.json`](results/qe-al1-lda-4x4x4-reference.json),
 and
-[`results/al1-lda-4x4x4-cpu-vs-qe.json`](results/al1-lda-4x4x4-cpu-vs-qe.json).
+[`results/al1-lda-4x4x4-cpu-vs-qe.json`](results/al1-lda-4x4x4-cpu-vs-qe.json),
+plus
+[`results/al1-lda-4x4x4-metal-vs-cpu.json`](results/al1-lda-4x4x4-metal-vs-cpu.json).
 
 The resident Metal aluminum SCF converges in 67 iterations. Relative to CPU,
 its free-energy error is `0.00446 meV/atom`, its maximum occupied-eigenvalue

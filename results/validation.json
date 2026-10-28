@@ -1,13 +1,13 @@
 {
-  "schema_version": 14,
-  "source_revision": "ab74d7b81969184fe7de9ba5d53943829f725ed1",
+  "schema_version": 15,
+  "source_revision": "8046f934ae9c2f1300337155e571c67fe87d1249",
   "tests": {
     "cpu_passed": 46,
     "cpu_release_scientific_passed": 3,
     "cpu_debug_ignored_release_scientific": 3,
     "metal_feature_passed": 51,
-    "metal_release_scientific_passed": 1,
-    "metal_debug_ignored_release_scientific": 4,
+    "metal_release_scientific_passed": 3,
+    "metal_debug_ignored_release_scientific": 6,
     "failed": 0,
     "clippy_all_targets_metal_feature": "passed"
   },
@@ -18,7 +18,7 @@
     "benchmark": 1,
     "checkpoint": 2,
     "fixture_manifest": 1,
-    "validation_manifest": 14
+    "validation_manifest": 15
   },
   "input_and_pseudopotential": {
     "legacy_si_upf": "accepted",
@@ -181,6 +181,49 @@
       "full_vector_upload_bytes": 205983360,
       "full_vector_download_bytes": 8908416
     },
+    "si2_pbe_2x2x2_scf": {
+      "accepted": true,
+      "iterations": 44,
+      "irreducible_k_point_count": 4,
+      "total_energy_ry": -15.718670073390879,
+      "cpu_energy_error_mev_atom": 0.005319856903648235,
+      "maximum_occupied_eigenvalue_error_mev": 0.004673742548299874,
+      "maximum_occupation_error": 0.0,
+      "electron_count_error": 4.884981308350689E-14,
+      "maximum_orbital_residual_ry": 0.000007762467229805904,
+      "density_residual": 3.808663773496674E-8,
+      "persistent_context_count": 4,
+      "persistent_buffer_bytes": 9179776,
+      "peak_device_allocated_bytes": 14565376,
+      "resident_driver_iterations": 479,
+      "resident_projection_resyncs": 0,
+      "resident_transfer_invariant_checks": 479,
+      "full_vector_upload_bytes": 33903232,
+      "full_vector_download_bytes": 1057408
+    },
+    "al1_lda_4x4x4_fermi_dirac_scf": {
+      "accepted": true,
+      "iterations": 67,
+      "irreducible_k_point_count": 32,
+      "total_energy_ry": -4.185517525629624,
+      "cpu_energy_error_mev_atom": 0.004457055555034639,
+      "maximum_occupied_eigenvalue_error_mev": 0.003676249445758386,
+      "maximum_occupation_error": 0.000004211687018584875,
+      "electron_count_error": 4.440892098500626E-16,
+      "chemical_potential_ry": 0.6135521814952787,
+      "smearing_entropy": 0.4209873709309704,
+      "smearing_free_energy_correction_ry": -0.008419747418619408,
+      "maximum_orbital_residual_ry": 0.000009220172509663973,
+      "density_residual": 4.7500997628429273E-8,
+      "persistent_context_count": 32,
+      "persistent_buffer_bytes": 71600640,
+      "peak_device_allocated_bytes": 80101376,
+      "resident_driver_iterations": 4110,
+      "resident_projection_resyncs": 0,
+      "resident_transfer_invariant_checks": 4110,
+      "full_vector_upload_bytes": 354991728,
+      "full_vector_download_bytes": 7663728
+    },
     "behavior": "fail-closed; no CPU Hamiltonian fallback"
   },
   "performance": {
@@ -242,6 +285,33 @@
         "electron_count_error": 5.5067062021407764e-14
       },
       "decision": "scientific transfer accepted; no MgO performance claim"
+    },
+    "si2_pbe_2x2x2_matched": {
+      "accepted_for_performance_claim": false,
+      "convergence_profile": "matched-metal-compatible-v1",
+      "warmed_repetitions": 5,
+      "cpu_seconds": {
+        "min": 0.493915375,
+        "median": 0.810850708,
+        "max": 0.837499083,
+        "scf_iterations": 44
+      },
+      "metal_seconds": {
+        "min": 3.526674209,
+        "median": 3.8184428329999998,
+        "max": 4.035140291,
+        "scf_iterations": 44
+      },
+      "median_speedup": 0.21235114507736302,
+      "numeric_1_20x_gate_passed": false,
+      "scientific_parity": {
+        "accepted": true,
+        "energy_error_mev_atom": 0.005318902583649823,
+        "maximum_occupied_eigenvalue_error_mev": 0.002316509774961148,
+        "maximum_occupation_error": 0.0,
+        "electron_count_error": 4.796163466380676E-14
+      },
+      "decision": "scientific multi-k-point Metal execution accepted; sequential per-k-point scheduling rejects a performance claim"
     }
   },
   "checkpoint_restart": {
@@ -281,6 +351,8 @@
     "si2_pbe_cpu_history_records": 54,
     "si2_pbe_2x2x2_cpu_history_records": 50,
     "al1_lda_4x4x4_cpu_history_records": 74,
+    "si2_pbe_2x2x2_metal_history_records": 44,
+    "al1_lda_4x4x4_metal_history_records": 67,
     "si2_pbe_metal_history_records": 47,
     "si16_cpu_history_records": 47,
     "si16_metal_history_records": 52,
@@ -311,8 +383,8 @@
     "phase_2_fixture_manifest": "go; hashes and provenance are enforced in CI",
     "phase_3_pbe_silicon": "go for the pinned Si2 ONCV workload; point, grid, CPU/QE, and Metal/CPU gates passed",
     "phase_3_multi_species_mgo": "go for the pinned MgO ONCV workload; multi-species CPU/QE and Metal/CPU gates passed, while its 0.786x matched benchmark rejects a performance claim",
-    "phase_3_cpu_k_points": "go for the pinned shifted 2x2x2 Si2 PBE workload; coordinates, weights, occupied eigenvalues, occupations, charge, and total energy pass against QE 7.6",
-    "phase_3_fermi_dirac_occupations": "go for the pinned CPU-FP64 fcc Al LDA-PZ 4x4x4 workload; free energy, occupied eigenvalues, occupations, and charge pass against QE 7.6",
-    "production_science_or_scope_expansion": "no-go beyond the explicitly validated silicon, MgO, and aluminum workloads until Metal k-points, forces, spin, and broader chemistry have independent fixtures"
+    "phase_3_k_points": "go for the pinned shifted 2x2x2 Si2 PBE workload; CPU passes QE 7.6 and resident Metal passes CPU accuracy and transfer gates, while its 0.212x matched benchmark rejects a performance claim",
+    "phase_3_fermi_dirac_occupations": "go for the pinned fcc Al LDA-PZ 4x4x4 workload; CPU passes QE 7.6 and resident Metal passes CPU free-energy, occupied-eigenvalue, occupation, charge, and transfer gates",
+    "production_science_or_scope_expansion": "no-go beyond the explicitly validated silicon, MgO, and aluminum workloads until forces, spin, denser-mesh convergence, and broader chemistry have independent fixtures"
   }
 }
