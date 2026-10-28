@@ -1,0 +1,9 @@
+{
+  "schema_version": 2,
+  "accepted": true,
+  "total_energy_error_mev_atom": 0.0022596275136768543,
+  "maximum_occupied_eigenvalue_error_mev": 0.06567775929454168,
+  "maximum_occupation_error": 0.0,
+  "electron_count_error": 1.865174681370263e-14,
+  "k_point_count": 4
+}

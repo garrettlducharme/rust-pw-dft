@@ -1,0 +1,798 @@
+{
+  "schema_version": 3,
+  "converged": true,
+  "iterations": 50,
+  "atom_count": 2,
+  "total_energy_ry": -15.718670855395422,
+  "energy_terms": {
+    "band_count_per_k_point": 4.0,
+    "band_energy_ry": 0.7563183699915801,
+    "davidson_iterations": 1941.0,
+    "density_residual": 8.163236909772678e-9,
+    "density_tolerance": 1e-8,
+    "eigensolver_scf_contract_acceptances": 0.0,
+    "eigensolver_tolerance_ry": 1e-10,
+    "energy_change_ry": 0.0,
+    "energy_tolerance_ry": 1e-8,
+    "ewald_ry": -16.81732072317454,
+    "hamiltonian_applications": 7014.0,
+    "hartree_ry": 1.109046631190415,
+    "highest_occupied_eigenvalue_ev": 5.548782477289251,
+    "integral_rho_vxc_ry": -6.276322722957938,
+    "k_point_count": 4.0,
+    "maximum_orbital_residual_ry": 8.723390610325756e-11,
+    "orbital_residual_tolerance_ry": 1e-8,
+    "smearing_entropy": 0.0,
+    "smearing_free_energy_correction_ry": 0.0,
+    "xc_ry": -4.8249445939799855
+  },
+  "eigenvalues_ry": [
+    -0.21159192407230104,
+    -0.004263676558696425,
+    0.20654545519602688,
+    0.2993465516342154,
+    -0.21159192407230556,
+    -0.004263676558685798,
+    0.206545455196025,
+    0.29934655163420965,
+    -0.21159192407230337,
+    -0.0042636765586908,
+    0.20654545519602469,
+    0.29934655163421237,
+    -0.35447762710518194,
+    0.18134916872849313,
+    0.4078279898810546,
+    0.40782798988106345
+  ],
+  "electron_count": 7.999999999999981,
+  "residuals": [
+    3.293441858813451e-11,
+    5.173446693952887e-11,
+    7.391746463574188e-11,
+    5.911157692691689e-11,
+    3.293481923845437e-11,
+    5.173456392706076e-11,
+    7.391686786280087e-11,
+    5.91100507079696e-11,
+    3.293503334525582e-11,
+    5.173434970319089e-11,
+    7.391741959508165e-11,
+    5.911079899055245e-11,
+    2.682805814319011e-11,
+    5.628283861675038e-11,
+    8.347232958469884e-11,
+    8.723390610325756e-11
+  ],
+  "k_points": [
+    {
+      "reduced": [
+        0.25,
+        -0.25,
+        -0.25
+      ],
+      "weight": 0.25,
+      "eigenvalues_ry": [
+        -0.21159192407230104,
+        -0.004263676558696425,
+        0.20654545519602688,
+        0.2993465516342154
+      ],
+      "occupations": [
+        2.0,
+        2.0,
+        2.0,
+        2.0
+      ],
+      "residuals": [
+        3.293441858813451e-11,
+        5.173446693952887e-11,
+        7.391746463574188e-11,
+        5.911157692691689e-11
+      ]
+    },
+    {
+      "reduced": [
+        0.25,
+        -0.25,
+        0.25
+      ],
+      "weight": 0.25,
+      "eigenvalues_ry": [
+        -0.21159192407230556,
+        -0.004263676558685798,
+        0.206545455196025,
+        0.29934655163420965
+      ],
+      "occupations": [
+        2.0,
+        2.0,
+        2.0,
+        2.0
+      ],
+      "residuals": [
+        3.293481923845437e-11,
+        5.173456392706076e-11,
+        7.391686786280087e-11,
+        5.91100507079696e-11
+      ]
+    },
+    {
+      "reduced": [
+        0.25,
+        0.25,
+        -0.25
+      ],
+      "weight": 0.25,
+      "eigenvalues_ry": [
+        -0.21159192407230337,
+        -0.0042636765586908,
+        0.20654545519602469,
+        0.29934655163421237
+      ],
+      "occupations": [
+        2.0,
+        2.0,
+        2.0,
+        2.0
+      ],
+      "residuals": [
+        3.293503334525582e-11,
+        5.173434970319089e-11,
+        7.391741959508165e-11,
+        5.911079899055245e-11
+      ]
+    },
+    {
+      "reduced": [
+        0.25,
+        0.25,
+        0.25
+      ],
+      "weight": 0.25,
+      "eigenvalues_ry": [
+        -0.35447762710518194,
+        0.18134916872849313,
+        0.4078279898810546,
+        0.40782798988106345
+      ],
+      "occupations": [
+        2.0,
+        2.0,
+        2.0,
+        2.0
+      ],
+      "residuals": [
+        2.682805814319011e-11,
+        5.628283861675038e-11,
+        8.347232958469884e-11,
+        8.723390610325756e-11
+      ]
+    }
+  ],
+  "history": [
+    {
+      "iteration": 1,
+      "status": "continue",
+      "total_energy_ry": -15.729802709455505,
+      "energy_change_ry": null,
+      "density_residual": 0.19580048257163093,
+      "maximum_orbital_residual_ry": 6.74712766711919e-11,
+      "electron_count": 7.999999999999995,
+      "highest_occupied_eigenvalue_ry": 0.3719323235426837,
+      "davidson_iterations": 88,
+      "hamiltonian_applications": 305
+    },
+    {
+      "iteration": 2,
+      "status": "continue",
+      "total_energy_ry": -15.722426443789132,
+      "energy_change_ry": 0.007376265666373172,
+      "density_residual": 0.1316983212928351,
+      "maximum_orbital_residual_ry": 9.075856937168172e-11,
+      "electron_count": 8.000000000000002,
+      "highest_occupied_eigenvalue_ry": 0.3847925543589536,
+      "davidson_iterations": 68,
+      "hamiltonian_applications": 247
+    },
+    {
+      "iteration": 3,
+      "status": "continue",
+      "total_energy_ry": -15.719834969732037,
+      "energy_change_ry": 0.0025914740570947004,
+      "density_residual": 0.08891907875278501,
+      "maximum_orbital_residual_ry": 5.635009195821107e-11,
+      "electron_count": 7.999999999999981,
+      "highest_occupied_eigenvalue_ry": 0.3931131124454245,
+      "davidson_iterations": 67,
+      "hamiltonian_applications": 240
+    },
+    {
+      "iteration": 4,
+      "status": "continue",
+      "total_energy_ry": -15.71897923661448,
+      "energy_change_ry": 0.0008557331175573779,
+      "density_residual": 0.06033126350124731,
+      "maximum_orbital_residual_ry": 9.66448397661658e-11,
+      "electron_count": 8.000000000000018,
+      "highest_occupied_eigenvalue_ry": 0.39842327431204466,
+      "davidson_iterations": 62,
+      "hamiltonian_applications": 229
+    },
+    {
+      "iteration": 5,
+      "status": "continue",
+      "total_energy_ry": -15.71871971890879,
+      "energy_change_ry": 0.00025951770568966026,
+      "density_residual": 0.0411344785281617,
+      "maximum_orbital_residual_ry": 5.743850400028074e-11,
+      "electron_count": 8.000000000000066,
+      "highest_occupied_eigenvalue_ry": 0.40179900135839675,
+      "davidson_iterations": 62,
+      "hamiltonian_applications": 229
+    },
+    {
+      "iteration": 6,
+      "status": "continue",
+      "total_energy_ry": -15.718654009323158,
+      "energy_change_ry": 0.00006570958563223428,
+      "density_residual": 0.02817007944976369,
+      "maximum_orbital_residual_ry": 8.439683974835902e-11,
+      "electron_count": 8.00000000000001,
+      "highest_occupied_eigenvalue_ry": 0.40394582034777154,
+      "davidson_iterations": 58,
+      "hamiltonian_applications": 221
+    },
+    {
+      "iteration": 7,
+      "status": "continue",
+      "total_energy_ry": -15.718645797786014,
+      "energy_change_ry": 8.211537144475756e-6,
+      "density_residual": 0.019365891456049784,
+      "maximum_orbital_residual_ry": 8.051789597600858e-11,
+      "electron_count": 7.9999999999999964,
+      "highest_occupied_eigenvalue_ry": 0.4053147591438124,
+      "davidson_iterations": 59,
+      "hamiltonian_applications": 214
+    },
+    {
+      "iteration": 8,
+      "status": "continue",
+      "total_energy_ry": -15.718651382214318,
+      "energy_change_ry": 5.5844283046724286e-6,
+      "density_residual": 0.01335687364194038,
+      "maximum_orbital_residual_ry": 9.85638898552194e-11,
+      "electron_count": 8.000000000000007,
+      "highest_occupied_eigenvalue_ry": 0.40619123264872564,
+      "davidson_iterations": 54,
+      "hamiltonian_applications": 209
+    },
+    {
+      "iteration": 9,
+      "status": "continue",
+      "total_energy_ry": -15.71865810104117,
+      "energy_change_ry": 6.718826851326298e-6,
+      "density_residual": 0.009237738858913732,
+      "maximum_orbital_residual_ry": 9.047245901893697e-11,
+      "electron_count": 7.999999999999988,
+      "highest_occupied_eigenvalue_ry": 0.4067552176957263,
+      "davidson_iterations": 54,
+      "hamiltonian_applications": 205
+    },
+    {
+      "iteration": 10,
+      "status": "continue",
+      "total_energy_ry": -15.71866311088122,
+      "energy_change_ry": 5.009840050362868e-6,
+      "density_residual": 0.006403670304766599,
+      "maximum_orbital_residual_ry": 8.985339837889397e-11,
+      "electron_count": 8.000000000000004,
+      "highest_occupied_eigenvalue_ry": 0.40712019041885655,
+      "davidson_iterations": 53,
+      "hamiltonian_applications": 203
+    },
+    {
+      "iteration": 11,
+      "status": "continue",
+      "total_energy_ry": -15.718666338321736,
+      "energy_change_ry": 3.2274405157295405e-6,
+      "density_residual": 0.004447721516210334,
+      "maximum_orbital_residual_ry": 9.90019152160836e-11,
+      "electron_count": 7.9999999999999964,
+      "highest_occupied_eigenvalue_ry": 0.4073578333682317,
+      "davidson_iterations": 53,
+      "hamiltonian_applications": 197
+    },
+    {
+      "iteration": 12,
+      "status": "continue",
+      "total_energy_ry": -15.718668281788483,
+      "energy_change_ry": 1.943466747533762e-6,
+      "density_residual": 0.0030943249690683376,
+      "maximum_orbital_residual_ry": 7.486679046374674e-11,
+      "electron_count": 8.000000000000009,
+      "highest_occupied_eigenvalue_ry": 0.4075135745012815,
+      "davidson_iterations": 49,
+      "hamiltonian_applications": 190
+    },
+    {
+      "iteration": 13,
+      "status": "continue",
+      "total_energy_ry": -15.718669410039709,
+      "energy_change_ry": 1.1282512257793087e-6,
+      "density_residual": 0.0021558368314550536,
+      "maximum_orbital_residual_ry": 9.682301054429761e-11,
+      "electron_count": 8.000000000000103,
+      "highest_occupied_eigenvalue_ry": 0.407616324332387,
+      "davidson_iterations": 50,
+      "hamiltonian_applications": 185
+    },
+    {
+      "iteration": 14,
+      "status": "continue",
+      "total_energy_ry": -15.718670051058925,
+      "energy_change_ry": 6.410192163741613e-7,
+      "density_residual": 0.0015038786929821208,
+      "maximum_orbital_residual_ry": 7.817469622401173e-11,
+      "electron_count": 8.000000000000023,
+      "highest_occupied_eigenvalue_ry": 0.4076845728313329,
+      "davidson_iterations": 52,
+      "hamiltonian_applications": 185
+    },
+    {
+      "iteration": 15,
+      "status": "continue",
+      "total_energy_ry": -15.718670410428231,
+      "energy_change_ry": 3.5936930586899507e-7,
+      "density_residual": 0.0010502713910053429,
+      "maximum_orbital_residual_ry": 8.833598455939875e-11,
+      "electron_count": 7.999999999999947,
+      "highest_occupied_eigenvalue_ry": 0.4077302110399241,
+      "davidson_iterations": 52,
+      "hamiltonian_applications": 182
+    },
+    {
+      "iteration": 16,
+      "status": "continue",
+      "total_energy_ry": -15.718670610190074,
+      "energy_change_ry": 1.9976184262304741e-7,
+      "density_residual": 0.0007342485260899578,
+      "maximum_orbital_residual_ry": 6.420897568804718e-11,
+      "electron_count": 7.99999999999997,
+      "highest_occupied_eigenvalue_ry": 0.4077609321354986,
+      "davidson_iterations": 49,
+      "hamiltonian_applications": 174
+    },
+    {
+      "iteration": 17,
+      "status": "continue",
+      "total_energy_ry": -15.718670720617677,
+      "energy_change_ry": 1.104276030616802e-7,
+      "density_residual": 0.0005138209047739968,
+      "maximum_orbital_residual_ry": 6.99557704549786e-11,
+      "electron_count": 8.000000000000021,
+      "highest_occupied_eigenvalue_ry": 0.4077817450260857,
+      "davidson_iterations": 48,
+      "hamiltonian_applications": 169
+    },
+    {
+      "iteration": 18,
+      "status": "continue",
+      "total_energy_ry": -15.71867078143947,
+      "energy_change_ry": 6.082179382360664e-8,
+      "density_residual": 0.00035990914689867183,
+      "maximum_orbital_residual_ry": 8.213177693966081e-11,
+      "electron_count": 8.000000000000004,
+      "highest_occupied_eigenvalue_ry": 0.4077959324263569,
+      "davidson_iterations": 44,
+      "hamiltonian_applications": 165
+    },
+    {
+      "iteration": 19,
+      "status": "continue",
+      "total_energy_ry": -15.718670814858536,
+      "energy_change_ry": 3.3419064848771995e-8,
+      "density_residual": 0.00025233691758872926,
+      "maximum_orbital_residual_ry": 8.758230960424082e-11,
+      "electron_count": 7.999999999999947,
+      "highest_occupied_eigenvalue_ry": 0.4078056602073828,
+      "davidson_iterations": 43,
+      "hamiltonian_applications": 159
+    },
+    {
+      "iteration": 20,
+      "status": "continue",
+      "total_energy_ry": -15.71867083319167,
+      "energy_change_ry": 1.8333134121917283e-8,
+      "density_residual": 0.00017708321363764316,
+      "maximum_orbital_residual_ry": 7.470799488685762e-11,
+      "electron_count": 7.999999999999954,
+      "highest_occupied_eigenvalue_ry": 0.40781236702195955,
+      "davidson_iterations": 44,
+      "hamiltonian_applications": 154
+    },
+    {
+      "iteration": 21,
+      "status": "continue",
+      "total_energy_ry": -15.718670843238547,
+      "energy_change_ry": 1.0046877108038643e-8,
+      "density_residual": 0.0001243915336054101,
+      "maximum_orbital_residual_ry": 9.760739683825582e-11,
+      "electron_count": 8.000000000000014,
+      "highest_occupied_eigenvalue_ry": 0.4078170148768689,
+      "davidson_iterations": 43,
+      "hamiltonian_applications": 150
+    },
+    {
+      "iteration": 22,
+      "status": "continue",
+      "total_energy_ry": -15.718670848740935,
+      "energy_change_ry": 5.5023878786641944e-9,
+      "density_residual": 0.00008746504394752226,
+      "maximum_orbital_residual_ry": 9.536390558130061e-11,
+      "electron_count": 8.000000000000032,
+      "highest_occupied_eigenvalue_ry": 0.40782025126908095,
+      "davidson_iterations": 40,
+      "hamiltonian_applications": 144
+    },
+    {
+      "iteration": 23,
+      "status": "continue",
+      "total_energy_ry": -15.71867085175315,
+      "energy_change_ry": 3.012214477848829e-9,
+      "density_residual": 0.00006156390356999533,
+      "maximum_orbital_residual_ry": 9.432916722554629e-11,
+      "electron_count": 8.00000000000006,
+      "highest_occupied_eigenvalue_ry": 0.4078225147753107,
+      "davidson_iterations": 40,
+      "hamiltonian_applications": 139
+    },
+    {
+      "iteration": 24,
+      "status": "continue",
+      "total_energy_ry": -15.718670853401925,
+      "energy_change_ry": 1.6487753384808457e-9,
+      "density_residual": 0.00004337975330318436,
+      "maximum_orbital_residual_ry": 8.654339625889753e-11,
+      "electron_count": 8.000000000000007,
+      "highest_occupied_eigenvalue_ry": 0.4078241042676364,
+      "davidson_iterations": 39,
+      "hamiltonian_applications": 138
+    },
+    {
+      "iteration": 25,
+      "status": "continue",
+      "total_energy_ry": -15.718670854304207,
+      "energy_change_ry": 9.022826930049632e-10,
+      "density_residual": 0.00003060140680433562,
+      "maximum_orbital_residual_ry": 8.8112822818196e-11,
+      "electron_count": 7.999999999999982,
+      "highest_occupied_eigenvalue_ry": 0.4078252245890414,
+      "davidson_iterations": 36,
+      "hamiltonian_applications": 132
+    },
+    {
+      "iteration": 26,
+      "status": "continue",
+      "total_energy_ry": -15.718670854797999,
+      "energy_change_ry": 4.937916742164816e-10,
+      "density_residual": 0.000021613014209582033,
+      "maximum_orbital_residual_ry": 7.721097552543952e-11,
+      "electron_count": 7.999999999999915,
+      "highest_occupied_eigenvalue_ry": 0.40782601689837555,
+      "davidson_iterations": 36,
+      "hamiltonian_applications": 128
+    },
+    {
+      "iteration": 27,
+      "status": "continue",
+      "total_energy_ry": -15.718670855068265,
+      "energy_change_ry": 2.702655876873905e-10,
+      "density_residual": 0.000015283989068008812,
+      "maximum_orbital_residual_ry": 8.96265631313529e-11,
+      "electron_count": 7.9999999999999565,
+      "highest_occupied_eigenvalue_ry": 0.40782657896265967,
+      "davidson_iterations": 36,
+      "hamiltonian_applications": 126
+    },
+    {
+      "iteration": 28,
+      "status": "continue",
+      "total_energy_ry": -15.718670855216264,
+      "energy_change_ry": 1.4799894643147127e-10,
+      "density_residual": 0.00001082266435045042,
+      "maximum_orbital_residual_ry": 9.900521444154e-11,
+      "electron_count": 8.000000000000078,
+      "highest_occupied_eigenvalue_ry": 0.4078269788132649,
+      "davidson_iterations": 35,
+      "hamiltonian_applications": 125
+    },
+    {
+      "iteration": 29,
+      "status": "continue",
+      "total_energy_ry": -15.718670855297281,
+      "energy_change_ry": 8.101785908820602e-11,
+      "density_residual": 7.67425998065397e-6,
+      "maximum_orbital_residual_ry": 8.726661677301868e-11,
+      "electron_count": 8.000000000000057,
+      "highest_occupied_eigenvalue_ry": 0.40782726399559743,
+      "davidson_iterations": 32,
+      "hamiltonian_applications": 116
+    },
+    {
+      "iteration": 30,
+      "status": "continue",
+      "total_energy_ry": -15.718670855341621,
+      "energy_change_ry": 4.433964306826965e-11,
+      "density_residual": 5.449685511205109e-6,
+      "maximum_orbital_residual_ry": 6.802355353210508e-11,
+      "electron_count": 8.000000000000027,
+      "highest_occupied_eigenvalue_ry": 0.4078274678706828,
+      "davidson_iterations": 32,
+      "hamiltonian_applications": 116
+    },
+    {
+      "iteration": 31,
+      "status": "continue",
+      "total_energy_ry": -15.718670855365993,
+      "energy_change_ry": 2.4371615836571436e-11,
+      "density_residual": 3.875839998493106e-6,
+      "maximum_orbital_residual_ry": 8.749748323529504e-11,
+      "electron_count": 8.000000000000032,
+      "highest_occupied_eigenvalue_ry": 0.4078276139316908,
+      "davidson_iterations": 32,
+      "hamiltonian_applications": 112
+    },
+    {
+      "iteration": 32,
+      "status": "continue",
+      "total_energy_ry": -15.718670855379187,
+      "energy_change_ry": 1.319477860306506e-11,
+      "density_residual": 2.7608654174169184e-6,
+      "maximum_orbital_residual_ry": 8.945989622922971e-11,
+      "electron_count": 8.000000000000046,
+      "highest_occupied_eigenvalue_ry": 0.40782771877890933,
+      "davidson_iterations": 31,
+      "hamiltonian_applications": 111
+    },
+    {
+      "iteration": 33,
+      "status": "continue",
+      "total_energy_ry": -15.718670855386563,
+      "energy_change_ry": 7.37543359718984e-12,
+      "density_residual": 1.9698426119300268e-6,
+      "maximum_orbital_residual_ry": 6.654404791518959e-11,
+      "electron_count": 7.9999999999999885,
+      "highest_occupied_eigenvalue_ry": 0.4078277941773081,
+      "davidson_iterations": 31,
+      "hamiltonian_applications": 111
+    },
+    {
+      "iteration": 34,
+      "status": "continue",
+      "total_energy_ry": -15.71867085539056,
+      "energy_change_ry": 3.9968028886505635e-12,
+      "density_residual": 1.407811446776588e-6,
+      "maximum_orbital_residual_ry": 8.619511561754606e-11,
+      "electron_count": 7.999999999999976,
+      "highest_occupied_eigenvalue_ry": 0.4078278484886753,
+      "davidson_iterations": 28,
+      "hamiltonian_applications": 102
+    },
+    {
+      "iteration": 35,
+      "status": "continue",
+      "total_energy_ry": -15.718670855392801,
+      "energy_change_ry": 2.241762331323116e-12,
+      "density_residual": 1.0078545005832686e-6,
+      "maximum_orbital_residual_ry": 7.7207751110961e-11,
+      "electron_count": 8.000000000000064,
+      "highest_occupied_eigenvalue_ry": 0.4078278876716397,
+      "davidson_iterations": 28,
+      "hamiltonian_applications": 100
+    },
+    {
+      "iteration": 36,
+      "status": "continue",
+      "total_energy_ry": -15.718670855393958,
+      "energy_change_ry": 1.156408302449563e-12,
+      "density_residual": 7.227746415049972e-7,
+      "maximum_orbital_residual_ry": 5.6832598081547426e-11,
+      "electron_count": 8.00000000000001,
+      "highest_occupied_eigenvalue_ry": 0.40782791597975815,
+      "davidson_iterations": 28,
+      "hamiltonian_applications": 100
+    },
+    {
+      "iteration": 37,
+      "status": "continue",
+      "total_energy_ry": -15.718670855394564,
+      "energy_change_ry": 6.057376822354854e-13,
+      "density_residual": 5.19237032774431e-7,
+      "maximum_orbital_residual_ry": 8.619238368645492e-11,
+      "electron_count": 8.00000000000002,
+      "highest_occupied_eigenvalue_ry": 0.4078279364583137,
+      "davidson_iterations": 27,
+      "hamiltonian_applications": 95
+    },
+    {
+      "iteration": 38,
+      "status": "continue",
+      "total_energy_ry": -15.718670855394937,
+      "energy_change_ry": 3.730349362740526e-13,
+      "density_residual": 3.736726448332869e-7,
+      "maximum_orbital_residual_ry": 9.12055832467502e-11,
+      "electron_count": 7.999999999999972,
+      "highest_occupied_eigenvalue_ry": 0.40782795129100957,
+      "davidson_iterations": 24,
+      "hamiltonian_applications": 89
+    },
+    {
+      "iteration": 39,
+      "status": "continue",
+      "total_energy_ry": -15.718670855395175,
+      "energy_change_ry": 2.3803181647963356e-13,
+      "density_residual": 2.6938387971088525e-7,
+      "maximum_orbital_residual_ry": 9.462506358650014e-11,
+      "electron_count": 7.999999999999994,
+      "highest_occupied_eigenvalue_ry": 0.4078279620473455,
+      "davidson_iterations": 24,
+      "hamiltonian_applications": 86
+    },
+    {
+      "iteration": 40,
+      "status": "continue",
+      "total_energy_ry": -15.7186708553953,
+      "energy_change_ry": 1.2612133559741778e-13,
+      "density_residual": 1.9453588123796483e-7,
+      "maximum_orbital_residual_ry": 8.625391640006125e-11,
+      "electron_count": 8.000000000000023,
+      "highest_occupied_eigenvalue_ry": 0.4078279698560086,
+      "davidson_iterations": 24,
+      "hamiltonian_applications": 85
+    },
+    {
+      "iteration": 41,
+      "status": "continue",
+      "total_energy_ry": -15.718670855395365,
+      "energy_change_ry": 6.394884621840902e-14,
+      "density_residual": 1.4072321018893975e-7,
+      "maximum_orbital_residual_ry": 9.304492616111853e-11,
+      "electron_count": 7.999999999999985,
+      "highest_occupied_eigenvalue_ry": 0.40782797553081707,
+      "davidson_iterations": 23,
+      "hamiltonian_applications": 82
+    },
+    {
+      "iteration": 42,
+      "status": "continue",
+      "total_energy_ry": -15.718670855395327,
+      "energy_change_ry": 3.730349362740526e-14,
+      "density_residual": 1.019638481633636e-7,
+      "maximum_orbital_residual_ry": 9.659255799855823e-11,
+      "electron_count": 7.9999999999999565,
+      "highest_occupied_eigenvalue_ry": 0.407827979658821,
+      "davidson_iterations": 23,
+      "hamiltonian_applications": 79
+    },
+    {
+      "iteration": 43,
+      "status": "continue",
+      "total_energy_ry": -15.718670855395366,
+      "energy_change_ry": 3.907985046680551e-14,
+      "density_residual": 7.399899529557537e-8,
+      "maximum_orbital_residual_ry": 9.523899425330743e-11,
+      "electron_count": 7.999999999999991,
+      "highest_occupied_eigenvalue_ry": 0.40782798266433484,
+      "davidson_iterations": 23,
+      "hamiltonian_applications": 72
+    },
+    {
+      "iteration": 44,
+      "status": "continue",
+      "total_energy_ry": -15.718670855395366,
+      "energy_change_ry": 0.0,
+      "density_residual": 5.378934878161534e-8,
+      "maximum_orbital_residual_ry": 8.295857062337125e-11,
+      "electron_count": 8.000000000000007,
+      "highest_occupied_eigenvalue_ry": 0.4078279848548463,
+      "davidson_iterations": 20,
+      "hamiltonian_applications": 69
+    },
+    {
+      "iteration": 45,
+      "status": "continue",
+      "total_energy_ry": -15.71867085539542,
+      "energy_change_ry": 5.3290705182007514e-14,
+      "density_residual": 3.915489104994533e-8,
+      "maximum_orbital_residual_ry": 8.027142474650134e-11,
+      "electron_count": 8.000000000000032,
+      "highest_occupied_eigenvalue_ry": 0.4078279864523852,
+      "davidson_iterations": 19,
+      "hamiltonian_applications": 67
+    },
+    {
+      "iteration": 46,
+      "status": "continue",
+      "total_energy_ry": -15.718670855395438,
+      "energy_change_ry": 1.7763568394002505e-14,
+      "density_residual": 2.854205145583327e-8,
+      "maximum_orbital_residual_ry": 8.766695707532234e-11,
+      "electron_count": 8.000000000000007,
+      "highest_occupied_eigenvalue_ry": 0.40782798761875855,
+      "davidson_iterations": 19,
+      "hamiltonian_applications": 63
+    },
+    {
+      "iteration": 47,
+      "status": "continue",
+      "total_energy_ry": -15.718670855395438,
+      "energy_change_ry": 0.0,
+      "density_residual": 2.0834709985562298e-8,
+      "maximum_orbital_residual_ry": 9.916966336434532e-11,
+      "electron_count": 7.999999999999988,
+      "highest_occupied_eigenvalue_ry": 0.40782798847001667,
+      "davidson_iterations": 16,
+      "hamiltonian_applications": 60
+    },
+    {
+      "iteration": 48,
+      "status": "continue",
+      "total_energy_ry": -15.718670855395395,
+      "energy_change_ry": 4.263256414560601e-14,
+      "density_residual": 1.5226470387430777e-8,
+      "maximum_orbital_residual_ry": 9.000745443774509e-11,
+      "electron_count": 8.000000000000048,
+      "highest_occupied_eigenvalue_ry": 0.40782798909190077,
+      "davidson_iterations": 16,
+      "hamiltonian_applications": 56
+    },
+    {
+      "iteration": 49,
+      "status": "continue",
+      "total_energy_ry": -15.718670855395422,
+      "energy_change_ry": 2.6645352591003757e-14,
+      "density_residual": 1.1143621417710907e-8,
+      "maximum_orbital_residual_ry": 9.723507440351996e-11,
+      "electron_count": 7.999999999999981,
+      "highest_occupied_eigenvalue_ry": 0.40782798954742994,
+      "davidson_iterations": 15,
+      "hamiltonian_applications": 51
+    },
+    {
+      "iteration": 50,
+      "status": "converged",
+      "total_energy_ry": -15.718670855395422,
+      "energy_change_ry": 0.0,
+      "density_residual": 8.163236909772678e-9,
+      "maximum_orbital_residual_ry": 8.723390610325756e-11,
+      "electron_count": 7.999999999999981,
+      "highest_occupied_eigenvalue_ry": 0.40782798988106345,
+      "davidson_iterations": 12,
+      "hamiltonian_applications": 48
+    }
+  ],
+  "history_complete": true,
+  "timings": {
+    "density_seconds": 0.05060621000000002,
+    "eigensolve_seconds": 1.0586378779999999,
+    "potential_seconds": 0.07516262300000001,
+    "setup_seconds": 0.11896275,
+    "total_seconds": 1.321690875
+  },
+  "provenance": {
+    "requested_backend": "cpu-f64",
+    "actual_backend": "cpu-f64",
+    "actual_device": "Apple CPU (rustfft/f64 + per-k block-Davidson/faer-f64)",
+    "precision_policy": {
+      "storage": "complex-f64",
+      "reductions": "f64",
+      "eigensolve": "f64",
+      "energy": "f64"
+    },
+    "input_sha256": "69ca1b7f1f21476039e9ea77a7349d68fe22c795282f737a63c33e4ca2ae9d61",
+    "pseudopotential_sha256": {
+      "Si": "481a5fae1167fd712d4e8e2e4df33f8bfc1e7d2abbc0565290d39fbba9dccb41"
+    },
+    "git_revision": "ae489fed0ea0b145dcd457d54470644a7c70d993"
+  }
+}

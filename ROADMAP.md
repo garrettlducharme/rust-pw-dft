@@ -84,8 +84,16 @@ validation and independent fixtures.
    matched 100 Ry MgO CPU/QE and Metal/CPU gate; this admits one binary oxide,
    not broad chemical transferability.**
 2. Monkhorst-Pack and explicit k-point lists, weights, time-reversal handling,
-   and band/density accumulation.
+   and band/density accumulation. **CPU FP64 is implemented and accepted for a
+   shifted 2x2x2 Si2 PBE fixture against QE 7.6. Per-k-point coordinates,
+   weights, occupied eigenvalues, occupations, charge, and total energy pass a
+   release-mode CI gate. Metal execution and checkpoint/restart remain
+   fail-closed until their state boundaries are implemented and validated.**
 3. Fractional occupations and finite-temperature smearing for metals.
+   **Global Fermi-Dirac chemical-potential solving, entropy/free-energy terms,
+   extra-band allocation, and charge-conservation tests are implemented on CPU.
+   This remains experimental until an independent metallic full-SCF fixture
+   passes; no metallic scientific claim is made.**
 4. Collinear spin polarization.
 5. Analytic norm-conserving forces, finite-difference verification, and fixed-
    cell ionic relaxation.
