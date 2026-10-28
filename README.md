@@ -4,8 +4,10 @@ An educational, fail-closed plane-wave DFT prototype aimed at Apple Silicon.
 It is dual-licensed under MIT or Apache-2.0 and contains no code copied from
 GPL DFT implementations.
 
-Version 0.7 adds an independently validated CPU-FP64 metallic aluminum SCF,
-including global Fermi-Dirac occupations and free-energy terms. Version 0.6
+Version 0.8 extends the resident Metal Davidson path across independently
+weighted k points and validates complete silicon and metallic aluminum Apple-
+GPU SCFs. Version 0.7 added an independently validated CPU-FP64 metallic
+aluminum SCF, including global Fermi-Dirac occupations and free-energy terms. Version 0.6
 added Monkhorst-Pack and explicit k-point sampling, time-reversal reduction,
 and an independently validated 2x2x2 silicon PBE SCF. Version 0.5 added true
 multi-species norm-conserving operators and validated CPU and Metal PBE MgO
@@ -22,8 +24,8 @@ machine-readable evidence rather than feature presence alone.
 - strict fixed-cell, spinless LDA-PZ or PBE multi-species input contract;
 - versioned Gamma, Monkhorst-Pack, and explicit weighted k-point inputs with
   deterministic reciprocal-cell canonicalization and optional time-reversal
-  reduction; CPU FP64 supports complete multi-k-point SCFs, while Metal rejects
-  these inputs until its resident batched path is validated;
+  reduction; CPU FP64 and resident mixed-precision Metal support complete
+  multi-k-point SCFs with one persistent GPU context per irreducible point;
 - fixed closed-shell and Fermi-Dirac occupations with a globally solved chemical
   potential, charge-conserving Brillouin-zone weights, explicit entropy/free-
   energy terms, and configurable extra bands;
@@ -174,7 +176,7 @@ does not add a performance claim. Exact-source evidence is in
 [`results/mgo2-pbe-metal-scf.json`](results/mgo2-pbe-metal-scf.json), and
 [`results/mgo2-pbe-matched-benchmark.json`](results/mgo2-pbe-matched-benchmark.json).
 
-## Accepted CPU k-point result
+## Accepted k-point result
 
 The shifted 2x2x2 silicon PBE fixture reduces eight points to four exact
 time-reversal representatives. The CPU solver converges in 50 SCF iterations
@@ -184,13 +186,27 @@ to `-15.7186708554 Ry`. Against full-precision QE 7.6 XML it differs by
 `1.9e-14` electrons. The release-mode CI test compares coordinates, weights,
 occupied eigenvalues, occupations, charge, and total energy.
 
-This accepts only the CPU-FP64 silicon fixture with fixed occupations.
-Multi-k-point Metal execution and checkpoint/restart both fail closed. Exact-
-source records are
+The resident Metal calculation converges in 44 SCF iterations. Relative to the
+accepted CPU result, its errors are `0.00532 meV/atom`, `0.00467 meV` for the
+worst occupied eigenvalue, zero occupation error, and `4.9e-14` electrons. It
+uses four persistent per-k-point contexts, performs zero projection
+resynchronizations, and records a transfer-invariant check for every one of its
+479 resident Davidson iterations.
+
+This accepts only the exact silicon fixture with fixed occupations. The
+per-k-point GPU contexts currently execute sequentially, so this result adds a
+scientific capability, not a performance claim. Multi-k-point checkpoint/
+restart remains fail closed. Exact-source records are
 [`results/si2-pbe-2x2x2-cpu-scf.json`](results/si2-pbe-2x2x2-cpu-scf.json),
+[`results/si2-pbe-2x2x2-metal-scf.json`](results/si2-pbe-2x2x2-metal-scf.json),
 [`results/qe-si2-pbe-2x2x2-reference.json`](results/qe-si2-pbe-2x2x2-reference.json),
+[`results/si2-pbe-2x2x2-cpu-vs-qe.json`](results/si2-pbe-2x2x2-cpu-vs-qe.json),
 and
-[`results/si2-pbe-2x2x2-cpu-vs-qe.json`](results/si2-pbe-2x2x2-cpu-vs-qe.json).
+[`results/si2-pbe-2x2x2-metal-vs-cpu.json`](results/si2-pbe-2x2x2-metal-vs-cpu.json).
+The five-run matched benchmark records CPU min/median/max times of
+`0.494/0.811/0.837 s` and Metal times of `3.527/3.818/4.035 s`, a `0.212x`
+speedup that explicitly fails the `1.20x` gate. The report is
+[`results/si2-pbe-2x2x2-matched-benchmark.json`](results/si2-pbe-2x2x2-matched-benchmark.json).
 The input schema and conventions are documented in
 [`docs/kpoints.md`](docs/kpoints.md).
 
@@ -210,9 +226,19 @@ The release-mode CI gate also requires a nonzero entropy, a negative `-TS`
 correction, a reported chemical potential, and at least one fractional
 occupation. Exact-source evidence is
 [`results/al1-lda-4x4x4-cpu-scf.json`](results/al1-lda-4x4x4-cpu-scf.json),
+[`results/al1-lda-4x4x4-metal-scf.json`](results/al1-lda-4x4x4-metal-scf.json),
 [`results/qe-al1-lda-4x4x4-reference.json`](results/qe-al1-lda-4x4x4-reference.json),
 and
-[`results/al1-lda-4x4x4-cpu-vs-qe.json`](results/al1-lda-4x4x4-cpu-vs-qe.json).
+[`results/al1-lda-4x4x4-cpu-vs-qe.json`](results/al1-lda-4x4x4-cpu-vs-qe.json),
+plus
+[`results/al1-lda-4x4x4-metal-vs-cpu.json`](results/al1-lda-4x4x4-metal-vs-cpu.json).
+
+The resident Metal aluminum SCF converges in 67 iterations. Relative to CPU,
+its free-energy error is `0.00446 meV/atom`, its maximum occupied-eigenvalue
+error is `0.00368 meV`, its maximum occupation error is `4.21e-6`, and its
+charge error is `4.4e-16` electrons. All 32 irreducible-point contexts report
+zero projection resynchronizations. As for silicon, this sequential first
+implementation is an accuracy milestone rather than a speed claim.
 
 The pseudopotential comes from QE's original legacy table, which QE itself
 keeps for reference rather than recommends for new research. This result
@@ -234,8 +260,10 @@ cargo run --release -- compare results/cpu-scf.json results/qe-reference.json
 cargo run --release -- run examples/si2-pbe.toml --backend cpu --output result-pbe.json
 cargo run --release -- compare result-pbe.json results/qe-pbe-reference.json
 cargo run --release -- run examples/si2-pbe-2x2x2.toml --backend cpu --output result-kmesh.json
+cargo run --release --features metal -- run examples/si2-pbe-2x2x2.toml --backend metal --output result-kmesh-metal.json
 cargo run --release -- compare result-kmesh.json results/qe-si2-pbe-2x2x2-reference.json
 cargo run --release -- run examples/al1-lda-4x4x4.toml --backend cpu --output result-al.json
+cargo run --release --features metal -- run examples/al1-lda-4x4x4.toml --backend metal --output result-al-metal.json
 cargo run --release -- compare result-al.json results/qe-al1-lda-4x4x4-reference.json
 cargo run --release -- run examples/mgo2-pbe.toml --backend cpu --output result-mgo.json
 cargo run --release -- compare result-mgo.json results/qe-mgo2-pbe-reference.json
@@ -258,7 +286,7 @@ Fixture provenance and reproduction commands are documented in
 is the machine-readable authority.
 
 The LDA and PBE Si2, PBE MgO, PBE Si2 2x2x2, and metallic Al CPU scientific
-milestones and the Gamma-point resident Metal accuracy milestones are accepted.
+milestones and their resident Metal accuracy milestones are accepted.
 The LDA Si16 transfer and matched-performance milestones are also accepted. The stateful driver is
 integrated into production SCF, and its normal-iteration
 zero-full-vector-transfer contract is checked at runtime and in portable and

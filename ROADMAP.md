@@ -87,15 +87,20 @@ validation and independent fixtures.
    and band/density accumulation. **CPU FP64 is implemented and accepted for a
    shifted 2x2x2 Si2 PBE fixture against QE 7.6. Per-k-point coordinates,
    weights, occupied eigenvalues, occupations, charge, and total energy pass a
-   release-mode CI gate. Metal execution and checkpoint/restart remain
-   fail-closed until their state boundaries are implemented and validated.**
+   release-mode CI gate. Resident mixed-precision Metal is accepted against the
+   CPU result for the same fixture, with one persistent GPU context per
+   irreducible point, zero projection resynchronizations, and explicit transfer
+   accounting. The contexts currently run sequentially and do not establish a
+   performance claim. Multi-k-point checkpoint/restart remains fail closed.**
 3. Fractional occupations and finite-temperature smearing for metals.
    **Global Fermi-Dirac chemical-potential solving, entropy/free-energy terms,
    extra-band allocation, and charge-conservation tests are implemented on CPU.
    A shifted 4x4x4 fcc Al LDA-PZ free-energy calculation passes independent QE
    7.6 total-energy, occupied-eigenvalue, occupation, and charge gates. This
-   accepts only that exact CPU fixture; Metal execution, denser-mesh physical
-   convergence, and a modern production pseudopotential remain pending.**
+   accepts only that exact CPU fixture. The corresponding resident Metal SCF
+   passes free-energy, occupied-eigenvalue, occupation, charge, and transfer-
+   audit gates against CPU. Denser-mesh physical convergence and a modern
+   production pseudopotential remain pending.**
 4. Collinear spin polarization.
 5. Analytic norm-conserving forces, finite-difference verification, and fixed-
    cell ionic relaxation.
