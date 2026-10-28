@@ -4,16 +4,17 @@ use crate::eigensolver::{
     DavidsonOptions, ResidentDavidsonBackend, block_davidson_batched, block_davidson_resident,
 };
 use crate::input::SimulationInput;
+use crate::kpoints::{KPoint, OccupationScheme, assign_occupations};
 use crate::lattice::Lattice;
 use crate::operator::{
-    CpuHamiltonian, atomic_starting_density, density_from_orbitals, ewald_energy_ry,
-    hartree_xc_potential,
+    CpuHamiltonian, accumulate_density_from_orbitals, atomic_starting_density,
+    density_from_orbitals, ewald_energy_ry, hartree_xc_potential,
 };
 use crate::provenance::{git_revision, sha256};
 use crate::pseudo::NormConservingPseudo;
 use crate::result::{
-    Provenance, RESULT_SCHEMA_VERSION, RestartProvenance, ScfIterationRecord, ScfIterationStatus,
-    ScfResult, validate_scf_history,
+    KPointResult, Provenance, RESULT_SCHEMA_VERSION, RestartProvenance, ScfIterationRecord,
+    ScfIterationStatus, ScfResult, validate_scf_history,
 };
 use anyhow::{Context, Result, ensure};
 use std::collections::BTreeMap;
@@ -327,10 +328,16 @@ fn run_with_profile(
     }
     let total_started = Instant::now();
     let input = SimulationInput::from_path(input_path)?;
+    let resolved_k_points = input.k_points.resolve()?;
+    let gamma_fixed = resolved_k_points.len() == 1
+        && resolved_k_points[0]
+            .reduced
+            .iter()
+            .all(|value| value.abs() <= 1.0e-15)
+        && input.occupations == OccupationScheme::Fixed;
     let input_hash = sha256(input_path)?;
     let current_git_revision = git_revision();
     let lattice = Lattice::new(input.cell.lattice_bohr)?;
-    let g_vectors = lattice.enumerate_g_vectors(input.cutoff_ry);
     let mut pseudo_hashes = BTreeMap::new();
     let mut pseudos = BTreeMap::new();
     for (element, pseudo_path) in &input.pseudopotentials {
@@ -354,6 +361,26 @@ fn run_with_profile(
         .iter()
         .map(|atom| pseudos[&atom.element].valence_charge)
         .sum::<f64>();
+    if !gamma_fixed {
+        ensure!(
+            requested_backend == BackendKind::CpuF64,
+            "multi-k-point and fractional-occupation Metal execution is not yet enabled; refusing a CPU fallback"
+        );
+        return run_kpoint_cpu(
+            &input,
+            &input_hash,
+            &current_git_revision,
+            &lattice,
+            &pseudos,
+            &pseudo_hashes,
+            electron_count,
+            &resolved_k_points,
+            profile,
+            control,
+            total_started,
+        );
+    }
+    let g_vectors = lattice.enumerate_g_vectors(input.cutoff_ry);
     let occupied_states_f64 = electron_count / 2.0;
     ensure!(
         (occupied_states_f64 - occupied_states_f64.round()).abs() < 1.0e-12,
@@ -829,9 +856,16 @@ fn run_with_profile(
         atom_count: input.atoms.len(),
         total_energy_ry: final_energy,
         energy_terms: final_terms,
-        eigenvalues_ry: final_eigenvalues,
+        eigenvalues_ry: final_eigenvalues.clone(),
         electron_count: Some(final_charge),
-        residuals: final_residuals,
+        residuals: final_residuals.clone(),
+        k_points: vec![KPointResult {
+            reduced: [0.0; 3],
+            weight: 1.0,
+            eigenvalues_ry: final_eigenvalues.clone(),
+            occupations,
+            residuals: final_residuals.clone(),
+        }],
         history,
         history_complete: true,
         timings,
@@ -844,6 +878,444 @@ fn run_with_profile(
             pseudopotential_sha256: pseudo_hashes,
             git_revision: current_git_revision,
             restart: restart_provenance,
+        },
+        stop_reason,
+    })
+}
+
+struct CpuKPointState {
+    point: KPoint,
+    g_vectors: Vec<crate::lattice::GVector>,
+    hamiltonian: CpuHamiltonian,
+    previous_orbitals: Option<Vec<Vec<num_complex::Complex64>>>,
+    eigenvalues: Vec<f64>,
+    occupations: Vec<f64>,
+    residuals: Vec<f64>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_kpoint_cpu(
+    input: &SimulationInput,
+    input_hash: &str,
+    current_git_revision: &str,
+    lattice: &Lattice,
+    pseudos: &BTreeMap<String, NormConservingPseudo>,
+    pseudo_hashes: &BTreeMap<String, String>,
+    electron_count: f64,
+    k_points: &[KPoint],
+    profile: ScfRunProfile,
+    control: &ScfRunControl,
+    total_started: Instant,
+) -> Result<ScfResult> {
+    ensure!(
+        control.resume_from.is_none()
+            && control.checkpoint_output.is_none()
+            && control.stop_after_scf_iterations.is_none(),
+        "multi-k-point checkpoints are not yet supported; refusing an incomplete restart"
+    );
+    let setup_started = Instant::now();
+    let band_count = input.occupations.band_count(electron_count)?;
+    ensure!(band_count > 0, "k-point SCF requires at least one band");
+
+    let g_sets: Vec<_> = k_points
+        .iter()
+        .map(|point| lattice.enumerate_g_vectors_at_k(input.cutoff_ry, point.reduced))
+        .collect();
+    ensure!(
+        g_sets.iter().all(|vectors| vectors.len() >= band_count),
+        "a k-point plane-wave basis is smaller than the requested band count"
+    );
+    let union: Vec<_> = g_sets.iter().flatten().copied().collect();
+    let grid_shape = Lattice::density_fft_grid(&union);
+    let mut states = Vec::with_capacity(k_points.len());
+    for (point, g_vectors) in k_points.iter().copied().zip(g_sets) {
+        let hamiltonian = CpuHamiltonian::new_at_k(
+            lattice,
+            &g_vectors,
+            &input.atoms,
+            pseudos,
+            input.cutoff_ry,
+            point.reduced,
+            grid_shape,
+        )?;
+        states.push(CpuKPointState {
+            point,
+            g_vectors,
+            hamiltonian,
+            previous_orbitals: None,
+            eigenvalues: Vec::new(),
+            occupations: Vec::new(),
+            residuals: Vec::new(),
+        });
+    }
+
+    let fft = states
+        .first()
+        .context("resolved k-point set is empty")?
+        .hamiltonian
+        .fft()
+        .clone();
+    let mut density = atomic_starting_density(
+        &fft,
+        lattice,
+        &input.atoms,
+        pseudos,
+        input.cutoff_ry,
+        electron_count,
+    )?;
+    let ionic_charges: Vec<_> = input
+        .atoms
+        .iter()
+        .map(|atom| pseudos[&atom.element].valence_charge)
+        .collect();
+    let ewald_ry = ewald_energy_ry(lattice, &input.atoms, &ionic_charges, 0.7)?;
+
+    let mut eigensolver_tolerance = input.scf_options.orbital_residual_tolerance.min(1.0e-10);
+    let mut scf_orbital_tolerance = input.scf_options.orbital_residual_tolerance;
+    let mut scf_energy_tolerance = input.scf_options.energy_tolerance_ry;
+    let mut scf_density_tolerance = input.scf_options.density_tolerance;
+    if profile == ScfRunProfile::MatchedBenchmark {
+        eigensolver_tolerance = 1.0e-5;
+        scf_orbital_tolerance = 1.0e-5;
+        scf_energy_tolerance = input.scf_options.energy_tolerance_ry.max(5.0e-7);
+        scf_density_tolerance = input.scf_options.density_tolerance.max(5.0e-8);
+    }
+
+    let mut timings = BTreeMap::from([(
+        "setup_seconds".into(),
+        setup_started.elapsed().as_secs_f64(),
+    )]);
+    let mut history = Vec::new();
+    let mut previous_energy = None;
+    let mut final_energy = None;
+    let mut final_terms = BTreeMap::new();
+    let mut final_charge = electron_count;
+    let mut final_density_residual = f64::INFINITY;
+    let mut final_energy_change = f64::INFINITY;
+    let mut final_chemical_potential = None;
+    let mut final_entropy = 0.0;
+    let mut davidson_iterations = 0_usize;
+    let mut hamiltonian_applications = 0_usize;
+    let mut completed_iterations = 0_usize;
+    let mut converged = false;
+    let mut eigensolver_stop_reason = None;
+
+    for iteration in 1..=input.scf_options.max_iterations {
+        completed_iterations = iteration;
+        let potential_started = Instant::now();
+        let potential = hartree_xc_potential(&fft, lattice, &density, input.xc)?;
+        add_timing(
+            &mut timings,
+            "potential_seconds",
+            potential_started.elapsed().as_secs_f64(),
+        );
+
+        let eigensolve_started = Instant::now();
+        let mut iteration_davidson = 0_usize;
+        let mut iteration_hamiltonian = 0_usize;
+        let mut eigensolver_failed = None;
+        for state in &mut states {
+            let maximum_subspace = (band_count * 8)
+                .max(band_count + 4)
+                .min(state.g_vectors.len());
+            let options = DavidsonOptions {
+                roots: band_count,
+                residual_tolerance: eigensolver_tolerance,
+                max_iterations: 80,
+                max_subspace: maximum_subspace,
+            };
+            let eigenpairs = block_davidson_batched(
+                state.hamiltonian.kinetic_ry(),
+                state.previous_orbitals.as_deref(),
+                &options,
+                |orbitals| {
+                    orbitals
+                        .iter()
+                        .map(|orbital| state.hamiltonian.apply_fft(orbital, &potential.real_ry))
+                        .collect()
+                },
+            )?;
+            iteration_davidson += eigenpairs.iterations;
+            iteration_hamiltonian += eigenpairs.hamiltonian_applications;
+            let satisfies_outer_contract = eigenpairs
+                .residual_norms
+                .iter()
+                .all(|residual| *residual <= scf_orbital_tolerance);
+            state.eigenvalues = eigenpairs.eigenvalues;
+            state.residuals = eigenpairs.residual_norms;
+            if !eigenpairs.converged && !satisfies_outer_contract {
+                eigensolver_failed = Some(format!(
+                    "block Davidson failed at k = [{:.8}, {:.8}, {:.8}] after {} iterations (maximum residual {:.3e} Ry)",
+                    state.point.reduced[0],
+                    state.point.reduced[1],
+                    state.point.reduced[2],
+                    eigenpairs.iterations,
+                    state.residuals.iter().copied().fold(0.0_f64, f64::max)
+                ));
+                break;
+            }
+            state.previous_orbitals = Some(eigenpairs.eigenvectors);
+        }
+        add_timing(
+            &mut timings,
+            "eigensolve_seconds",
+            eigensolve_started.elapsed().as_secs_f64(),
+        );
+        davidson_iterations += iteration_davidson;
+        hamiltonian_applications += iteration_hamiltonian;
+        if let Some(reason) = eigensolver_failed {
+            eigensolver_stop_reason = Some(reason);
+            let maximum_residual = states
+                .iter()
+                .flat_map(|state| &state.residuals)
+                .copied()
+                .fold(0.0_f64, f64::max);
+            history.push(ScfIterationRecord {
+                iteration,
+                status: ScfIterationStatus::EigensolverNotConverged,
+                total_energy_ry: None,
+                energy_change_ry: None,
+                density_residual: None,
+                maximum_orbital_residual_ry: maximum_residual,
+                electron_count: None,
+                highest_occupied_eigenvalue_ry: None,
+                davidson_iterations: iteration_davidson,
+                hamiltonian_applications: iteration_hamiltonian,
+            });
+            break;
+        }
+
+        let occupation_result = assign_occupations(
+            k_points,
+            &states
+                .iter()
+                .map(|state| state.eigenvalues.clone())
+                .collect::<Vec<_>>(),
+            electron_count,
+            input.occupations,
+        )?;
+        for (state, occupations) in states
+            .iter_mut()
+            .zip(occupation_result.occupations.iter().cloned())
+        {
+            state.occupations = occupations;
+        }
+        final_chemical_potential = occupation_result.chemical_potential_ry;
+        final_entropy = occupation_result.entropy;
+
+        let density_started = Instant::now();
+        let mut output_density = vec![0.0; fft.len()];
+        for state in &states {
+            accumulate_density_from_orbitals(
+                &fft,
+                &state.g_vectors,
+                state
+                    .previous_orbitals
+                    .as_deref()
+                    .context("k-point eigensolve returned no orbitals")?,
+                &state.occupations,
+                lattice.volume,
+                state.point.weight,
+                &mut output_density,
+            )?;
+        }
+        add_timing(
+            &mut timings,
+            "density_seconds",
+            density_started.elapsed().as_secs_f64(),
+        );
+        final_density_residual = relative_density_residual(&density, &output_density);
+        final_charge =
+            output_density.iter().sum::<f64>() * lattice.volume / output_density.len() as f64;
+
+        let band_energy_ry: f64 = states
+            .iter()
+            .map(|state| {
+                state.point.weight
+                    * state
+                        .eigenvalues
+                        .iter()
+                        .zip(&state.occupations)
+                        .map(|(&eigenvalue, &occupation)| eigenvalue * occupation)
+                        .sum::<f64>()
+            })
+            .sum();
+        let smearing_correction_ry = match input.occupations {
+            OccupationScheme::Fixed => 0.0,
+            OccupationScheme::FermiDirac { smearing_ry, .. } => {
+                -smearing_ry * occupation_result.entropy
+            }
+        };
+        let total_energy_ry = band_energy_ry + smearing_correction_ry - potential.hartree_energy_ry
+            + potential.xc_energy_ry
+            - potential.integral_rho_vxc_ry
+            + ewald_ry;
+        let iteration_energy_change =
+            previous_energy.map(|previous: f64| (total_energy_ry - previous).abs());
+        final_energy_change = iteration_energy_change.unwrap_or(f64::INFINITY);
+        previous_energy = Some(total_energy_ry);
+        final_energy = Some(total_energy_ry);
+        let maximum_orbital_residual = states
+            .iter()
+            .flat_map(|state| &state.residuals)
+            .copied()
+            .fold(0.0_f64, f64::max);
+        let occupied_edge = final_chemical_potential.or_else(|| {
+            states
+                .iter()
+                .flat_map(|state| state.eigenvalues.iter().zip(&state.occupations))
+                .filter(|(_, occupation)| **occupation > 1.0e-8)
+                .map(|(&energy, _)| energy)
+                .max_by(f64::total_cmp)
+        });
+
+        final_terms = BTreeMap::from([
+            ("band_energy_ry".into(), band_energy_ry),
+            ("hartree_ry".into(), potential.hartree_energy_ry),
+            ("xc_ry".into(), potential.xc_energy_ry),
+            ("integral_rho_vxc_ry".into(), potential.integral_rho_vxc_ry),
+            ("ewald_ry".into(), ewald_ry),
+            ("smearing_entropy".into(), occupation_result.entropy),
+            (
+                "smearing_free_energy_correction_ry".into(),
+                smearing_correction_ry,
+            ),
+            ("k_point_count".into(), states.len() as f64),
+            ("band_count_per_k_point".into(), band_count as f64),
+            ("density_residual".into(), final_density_residual),
+            ("density_tolerance".into(), scf_density_tolerance),
+            ("energy_change_ry".into(), final_energy_change),
+            ("energy_tolerance_ry".into(), scf_energy_tolerance),
+            ("eigensolver_tolerance_ry".into(), eigensolver_tolerance),
+            (
+                "orbital_residual_tolerance_ry".into(),
+                scf_orbital_tolerance,
+            ),
+        ]);
+        if let Some(chemical_potential) = final_chemical_potential {
+            final_terms.insert("chemical_potential_ry".into(), chemical_potential);
+        }
+        if iteration_energy_change.is_none() {
+            final_terms.remove("energy_change_ry");
+        }
+
+        let iteration_converged = final_density_residual <= scf_density_tolerance
+            && final_energy_change <= scf_energy_tolerance
+            && maximum_orbital_residual <= scf_orbital_tolerance;
+        history.push(ScfIterationRecord {
+            iteration,
+            status: if iteration_converged {
+                ScfIterationStatus::Converged
+            } else {
+                ScfIterationStatus::Continue
+            },
+            total_energy_ry: Some(total_energy_ry),
+            energy_change_ry: iteration_energy_change,
+            density_residual: Some(final_density_residual),
+            maximum_orbital_residual_ry: maximum_orbital_residual,
+            electron_count: Some(final_charge),
+            highest_occupied_eigenvalue_ry: occupied_edge,
+            davidson_iterations: iteration_davidson,
+            hamiltonian_applications: iteration_hamiltonian,
+        });
+        if iteration_converged {
+            converged = true;
+            break;
+        }
+        let beta = input.scf_options.mixing_beta;
+        for (current, output) in density.iter_mut().zip(output_density) {
+            *current = (1.0 - beta) * *current + beta * output;
+        }
+    }
+
+    timings.insert(
+        "total_seconds".into(),
+        total_started.elapsed().as_secs_f64(),
+    );
+    let final_residuals: Vec<_> = states
+        .iter()
+        .flat_map(|state| state.residuals.iter().copied())
+        .collect();
+    let final_eigenvalues: Vec<_> = states
+        .iter()
+        .flat_map(|state| state.eigenvalues.iter().copied())
+        .collect();
+    final_terms.insert("davidson_iterations".into(), davidson_iterations as f64);
+    final_terms.insert(
+        "hamiltonian_applications".into(),
+        hamiltonian_applications as f64,
+    );
+    final_terms.insert(
+        "maximum_orbital_residual_ry".into(),
+        final_residuals.iter().copied().fold(0.0_f64, f64::max),
+    );
+    final_terms.insert(
+        "eigensolver_scf_contract_acceptances".into(),
+        history
+            .iter()
+            .filter(|record| {
+                record.total_energy_ry.is_some()
+                    && record.maximum_orbital_residual_ry > eigensolver_tolerance
+            })
+            .count() as f64,
+    );
+    if let Some(edge) = final_chemical_potential.or_else(|| {
+        states
+            .iter()
+            .flat_map(|state| state.eigenvalues.iter().zip(&state.occupations))
+            .filter(|(_, occupation)| **occupation > 1.0e-8)
+            .map(|(&energy, _)| energy)
+            .max_by(f64::total_cmp)
+    }) {
+        final_terms.insert("highest_occupied_eigenvalue_ev".into(), edge * RY_TO_EV);
+    }
+    final_terms.insert("smearing_entropy".into(), final_entropy);
+
+    let stop_reason = if converged {
+        None
+    } else if let Some(reason) = eigensolver_stop_reason {
+        Some(format!(
+            "{reason}; no scientific acceptance claim is allowed"
+        ))
+    } else {
+        Some(format!(
+            "multi-k-point CPU SCF did not converge in {} iterations (density residual {:.3e}, energy change {:.3e} Ry); no scientific acceptance claim is allowed",
+            input.scf_options.max_iterations, final_density_residual, final_energy_change
+        ))
+    };
+    let k_point_results = states
+        .into_iter()
+        .map(|state| KPointResult {
+            reduced: state.point.reduced,
+            weight: state.point.weight,
+            eigenvalues_ry: state.eigenvalues,
+            occupations: state.occupations,
+            residuals: state.residuals,
+        })
+        .collect();
+    Ok(ScfResult {
+        schema_version: RESULT_SCHEMA_VERSION,
+        converged,
+        iterations: completed_iterations,
+        atom_count: input.atoms.len(),
+        total_energy_ry: final_energy,
+        energy_terms: final_terms,
+        eigenvalues_ry: final_eigenvalues,
+        electron_count: Some(final_charge),
+        residuals: final_residuals,
+        k_points: k_point_results,
+        history,
+        history_complete: true,
+        timings,
+        provenance: Provenance {
+            requested_backend: BackendKind::CpuF64,
+            actual_backend: BackendKind::CpuF64,
+            actual_device: "Apple CPU (rustfft/f64 + per-k block-Davidson/faer-f64)".into(),
+            precision_policy: PrecisionPolicy::cpu_f64(),
+            input_sha256: input_hash.into(),
+            pseudopotential_sha256: pseudo_hashes.clone(),
+            git_revision: current_git_revision.into(),
+            restart: None,
         },
         stop_reason,
     })
@@ -967,6 +1439,66 @@ mod checkpoint_tests {
             .fold(0.0_f64, f64::max);
         assert!(energy_error_mev_atom <= 2.0, "{energy_error_mev_atom:e}");
         assert!(eigenvalue_error_mev <= 5.0, "{eigenvalue_error_mev:e}");
+        assert!((result.electron_count.unwrap() - reference.electron_count.unwrap()).abs() <= 1e-8);
+    }
+
+    #[test]
+    #[ignore = "multi-k-point scientific fixture; run explicitly in release mode"]
+    fn pbe_2x2x2_cpu_scf_matches_pinned_qe_reference() {
+        let input_path = Path::new("examples/si2-pbe-2x2x2.toml");
+        if !Path::new("pseudopotentials/Si_ONCV_PBE-1.0.upf").exists() {
+            return;
+        }
+        let result = run(input_path, BackendKind::CpuF64).unwrap();
+        result.validate().unwrap();
+        assert!(result.converged);
+
+        let reference: ScfResult = serde_json::from_str(
+            &std::fs::read_to_string("results/qe-si2-pbe-2x2x2-reference.json").unwrap(),
+        )
+        .unwrap();
+        reference.validate().unwrap();
+        assert_eq!(result.k_points.len(), reference.k_points.len());
+
+        let energy_error_mev_atom =
+            (result.total_energy_ry.unwrap() - reference.total_energy_ry.unwrap()).abs()
+                * 13_605.693_122_994
+                / result.atom_count as f64;
+        let mut eigenvalue_error_mev = 0.0_f64;
+        let mut occupation_error = 0.0_f64;
+        for (actual, expected) in result.k_points.iter().zip(&reference.k_points) {
+            assert!(
+                actual
+                    .reduced
+                    .iter()
+                    .zip(expected.reduced)
+                    .all(|(left, right)| (left - right).abs() <= 1.0e-12)
+            );
+            assert!((actual.weight - expected.weight).abs() <= 1.0e-12);
+            for ((left, right), occupation) in actual
+                .eigenvalues_ry
+                .iter()
+                .zip(&expected.eigenvalues_ry)
+                .zip(&expected.occupations)
+            {
+                if *occupation > 1.0e-8 {
+                    eigenvalue_error_mev =
+                        eigenvalue_error_mev.max((left - right).abs() * 13_605.693_122_994);
+                }
+            }
+            occupation_error = occupation_error.max(
+                actual
+                    .occupations
+                    .iter()
+                    .zip(&expected.occupations)
+                    .map(|(left, right)| (left - right).abs())
+                    .fold(0.0_f64, f64::max),
+            );
+        }
+
+        assert!(energy_error_mev_atom <= 2.0, "{energy_error_mev_atom:e}");
+        assert!(eigenvalue_error_mev <= 5.0, "{eigenvalue_error_mev:e}");
+        assert!(occupation_error <= 1.0e-8, "{occupation_error:e}");
         assert!((result.electron_count.unwrap() - reference.electron_count.unwrap()).abs() <= 1e-8);
     }
 

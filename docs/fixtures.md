@@ -69,6 +69,22 @@ python3 tools/normalize_qe_xml.py \
   --qe-revision 9f93ddec427d2b9a45bb72d828c6d324f62fcabd
 ```
 
+The accepted multi-k-point PBE reference uses the shifted 2x2x2 mesh in
+[`fixtures/qe/si2-pbe-2x2x2-reference.in`](../fixtures/qe/si2-pbe-2x2x2-reference.in).
+The normalizer converts QE Cartesian reciprocal coordinates to reduced crystal
+coordinates, normalizes weights and occupations to the project convention, and
+combines only numerically verified time-reversal pairs:
+
+```sh
+python3 tools/normalize_qe_xml.py \
+  qe-si2-pbe-2x2x2-reference-tmp/si2-pbe-2x2x2-reference.save/data-file-schema.xml \
+  qe-si2-pbe-2x2x2-reference.out fixtures/qe/si2-pbe-2x2x2-reference.in \
+  pseudopotentials/Si_ONCV_PBE-1.0.upf \
+  results/qe-si2-pbe-2x2x2-reference.json \
+  --qe-revision 9f93ddec427d2b9a45bb72d828c6d324f62fcabd \
+  --reduce-time-reversal
+```
+
 ## Independent Libxc PBE point table
 
 `fixtures/xc/libxc-7.1.2-pbe-unpolarized.json` records unpolarized PBE

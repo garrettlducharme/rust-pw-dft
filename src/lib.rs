@@ -11,6 +11,7 @@ pub mod eigensolver;
 pub mod fft;
 pub mod fixtures;
 pub mod input;
+pub mod kpoints;
 pub mod lattice;
 pub mod metal;
 pub mod operator;

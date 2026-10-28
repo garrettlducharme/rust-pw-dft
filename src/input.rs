@@ -1,3 +1,4 @@
+use crate::kpoints::{KPointSamplingInput, OccupationScheme};
 use crate::xc::XcFunctional;
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -5,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub const INPUT_SCHEMA_VERSION: u32 = 1;
+pub const INPUT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -18,8 +19,10 @@ pub struct SimulationInput {
     pub xc: XcFunctional,
     #[serde(default)]
     pub scf_options: ScfOptions,
-    #[serde(default = "gamma_point")]
-    pub k_points: String,
+    #[serde(default)]
+    pub k_points: KPointSamplingInput,
+    #[serde(default)]
+    pub occupations: OccupationScheme,
     #[serde(default = "one")]
     pub spin_components: u8,
 }
@@ -70,9 +73,6 @@ impl Default for ScfOptions {
     }
 }
 
-fn gamma_point() -> String {
-    "gamma".into()
-}
 const fn one() -> u8 {
     1
 }
@@ -116,16 +116,20 @@ impl SimulationInput {
 
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            self.schema_version == INPUT_SCHEMA_VERSION,
-            "unsupported input schema_version {}; expected {}",
+            (1..=INPUT_SCHEMA_VERSION).contains(&self.schema_version),
+            "unsupported input schema_version {}; expected 1 through {}",
             self.schema_version,
             INPUT_SCHEMA_VERSION
         );
         ensure!(self.cell.fixed, "cell relaxation is unsupported");
-        ensure!(
-            self.k_points.eq_ignore_ascii_case("gamma"),
-            "only Gamma-point calculations are supported"
-        );
+        self.k_points.resolve()?;
+        self.occupations.validate()?;
+        if self.schema_version == 1 {
+            ensure!(
+                self.k_points.is_legacy_gamma() && self.occupations == OccupationScheme::Fixed,
+                "input schema 1 supports only legacy Gamma-point fixed occupations"
+            );
+        }
         ensure!(
             self.spin_components == 1,
             "spin-polarized calculations are unsupported"
@@ -204,10 +208,10 @@ lattice_bohr = [[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]]
 "#;
         assert!(toml::from_str::<SimulationInput>(missing).is_err());
 
-        let mut unsupported = missing.replacen("cutoff_ry", "schema_version = 2\ncutoff_ry", 1);
+        let mut unsupported = missing.replacen("cutoff_ry", "schema_version = 3\ncutoff_ry", 1);
         let parsed: SimulationInput = toml::from_str(&unsupported).unwrap();
         assert!(parsed.validate().is_err());
-        unsupported = unsupported.replacen("schema_version = 2", "schema_version = 1", 1);
+        unsupported = unsupported.replacen("schema_version = 3", "schema_version = 2", 1);
         assert!(
             toml::from_str::<SimulationInput>(&unsupported)
                 .unwrap()
@@ -231,9 +235,9 @@ lattice_bohr = [[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]]
         )
         .unwrap();
 
-        input.k_points = "2x2x2".into();
+        input.k_points = KPointSamplingInput::Legacy("2x2x2".into());
         assert!(input.validate().is_err());
-        input.k_points = "gamma".into();
+        input.k_points = KPointSamplingInput::Legacy("gamma".into());
         input.spin_components = 2;
         assert!(input.validate().is_err());
         input.spin_components = 1;
@@ -284,5 +288,36 @@ lattice_bohr = [[0.0,4.0,4.0],[4.0,0.0,4.0],[4.0,4.0,0.0]]
         )
         .unwrap();
         input.validate().unwrap();
+    }
+
+    #[test]
+    fn schema_two_accepts_weighted_k_points_and_smearing() {
+        let input: SimulationInput = toml::from_str(
+            r#"
+cutoff_ry = 30.0
+schema_version = 2
+xc = "pbe"
+pseudopotentials = { Al = "Al.UPF" }
+atoms = [{ element = "Al", fractional = [0.0, 0.0, 0.0] }]
+
+[k_points]
+kind = "monkhorst-pack"
+grid = [2, 2, 2]
+shift = [0.5, 0.5, 0.5]
+reduce_time_reversal = true
+
+[occupations]
+kind = "fermi-dirac"
+smearing_ry = 0.01
+extra_bands = 4
+
+[cell]
+lattice_bohr = [[7.5,0.0,0.0],[0.0,7.5,0.0],[0.0,0.0,7.5]]
+"#,
+        )
+        .unwrap();
+        input.validate().unwrap();
+        assert_eq!(input.k_points.resolve().unwrap().len(), 4);
+        assert_eq!(input.occupations.band_count(3.0).unwrap(), 6);
     }
 }

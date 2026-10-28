@@ -4,11 +4,13 @@ An educational, fail-closed plane-wave DFT prototype aimed at Apple Silicon.
 It is dual-licensed under MIT or Apache-2.0 and contains no code copied from
 GPL DFT implementations.
 
-Version 0.5 adds true multi-species norm-conserving operators and independently
-validated CPU and Metal PBE MgO SCFs. Version 0.4 added native variational PBE
-and validated CPU and Metal PBE silicon SCFs. Earlier releases added complete
-SCF convergence histories, a CI-enforced scientific-fixture provenance
-manifest, and atomic checksummed CPU/Metal restart checkpoints.
+Version 0.6 adds CPU-FP64 Monkhorst-Pack and explicit k-point sampling,
+time-reversal reduction, fixed and Fermi-Dirac occupations, and an independently
+validated 2x2x2 silicon PBE SCF. Version 0.5 added true multi-species
+norm-conserving operators and independently validated CPU and Metal PBE MgO
+SCFs. Earlier releases added native variational PBE, complete SCF convergence
+histories, a CI-enforced scientific-fixture provenance manifest, and atomic
+checksummed CPU/Metal restart checkpoints.
 
 The path from the validated silicon prototype to a research-ready Mac package
 is tracked in [`ROADMAP.md`](ROADMAP.md). Claims are tied to committed,
@@ -16,7 +18,14 @@ machine-readable evidence rather than feature presence alone.
 
 ## Implemented
 
-- strict fixed-cell, spinless, Gamma-only LDA-PZ or PBE multi-species input contract;
+- strict fixed-cell, spinless LDA-PZ or PBE multi-species input contract;
+- versioned Gamma, Monkhorst-Pack, and explicit weighted k-point inputs with
+  deterministic reciprocal-cell canonicalization and optional time-reversal
+  reduction; CPU FP64 supports complete multi-k-point SCFs, while Metal rejects
+  these inputs until its resident batched path is validated;
+- fixed closed-shell and Fermi-Dirac occupations with a globally solved chemical
+  potential, charge-conserving Brillouin-zone weights, explicit entropy/free-
+  energy terms, and configurable extra bands;
 - direct/reciprocal lattice construction and cutoff-safe G-vector enumeration;
 - FP64 multidimensional CPU FFT with Parseval and round-trip tests;
 - LDA-PZ exchange-correlation energy and potential;
@@ -154,8 +163,8 @@ by `0.0203 meV/atom`, `0.00734 meV` for occupied eigenvalues, and `3.0e-13`
 electrons, with zero projection resynchronizations.
 
 This closes one binary-insulator transfer test. It does not establish broad
-oxide chemistry, forces, stress, k-point sampling, or pseudopotential
-transferability. The matched five-warm-run performance gate is intentionally
+oxide chemistry, forces, stress, or pseudopotential transferability. The
+matched five-warm-run performance gate is intentionally
 retained as a negative result: CPU min/median/max were
 `2.821/2.843/2.865 s`, Metal was `3.592/3.619/3.699 s`, and the `0.786x`
 speedup fails the required `1.20x`. MgO therefore extends scientific scope but
@@ -163,6 +172,27 @@ does not add a performance claim. Exact-source evidence is in
 [`results/mgo2-pbe-cpu-scf.json`](results/mgo2-pbe-cpu-scf.json),
 [`results/mgo2-pbe-metal-scf.json`](results/mgo2-pbe-metal-scf.json), and
 [`results/mgo2-pbe-matched-benchmark.json`](results/mgo2-pbe-matched-benchmark.json).
+
+## Accepted CPU k-point result
+
+The shifted 2x2x2 silicon PBE fixture reduces eight points to four exact
+time-reversal representatives. The CPU solver converges in 50 SCF iterations
+to `-15.7186708554 Ry`. Against full-precision QE 7.6 XML it differs by
+`0.00226 meV/atom`; the maximum occupied per-k-point eigenvalue error is
+`0.06568 meV`, the occupation error is zero, and the charge error is
+`1.9e-14` electrons. The release-mode CI test compares coordinates, weights,
+occupied eigenvalues, occupations, charge, and total energy.
+
+This accepts only the CPU-FP64 silicon fixture. Fermi-Dirac machinery is tested
+for invariants but does not yet have an independent metallic SCF fixture, and
+multi-k-point Metal execution and checkpoint/restart both fail closed. Exact-
+source records are
+[`results/si2-pbe-2x2x2-cpu-scf.json`](results/si2-pbe-2x2x2-cpu-scf.json),
+[`results/qe-si2-pbe-2x2x2-reference.json`](results/qe-si2-pbe-2x2x2-reference.json),
+and
+[`results/si2-pbe-2x2x2-cpu-vs-qe.json`](results/si2-pbe-2x2x2-cpu-vs-qe.json).
+The input schema and conventions are documented in
+[`docs/kpoints.md`](docs/kpoints.md).
 
 ## Commands
 
@@ -178,6 +208,8 @@ cargo run -- run examples/si2.toml --backend cpu --output result.json
 cargo run --release -- compare results/cpu-scf.json results/qe-reference.json
 cargo run --release -- run examples/si2-pbe.toml --backend cpu --output result-pbe.json
 cargo run --release -- compare result-pbe.json results/qe-pbe-reference.json
+cargo run --release -- run examples/si2-pbe-2x2x2.toml --backend cpu --output result-kmesh.json
+cargo run --release -- compare result-kmesh.json results/qe-si2-pbe-2x2x2-reference.json
 cargo run --release -- run examples/mgo2-pbe.toml --backend cpu --output result-mgo.json
 cargo run --release -- compare result-mgo.json results/qe-mgo2-pbe-reference.json
 cargo run --release --features metal -- run examples/mgo2-pbe.toml --backend metal --output result-mgo-metal.json
@@ -198,13 +230,14 @@ Fixture provenance and reproduction commands are documented in
 [`docs/fixtures.md`](docs/fixtures.md); [`fixtures/manifest.toml`](fixtures/manifest.toml)
 is the machine-readable authority.
 
-The LDA and PBE Si2 and PBE MgO CPU scientific milestones and resident Metal
-accuracy milestones are accepted. The LDA Si16 transfer and matched-performance
-milestones are also accepted. The stateful driver is
+The LDA and PBE Si2, PBE MgO, and PBE Si2 2x2x2 CPU scientific milestones and
+the Gamma-point resident Metal accuracy milestones are accepted. The LDA Si16
+transfer and matched-performance milestones are also accepted. The stateful driver is
 integrated into production SCF, and its normal-iteration
 zero-full-vector-transfer contract is checked at runtime and in portable and
-Apple-GPU tests. The next physics frontier is explicit k-point sampling and
-metallic occupations, with the same CPU-reference-first acceptance policy. The
+Apple-GPU tests. The next physics frontier is an independently validated
+metallic occupation fixture followed by resident multi-k-point Metal execution,
+with the same CPU-reference-first acceptance policy. The
 resident buffer contract, dataflow, transfer
 accounting, and fail-closed gates are specified in
 [`docs/resident-davidson.md`](docs/resident-davidson.md).

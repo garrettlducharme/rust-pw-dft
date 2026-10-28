@@ -1,24 +1,24 @@
 {
-  "schema_version": 12,
-  "source_revision": "956f57ad42ffe8ca58e20ec6ecf0d5eaa74bc6ee",
+  "schema_version": 13,
+  "source_revision": "ae489fed0ea0b145dcd457d54470644a7c70d993",
   "tests": {
-    "cpu_passed": 38,
-    "cpu_release_scientific_passed": 1,
-    "cpu_debug_ignored_release_scientific": 1,
-    "metal_feature_passed": 43,
+    "cpu_passed": 46,
+    "cpu_release_scientific_passed": 2,
+    "cpu_debug_ignored_release_scientific": 2,
+    "metal_feature_passed": 51,
     "metal_release_scientific_passed": 1,
-    "metal_debug_ignored_release_scientific": 2,
+    "metal_debug_ignored_release_scientific": 3,
     "failed": 0,
     "clippy_all_targets_metal_feature": "passed"
   },
   "schemas": {
-    "input": 1,
-    "result": 2,
-    "comparison": 1,
+    "input": 2,
+    "result": 3,
+    "comparison": 2,
     "benchmark": 1,
     "checkpoint": 2,
     "fixture_manifest": 1,
-    "validation_manifest": 12
+    "validation_manifest": 13
   },
   "input_and_pseudopotential": {
     "legacy_si_upf": "accepted",
@@ -57,6 +57,21 @@
       "energy_tolerance_ry": 1e-8,
       "independent_point_oracle": "Libxc 7.1.2 GGA_X_PBE plus GGA_C_PBE",
       "grid_variational_derivative_gate": "passed"
+    },
+    "si2_pbe_2x2x2_scf": {
+      "accepted": true,
+      "iterations": 50,
+      "irreducible_k_point_count": 4,
+      "total_energy_ry": -15.718670855395422,
+      "qe_total_energy_ry": -15.718671187554541,
+      "energy_error_mev_atom": 0.0022596275136768543,
+      "maximum_occupied_eigenvalue_error_mev": 0.06567775929454168,
+      "maximum_occupation_error": 0.0,
+      "electron_count_error": 1.865174681370263e-14,
+      "maximum_orbital_residual_ry": 8.723390610325756e-11,
+      "density_residual": 8.163236909772678e-9,
+      "energy_tolerance_ry": 1e-8,
+      "time_reversal_reduction": "8 full mesh points reduced to 4 representatives"
     },
     "mgo2_pbe_scf": {
       "accepted": true,
@@ -227,7 +242,7 @@
     }
   },
   "structured_diagnostics": {
-    "result_schema_version": 2,
+    "result_schema_version": 3,
     "history_survives_checkpoint_resume": true,
     "validated_fields": [
       "status",
@@ -243,6 +258,7 @@
     "si2_cpu_history_records": 49,
     "si2_metal_history_records": 45,
     "si2_pbe_cpu_history_records": 54,
+    "si2_pbe_2x2x2_cpu_history_records": 50,
     "si2_pbe_metal_history_records": 47,
     "si16_cpu_history_records": 47,
     "si16_metal_history_records": 52,
@@ -253,7 +269,7 @@
   },
   "fixture_provenance": {
     "manifest_schema_version": 1,
-    "verified_fixture_count": 15,
+    "verified_fixture_count": 18,
     "ci_enforced": true,
     "path_traversal_rejected": true,
     "tamper_detection": "passed",
@@ -273,6 +289,8 @@
     "phase_2_fixture_manifest": "go; hashes and provenance are enforced in CI",
     "phase_3_pbe_silicon": "go for the pinned Si2 ONCV workload; point, grid, CPU/QE, and Metal/CPU gates passed",
     "phase_3_multi_species_mgo": "go for the pinned MgO ONCV workload; multi-species CPU/QE and Metal/CPU gates passed, while its 0.786x matched benchmark rejects a performance claim",
-    "production_science_or_scope_expansion": "no-go beyond the explicitly validated silicon and MgO workloads until k-points, occupations, forces, and broader chemistry have independent fixtures"
+    "phase_3_cpu_k_points": "go for the pinned shifted 2x2x2 Si2 PBE workload; coordinates, weights, occupied eigenvalues, occupations, charge, and total energy pass against QE 7.6",
+    "phase_3_fermi_dirac_occupations": "experimental; invariant and charge-conservation tests pass, but no independent metallic full-SCF fixture is accepted",
+    "production_science_or_scope_expansion": "no-go beyond the explicitly validated silicon and MgO workloads until metallic occupations, forces, spin, and broader chemistry have independent fixtures"
   }
 }
