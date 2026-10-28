@@ -362,11 +362,7 @@ fn run_with_profile(
         .map(|atom| pseudos[&atom.element].valence_charge)
         .sum::<f64>();
     if !gamma_fixed {
-        ensure!(
-            requested_backend == BackendKind::CpuF64,
-            "multi-k-point and fractional-occupation Metal execution is not yet enabled; refusing a CPU fallback"
-        );
-        return run_kpoint_cpu(
+        return run_kpoint_scf(
             &input,
             &input_hash,
             &current_git_revision,
@@ -375,6 +371,7 @@ fn run_with_profile(
             &pseudo_hashes,
             electron_count,
             &resolved_k_points,
+            requested_backend,
             profile,
             control,
             total_started,
@@ -883,10 +880,11 @@ fn run_with_profile(
     })
 }
 
-struct CpuKPointState {
+struct KPointState {
     point: KPoint,
     g_vectors: Vec<crate::lattice::GVector>,
     hamiltonian: CpuHamiltonian,
+    metal_context: Option<crate::metal::HamiltonianContext>,
     previous_orbitals: Option<Vec<Vec<num_complex::Complex64>>>,
     eigenvalues: Vec<f64>,
     occupations: Vec<f64>,
@@ -894,7 +892,7 @@ struct CpuKPointState {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_kpoint_cpu(
+fn run_kpoint_scf(
     input: &SimulationInput,
     input_hash: &str,
     current_git_revision: &str,
@@ -903,6 +901,7 @@ fn run_kpoint_cpu(
     pseudo_hashes: &BTreeMap<String, String>,
     electron_count: f64,
     k_points: &[KPoint],
+    requested_backend: BackendKind,
     profile: ScfRunProfile,
     control: &ScfRunControl,
     total_started: Instant,
@@ -916,6 +915,44 @@ fn run_kpoint_cpu(
     let setup_started = Instant::now();
     let band_count = input.occupations.band_count(electron_count)?;
     ensure!(band_count > 0, "k-point SCF requires at least one band");
+
+    let (
+        actual_device,
+        precision_policy,
+        mut eigensolver_tolerance,
+        mut scf_orbital_tolerance,
+        mut scf_energy_tolerance,
+        mut scf_density_tolerance,
+    ) = match requested_backend {
+        BackendKind::CpuF64 => (
+            "Apple CPU (rustfft/f64 + per-k block-Davidson/faer-f64)".into(),
+            PrecisionPolicy::cpu_f64(),
+            input.scf_options.orbital_residual_tolerance.min(1.0e-10),
+            input.scf_options.orbital_residual_tolerance,
+            input.scf_options.energy_tolerance_ry,
+            input.scf_options.density_tolerance,
+        ),
+        BackendKind::MetalMixed => {
+            let device = crate::metal::device_name()
+                .context("Metal backend unavailable (no CPU Hamiltonian fallback)")?;
+            (
+                format!(
+                    "{device} (one persistent MPSGraph Hamiltonian and resident GPU Davidson context per irreducible k point)"
+                ),
+                PrecisionPolicy::metal_mixed(),
+                1.0e-5,
+                1.0e-5,
+                input.scf_options.energy_tolerance_ry.max(5.0e-7),
+                input.scf_options.density_tolerance.max(5.0e-8),
+            )
+        }
+    };
+    if profile == ScfRunProfile::MatchedBenchmark {
+        eigensolver_tolerance = 1.0e-5;
+        scf_orbital_tolerance = 1.0e-5;
+        scf_energy_tolerance = input.scf_options.energy_tolerance_ry.max(5.0e-7);
+        scf_density_tolerance = input.scf_options.density_tolerance.max(5.0e-8);
+    }
 
     let g_sets: Vec<_> = k_points
         .iter()
@@ -938,10 +975,25 @@ fn run_kpoint_cpu(
             point.reduced,
             grid_shape,
         )?;
-        states.push(CpuKPointState {
+        let maximum_subspace = (band_count * 8).max(band_count + 4).min(g_vectors.len());
+        let metal_context = match requested_backend {
+            BackendKind::CpuF64 => None,
+            BackendKind::MetalMixed => Some(
+                hamiltonian
+                    .create_metal_hamiltonian_context(maximum_subspace)
+                    .with_context(|| {
+                        format!(
+                            "failed to initialize persistent Metal Hamiltonian at k = [{:.8}, {:.8}, {:.8}]",
+                            point.reduced[0], point.reduced[1], point.reduced[2]
+                        )
+                    })?,
+            ),
+        };
+        states.push(KPointState {
             point,
             g_vectors,
             hamiltonian,
+            metal_context,
             previous_orbitals: None,
             eigenvalues: Vec::new(),
             occupations: Vec::new(),
@@ -969,17 +1021,6 @@ fn run_kpoint_cpu(
         .map(|atom| pseudos[&atom.element].valence_charge)
         .collect();
     let ewald_ry = ewald_energy_ry(lattice, &input.atoms, &ionic_charges, 0.7)?;
-
-    let mut eigensolver_tolerance = input.scf_options.orbital_residual_tolerance.min(1.0e-10);
-    let mut scf_orbital_tolerance = input.scf_options.orbital_residual_tolerance;
-    let mut scf_energy_tolerance = input.scf_options.energy_tolerance_ry;
-    let mut scf_density_tolerance = input.scf_options.density_tolerance;
-    if profile == ScfRunProfile::MatchedBenchmark {
-        eigensolver_tolerance = 1.0e-5;
-        scf_orbital_tolerance = 1.0e-5;
-        scf_energy_tolerance = input.scf_options.energy_tolerance_ry.max(5.0e-7);
-        scf_density_tolerance = input.scf_options.density_tolerance.max(5.0e-8);
-    }
 
     let mut timings = BTreeMap::from([(
         "setup_seconds".into(),
@@ -1024,17 +1065,36 @@ fn run_kpoint_cpu(
                 max_iterations: 80,
                 max_subspace: maximum_subspace,
             };
-            let eigenpairs = block_davidson_batched(
-                state.hamiltonian.kinetic_ry(),
-                state.previous_orbitals.as_deref(),
-                &options,
-                |orbitals| {
-                    orbitals
-                        .iter()
-                        .map(|orbital| state.hamiltonian.apply_fft(orbital, &potential.real_ry))
-                        .collect()
-                },
-            )?;
+            let eigenpairs = match requested_backend {
+                BackendKind::CpuF64 => block_davidson_batched(
+                    state.hamiltonian.kinetic_ry(),
+                    state.previous_orbitals.as_deref(),
+                    &options,
+                    |orbitals| {
+                        orbitals
+                            .iter()
+                            .map(|orbital| state.hamiltonian.apply_fft(orbital, &potential.real_ry))
+                            .collect()
+                    },
+                ),
+                BackendKind::MetalMixed => {
+                    let context = state
+                        .metal_context
+                        .as_mut()
+                        .context("persistent per-k Metal Hamiltonian context is missing")?;
+                    let mut backend = MetalResidentDavidson {
+                        hamiltonian: &state.hamiltonian,
+                        context,
+                        potential_ry: &potential.real_ry,
+                    };
+                    block_davidson_resident(
+                        state.hamiltonian.kinetic_ry(),
+                        state.previous_orbitals.as_deref(),
+                        &options,
+                        &mut backend,
+                    )
+                }
+            }?;
             iteration_davidson += eigenpairs.iterations;
             iteration_hamiltonian += eigenpairs.hamiltonian_applications;
             let satisfies_outer_contract = eigenpairs
@@ -1279,10 +1339,41 @@ fn run_kpoint_cpu(
         ))
     } else {
         Some(format!(
-            "multi-k-point CPU SCF did not converge in {} iterations (density residual {:.3e}, energy change {:.3e} Ry); no scientific acceptance claim is allowed",
-            input.scf_options.max_iterations, final_density_residual, final_energy_change
+            "multi-k-point {:?} SCF did not converge in {} iterations (density residual {:.3e}, energy change {:.3e} Ry); no scientific acceptance claim is allowed",
+            requested_backend,
+            input.scf_options.max_iterations,
+            final_density_residual,
+            final_energy_change
         ))
     };
+    if requested_backend == BackendKind::MetalMixed {
+        let mut aggregate = BTreeMap::new();
+        let mut context_count = 0_usize;
+        for context in states
+            .iter()
+            .filter_map(|state| state.metal_context.as_ref())
+        {
+            context_count += 1;
+            for (name, value) in metal_metrics(context) {
+                if name == "metal_peak_device_allocated_bytes" {
+                    aggregate
+                        .entry(name)
+                        .and_modify(|prior: &mut f64| *prior = prior.max(value))
+                        .or_insert(value);
+                } else {
+                    *aggregate.entry(name).or_default() += value;
+                }
+            }
+        }
+        ensure!(
+            context_count == states.len(),
+            "Metal k-point context count differs from the resolved k-point count"
+        );
+        aggregate.insert("metal_k_point_context_count".into(), context_count as f64);
+        for (name, value) in aggregate {
+            final_terms.insert(name, value);
+        }
+    }
     let k_point_results = states
         .into_iter()
         .map(|state| KPointResult {
@@ -1308,10 +1399,10 @@ fn run_kpoint_cpu(
         history_complete: true,
         timings,
         provenance: Provenance {
-            requested_backend: BackendKind::CpuF64,
-            actual_backend: BackendKind::CpuF64,
-            actual_device: "Apple CPU (rustfft/f64 + per-k block-Davidson/faer-f64)".into(),
-            precision_policy: PrecisionPolicy::cpu_f64(),
+            requested_backend,
+            actual_backend: requested_backend,
+            actual_device,
+            precision_policy,
             input_sha256: input_hash.into(),
             pseudopotential_sha256: pseudo_hashes.clone(),
             git_revision: current_git_revision.into(),
@@ -1604,6 +1695,64 @@ mod checkpoint_tests {
 mod tests {
     use super::*;
 
+    fn assert_kpoint_metal_matches_cpu(
+        input_path: &Path,
+        maximum_occupation_error: f64,
+    ) -> (ScfResult, ScfResult) {
+        let cpu = run(input_path, BackendKind::CpuF64).unwrap();
+        let metal = run(input_path, BackendKind::MetalMixed).unwrap();
+        cpu.validate().unwrap();
+        metal.validate().unwrap();
+        assert!(cpu.converged && metal.converged);
+        assert_eq!(metal.k_points.len(), cpu.k_points.len());
+
+        let energy_error_mev_atom = (metal.total_energy_ry.unwrap() - cpu.total_energy_ry.unwrap())
+            .abs()
+            * 13_605.693_122_994
+            / metal.atom_count as f64;
+        let mut eigenvalue_error_mev = 0.0_f64;
+        let mut occupation_error = 0.0_f64;
+        for (actual, expected) in metal.k_points.iter().zip(&cpu.k_points) {
+            assert_eq!(actual.reduced, expected.reduced);
+            assert_eq!(actual.weight, expected.weight);
+            for (((left, right), left_occupation), right_occupation) in actual
+                .eigenvalues_ry
+                .iter()
+                .zip(&expected.eigenvalues_ry)
+                .zip(&actual.occupations)
+                .zip(&expected.occupations)
+            {
+                if *left_occupation > 1.0e-8 || *right_occupation > 1.0e-8 {
+                    eigenvalue_error_mev =
+                        eigenvalue_error_mev.max((left - right).abs() * 13_605.693_122_994);
+                }
+                occupation_error = occupation_error.max((left_occupation - right_occupation).abs());
+            }
+        }
+
+        assert!(energy_error_mev_atom <= 1.0, "{energy_error_mev_atom:e}");
+        assert!(eigenvalue_error_mev <= 5.0, "{eigenvalue_error_mev:e}");
+        assert!(
+            occupation_error <= maximum_occupation_error,
+            "{occupation_error:e}"
+        );
+        assert!((metal.electron_count.unwrap() - cpu.electron_count.unwrap()).abs() <= 1.0e-5);
+        assert_eq!(
+            metal.energy_terms["metal_k_point_context_count"],
+            metal.k_points.len() as f64
+        );
+        assert_eq!(metal.energy_terms["metal_resident_projection_resyncs"], 0.0);
+        assert_eq!(
+            metal.energy_terms["metal_resident_driver_iterations"],
+            metal.energy_terms["davidson_iterations"]
+        );
+        assert_eq!(
+            metal.energy_terms["metal_resident_transfer_invariant_checks"],
+            metal.energy_terms["davidson_iterations"]
+        );
+        (cpu, metal)
+    }
+
     #[test]
     fn resident_metal_scf_matches_cpu_and_transfers_only_at_boundaries() {
         let _device_guard = crate::metal::test_device_lock();
@@ -1786,6 +1935,31 @@ mod tests {
             metal.energy_terms["metal_resident_transfer_invariant_checks"],
             metal.energy_terms["davidson_iterations"]
         );
+    }
+
+    #[test]
+    #[ignore = "multi-k-point scientific fixture; run explicitly in release mode"]
+    fn resident_metal_pbe_2x2x2_scf_matches_cpu() {
+        let _device_guard = crate::metal::test_device_lock();
+        let input_path = Path::new("examples/si2-pbe-2x2x2.toml");
+        if !Path::new("pseudopotentials/Si_ONCV_PBE-1.0.upf").exists() {
+            return;
+        }
+        assert_kpoint_metal_matches_cpu(input_path, 1.0e-5);
+    }
+
+    #[test]
+    #[ignore = "metallic multi-k-point scientific fixture; run explicitly in release mode"]
+    fn resident_metal_aluminum_fermi_dirac_scf_matches_cpu() {
+        let _device_guard = crate::metal::test_device_lock();
+        let input_path = Path::new("examples/al1-lda-4x4x4.toml");
+        if !Path::new("pseudopotentials/Al.pz-vbc.UPF").exists() {
+            return;
+        }
+        let (_, metal) = assert_kpoint_metal_matches_cpu(input_path, 1.0e-5);
+        assert!(metal.energy_terms["smearing_entropy"] > 0.0);
+        assert!(metal.energy_terms["smearing_free_energy_correction_ry"] < 0.0);
+        assert!(metal.energy_terms.contains_key("chemical_potential_ry"));
     }
 
     #[test]

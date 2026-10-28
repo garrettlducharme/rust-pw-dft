@@ -1,6 +1,7 @@
 # K-point sampling and occupations
 
-Input schema 2 adds periodic Brillouin-zone sampling to the CPU-FP64 solver.
+Input schema 2 adds periodic Brillouin-zone sampling to the CPU-FP64 and
+resident mixed-precision Metal solvers.
 The legacy schema-1 `k_points = "gamma"` form remains accepted unchanged.
 
 ## Monkhorst-Pack meshes
@@ -72,8 +73,11 @@ not yet implemented.
 
 The CPU-FP64 shifted 2x2x2 silicon PBE fixed-occupation fixture and shifted
 4x4x4 fcc aluminum LDA-PZ Fermi-Dirac fixture are independently accepted
-against QE 7.6. These establish only the exact published workloads; users must
-still perform cutoff, band-count, smearing, and k-mesh convergence studies.
-Multi-k-point Metal execution and multi-k-point checkpoint/resume are rejected
-explicitly; the program never substitutes a Gamma calculation or silently
-falls back to CPU.
+against QE 7.6. The corresponding Metal calculations are accepted against the
+CPU results at the documented mixed-precision thresholds. Metal creates one
+persistent Hamiltonian and resident Davidson context per irreducible point;
+the contexts are currently scheduled sequentially. These establish only the
+exact published workloads; users must still perform cutoff, band-count,
+smearing, and k-mesh convergence studies. Multi-k-point checkpoint/resume is
+rejected explicitly, and the program never substitutes a Gamma calculation or
+silently falls back to CPU.

@@ -74,3 +74,13 @@ jobs:
           components: clippy
       - run: cargo clippy --all-targets --features metal -- -D warnings
       - run: cargo test --locked --features metal --no-run
+      - name: Run silicon 2x2x2 k-point Metal scientific gate in release mode
+        run: >-
+          cargo test --locked --release --features metal
+          scf::tests::resident_metal_pbe_2x2x2_scf_matches_cpu
+          -- --ignored --exact
+      - name: Run aluminum Fermi-Dirac Metal scientific gate in release mode
+        run: >-
+          cargo test --locked --release --features metal
+          scf::tests::resident_metal_aluminum_fermi_dirac_scf_matches_cpu
+          -- --ignored --exact
