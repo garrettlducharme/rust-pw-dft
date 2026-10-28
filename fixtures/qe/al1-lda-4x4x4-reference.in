@@ -1,0 +1,40 @@
+&CONTROL
+  calculation = 'scf'
+  prefix = 'al1-lda-4x4x4-reference'
+  restart_mode = 'from_scratch'
+  pseudo_dir = './pseudopotentials'
+  outdir = './qe-al1-lda-4x4x4-reference-tmp'
+  tprnfor = .false.
+  tstress = .false.
+/
+&SYSTEM
+  ibrav = 0
+  nat = 1
+  ntyp = 1
+  ecutwfc = 12.0
+  ecutrho = 48.0
+  input_dft = 'pz'
+  occupations = 'smearing'
+  smearing = 'fd'
+  degauss = 0.02
+  nspin = 1
+  nosym = .true.
+  noinv = .true.
+/
+&ELECTRONS
+  conv_thr = 1.0d-12
+  electron_maxstep = 100
+  mixing_mode = 'plain'
+  mixing_beta = 0.2
+  diagonalization = 'david'
+/
+ATOMIC_SPECIES
+Al 26.9815385 Al.pz-vbc.UPF
+CELL_PARAMETERS bohr
+0.0000000000 3.7500000000 3.7500000000
+3.7500000000 0.0000000000 3.7500000000
+3.7500000000 3.7500000000 0.0000000000
+ATOMIC_POSITIONS crystal
+Al 0.0000000000 0.0000000000 0.0000000000
+K_POINTS automatic
+4 4 4 1 1 1

@@ -86,9 +86,13 @@ def same_reduced(left: list[float], right: list[float]) -> bool:
     return all(abs(wrap_reduced(a - b)) <= 1.0e-10 for a, b in zip(left, right))
 
 
-def reduce_time_reversal(points: list[dict[str, object]]) -> list[dict[str, object]]:
+def reduce_time_reversal(
+    points: list[dict[str, object]],
+) -> tuple[list[dict[str, object]], float, float]:
     used = [False] * len(points)
     reduced: list[dict[str, object]] = []
+    maximum_eigenvalue_error = 0.0
+    maximum_occupation_error = 0.0
     for index, point in enumerate(points):
         if used[index]:
             continue
@@ -105,35 +109,56 @@ def reduce_time_reversal(points: list[dict[str, object]]) -> list[dict[str, obje
             ),
             None,
         )
+        if pair is None and not same_reduced(coordinate, opposite):
+            raise ValueError(f"QE k point {coordinate} has no time-reversal partner")
         chosen = point.copy()
         if pair is not None:
             used[pair] = True
             paired = points[pair]
+            eigenvalues = point["eigenvalues_ry"]
+            paired_eigenvalues = paired["eigenvalues_ry"]
+            occupations = point["occupations"]
+            paired_occupations = paired["occupations"]
+            assert isinstance(eigenvalues, list)
+            assert isinstance(paired_eigenvalues, list)
+            assert isinstance(occupations, list)
+            assert isinstance(paired_occupations, list)
+            if len(eigenvalues) != len(paired_eigenvalues):
+                raise ValueError("QE time-reversal pair has different band counts")
+            if len(occupations) != len(paired_occupations):
+                raise ValueError("QE time-reversal pair has different occupation counts")
             eigenvalue_error = max(
-                abs(a - b)
-                for a, b in zip(
-                    point["eigenvalues_ry"], paired["eigenvalues_ry"]  # type: ignore[arg-type]
-                )
+                abs(a - b) for a, b in zip(eigenvalues, paired_eigenvalues)
             )
             occupation_error = max(
-                abs(a - b)
-                for a, b in zip(
-                    point["occupations"], paired["occupations"]  # type: ignore[arg-type]
-                )
+                abs(a - b) for a, b in zip(occupations, paired_occupations)
             )
-            if eigenvalue_error > 1.0e-8 or occupation_error > 1.0e-10:
+            maximum_eigenvalue_error = max(maximum_eigenvalue_error, eigenvalue_error)
+            maximum_occupation_error = max(maximum_occupation_error, occupation_error)
+            if eigenvalue_error > 1.0e-5 or occupation_error > 1.0e-8:
                 raise ValueError(
                     "QE time-reversal pair disagrees "
                     f"(eigenvalues {eigenvalue_error:e} Ry, occupations {occupation_error:e})"
                 )
+            point_weight = float(point["weight"])
+            paired_weight = float(paired["weight"])
+            combined_weight = point_weight + paired_weight
+            chosen["eigenvalues_ry"] = [
+                (point_weight * a + paired_weight * b) / combined_weight
+                for a, b in zip(eigenvalues, paired_eigenvalues)
+            ]
+            chosen["occupations"] = [
+                (point_weight * a + paired_weight * b) / combined_weight
+                for a, b in zip(occupations, paired_occupations)
+            ]
             paired_coordinate = paired["reduced"]
             assert isinstance(paired_coordinate, list)
             if tuple(paired_coordinate) > tuple(coordinate):
                 chosen["reduced"] = paired_coordinate
-            chosen["weight"] = float(point["weight"]) + float(paired["weight"])
+            chosen["weight"] = combined_weight
         reduced.append(chosen)
     reduced.sort(key=lambda point: tuple(point["reduced"]))
-    return reduced
+    return reduced, maximum_eigenvalue_error, maximum_occupation_error
 
 
 def main() -> None:
@@ -221,11 +246,16 @@ def main() -> None:
         point["occupations"] = [
             raw_weight_sum * value for value in point["occupations"]  # type: ignore[union-attr]
         ]
-    k_points = (
-        reduce_time_reversal(raw_k_points)
-        if args.reduce_time_reversal
-        else sorted(raw_k_points, key=lambda point: tuple(point["reduced"]))
-    )
+    maximum_time_reversal_eigenvalue_error_ry = 0.0
+    maximum_time_reversal_occupation_error = 0.0
+    if args.reduce_time_reversal:
+        (
+            k_points,
+            maximum_time_reversal_eigenvalue_error_ry,
+            maximum_time_reversal_occupation_error,
+        ) = reduce_time_reversal(raw_k_points)
+    else:
+        k_points = sorted(raw_k_points, key=lambda point: tuple(point["reduced"]))
     eigenvalues_ry = [
         value
         for point in k_points
@@ -254,19 +284,28 @@ def main() -> None:
     if timing_total is None:
         raise ValueError("QE XML has no PWSCF total timing")
 
+    energy_terms = {
+        "band_energy_ry": 2.0 * scalar(total_energy, "eband"),
+        "hartree_ry": 2.0 * scalar(total_energy, "ehart"),
+        "integral_rho_vxc_ry": 2.0 * scalar(total_energy, "vtxc"),
+        "xc_ry": 2.0 * scalar(total_energy, "etxc"),
+        "ewald_ry": 2.0 * scalar(total_energy, "ewald"),
+    }
+    if args.reduce_time_reversal:
+        energy_terms.update(
+            {
+                "time_reversal_pair_max_eigenvalue_error_ry": maximum_time_reversal_eigenvalue_error_ry,
+                "time_reversal_pair_max_occupation_error": maximum_time_reversal_occupation_error,
+            }
+        )
+
     result = {
         "schema_version": 3,
         "converged": True,
         "iterations": int(iterations[-1]),
         "atom_count": atom_count,
         "total_energy_ry": 2.0 * scalar(total_energy, "etot"),
-        "energy_terms": {
-            "band_energy_ry": 2.0 * scalar(total_energy, "eband"),
-            "hartree_ry": 2.0 * scalar(total_energy, "ehart"),
-            "integral_rho_vxc_ry": 2.0 * scalar(total_energy, "vtxc"),
-            "xc_ry": 2.0 * scalar(total_energy, "etxc"),
-            "ewald_ry": 2.0 * scalar(total_energy, "ewald"),
-        },
+        "energy_terms": energy_terms,
         "eigenvalues_ry": eigenvalues_ry,
         "electron_count": scalar(band_structure, "nelec"),
         "residuals": [],

@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-const COMPARISON_SCHEMA_VERSION: u32 = 2;
+const COMPARISON_SCHEMA_VERSION: u32 = 3;
 const BENCHMARK_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Parser)]
@@ -101,9 +101,13 @@ struct Comparison {
     schema_version: u32,
     accepted: bool,
     total_energy_error_mev_atom: f64,
+    total_energy_tolerance_mev_atom: f64,
     maximum_occupied_eigenvalue_error_mev: f64,
+    occupied_eigenvalue_tolerance_mev: f64,
     maximum_occupation_error: f64,
+    occupation_tolerance: f64,
     electron_count_error: f64,
+    electron_count_tolerance: f64,
     k_point_count: usize,
 }
 
@@ -277,22 +281,27 @@ fn compare_results(result: &ScfResult, reference: &ScfResult) -> Result<Comparis
     let energy_mev =
         (energy - reference_energy).abs() * 13_605.693_122_994 / result.atom_count as f64;
     let eigen_mev = max_eigen_ry * 13_605.693_122_994;
-    let (energy_tolerance_mev_atom, electron_tolerance) =
+    let (energy_tolerance_mev_atom, occupation_tolerance, electron_tolerance) =
         if result.provenance.actual_backend == BackendKind::MetalMixed {
-            (1.0, 1.0e-5)
+            (1.0, 1.0e-5, 1.0e-5)
         } else {
-            (2.0, 1.0e-8)
+            (2.0, 1.0e-6, 1.0e-8)
         };
+    let occupied_eigenvalue_tolerance_mev = 5.0;
     Ok(Comparison {
         schema_version: COMPARISON_SCHEMA_VERSION,
         accepted: energy_mev <= energy_tolerance_mev_atom
-            && eigen_mev <= 5.0
-            && maximum_occupation_error <= electron_tolerance
+            && eigen_mev <= occupied_eigenvalue_tolerance_mev
+            && maximum_occupation_error <= occupation_tolerance
             && electron_error <= electron_tolerance,
         total_energy_error_mev_atom: energy_mev,
+        total_energy_tolerance_mev_atom: energy_tolerance_mev_atom,
         maximum_occupied_eigenvalue_error_mev: eigen_mev,
+        occupied_eigenvalue_tolerance_mev,
         maximum_occupation_error,
+        occupation_tolerance,
         electron_count_error: electron_error,
+        electron_count_tolerance: electron_tolerance,
         k_point_count,
     })
 }

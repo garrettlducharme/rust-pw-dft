@@ -1503,6 +1503,71 @@ mod checkpoint_tests {
     }
 
     #[test]
+    #[ignore = "metallic multi-k-point scientific fixture; run explicitly in release mode"]
+    fn aluminum_fermi_dirac_cpu_scf_matches_pinned_qe_reference() {
+        let input_path = Path::new("examples/al1-lda-4x4x4.toml");
+        if !Path::new("pseudopotentials/Al.pz-vbc.UPF").exists() {
+            return;
+        }
+        let result = run(input_path, BackendKind::CpuF64).unwrap();
+        result.validate().unwrap();
+        assert!(result.converged);
+
+        let reference: ScfResult = serde_json::from_str(
+            &std::fs::read_to_string("results/qe-al1-lda-4x4x4-reference.json").unwrap(),
+        )
+        .unwrap();
+        reference.validate().unwrap();
+        assert_eq!(result.k_points.len(), reference.k_points.len());
+
+        let energy_error_mev_atom =
+            (result.total_energy_ry.unwrap() - reference.total_energy_ry.unwrap()).abs()
+                * 13_605.693_122_994
+                / result.atom_count as f64;
+        let mut eigenvalue_error_mev = 0.0_f64;
+        let mut occupation_error = 0.0_f64;
+        for (actual, expected) in result.k_points.iter().zip(&reference.k_points) {
+            assert!(
+                actual
+                    .reduced
+                    .iter()
+                    .zip(expected.reduced)
+                    .all(|(left, right)| (left - right).abs() <= 1.0e-12)
+            );
+            assert!((actual.weight - expected.weight).abs() <= 1.0e-12);
+            for (((left, right), actual_occupation), expected_occupation) in actual
+                .eigenvalues_ry
+                .iter()
+                .zip(&expected.eigenvalues_ry)
+                .zip(&actual.occupations)
+                .zip(&expected.occupations)
+            {
+                if *actual_occupation > 1.0e-8 || *expected_occupation > 1.0e-8 {
+                    eigenvalue_error_mev =
+                        eigenvalue_error_mev.max((left - right).abs() * 13_605.693_122_994);
+                }
+                occupation_error =
+                    occupation_error.max((actual_occupation - expected_occupation).abs());
+            }
+        }
+
+        assert!(energy_error_mev_atom <= 2.0, "{energy_error_mev_atom:e}");
+        assert!(eigenvalue_error_mev <= 5.0, "{eigenvalue_error_mev:e}");
+        assert!(occupation_error <= 1.0e-6, "{occupation_error:e}");
+        assert!((result.electron_count.unwrap() - reference.electron_count.unwrap()).abs() <= 1e-8);
+        assert!(result.energy_terms["smearing_entropy"] > 0.0);
+        assert!(result.energy_terms["smearing_free_energy_correction_ry"] < 0.0);
+        assert!(result.energy_terms.contains_key("chemical_potential_ry"));
+        assert!(
+            result
+                .k_points
+                .iter()
+                .flat_map(|point| &point.occupations)
+                .any(|occupation| *occupation > 1.0e-6 && *occupation < 2.0 - 1.0e-6)
+        );
+    }
+
+    #[test]
     #[ignore = "100 Ry scientific fixture; run explicitly in release mode"]
     fn mgo_cpu_scf_matches_pinned_qe_reference() {
         let input_path = Path::new("examples/mgo2-pbe.toml");
