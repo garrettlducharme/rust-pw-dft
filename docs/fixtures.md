@@ -11,7 +11,7 @@ rust-pw-dft verify-fixtures
 The verifier rejects unknown manifest fields, unsupported schema versions,
 duplicate identifiers, missing provenance, malformed hashes, absolute paths,
 parent-directory traversal, missing files, and checksum mismatches. CI runs it
-after downloading the four intentionally untracked fixtures.
+after downloading the five intentionally untracked fixtures.
 
 ## Silicon pseudopotential
 
@@ -139,3 +139,32 @@ The UPF reciprocal transform follows the standard QE convention: truncate
 large-radius cancellation noise beyond 10 bohr and force an odd Simpson mesh.
 This convention is covered by the independent total-energy and eigenvalue
 comparison rather than hidden as an empirical energy correction.
+
+## Metallic aluminum reference
+
+The first fractional-occupation fixture uses the non-relativistic three-electron
+`Al.pz-vbc.UPF` from QE's original legacy pseudopotential table. The upstream
+table labels this collection as not recommended and kept for reference. The
+project therefore uses it only to validate numerics, records the upstream data
+license as `NOASSERTION`, does not redistribute it, and makes no production
+pseudopotential claim.
+
+[`fixtures/qe/al1-lda-4x4x4-reference.in`](../fixtures/qe/al1-lda-4x4x4-reference.in)
+and [`examples/al1-lda-4x4x4.toml`](../examples/al1-lda-4x4x4.toml) use the
+same one-atom fcc cell, 12 Ry cutoff, shifted 4x4x4 mesh, LDA-PZ functional,
+0.02 Ry Fermi-Dirac smearing, and 0.2 linear mixing. Normalize the clean QE
+7.6 XML with verified time-reversal averaging:
+
+```sh
+python3 tools/normalize_qe_xml.py \
+  qe-al1-lda-4x4x4-reference-tmp/al1-lda-4x4x4-reference.save/data-file-schema.xml \
+  qe-al1-lda-4x4x4-reference.out fixtures/qe/al1-lda-4x4x4-reference.in \
+  pseudopotentials/Al.pz-vbc.UPF \
+  results/qe-al1-lda-4x4x4-reference.json \
+  --qe-revision 9f93ddec427d2b9a45bb72d828c6d324f62fcabd \
+  --element Al --reduce-time-reversal
+```
+
+The normalizer rejects missing time-reversal partners, band-count mismatches,
+pair eigenvalue differences above `1e-5 Ry`, or occupation differences above
+`1e-8`. It records the observed maxima and uses weight-aware pair averages.

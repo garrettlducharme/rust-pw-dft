@@ -92,8 +92,10 @@ validation and independent fixtures.
 3. Fractional occupations and finite-temperature smearing for metals.
    **Global Fermi-Dirac chemical-potential solving, entropy/free-energy terms,
    extra-band allocation, and charge-conservation tests are implemented on CPU.
-   This remains experimental until an independent metallic full-SCF fixture
-   passes; no metallic scientific claim is made.**
+   A shifted 4x4x4 fcc Al LDA-PZ free-energy calculation passes independent QE
+   7.6 total-energy, occupied-eigenvalue, occupation, and charge gates. This
+   accepts only that exact CPU fixture; Metal execution, denser-mesh physical
+   convergence, and a modern production pseudopotential remain pending.**
 4. Collinear spin polarization.
 5. Analytic norm-conserving forces, finite-difference verification, and fixed-
    cell ionic relaxation.

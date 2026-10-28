@@ -1,24 +1,24 @@
 {
-  "schema_version": 13,
-  "source_revision": "ae489fed0ea0b145dcd457d54470644a7c70d993",
+  "schema_version": 14,
+  "source_revision": "ab74d7b81969184fe7de9ba5d53943829f725ed1",
   "tests": {
     "cpu_passed": 46,
-    "cpu_release_scientific_passed": 2,
-    "cpu_debug_ignored_release_scientific": 2,
+    "cpu_release_scientific_passed": 3,
+    "cpu_debug_ignored_release_scientific": 3,
     "metal_feature_passed": 51,
     "metal_release_scientific_passed": 1,
-    "metal_debug_ignored_release_scientific": 3,
+    "metal_debug_ignored_release_scientific": 4,
     "failed": 0,
     "clippy_all_targets_metal_feature": "passed"
   },
   "schemas": {
     "input": 2,
     "result": 3,
-    "comparison": 2,
+    "comparison": 3,
     "benchmark": 1,
     "checkpoint": 2,
     "fixture_manifest": 1,
-    "validation_manifest": 13
+    "validation_manifest": 14
   },
   "input_and_pseudopotential": {
     "legacy_si_upf": "accepted",
@@ -26,6 +26,7 @@
     "strict_norm_conserving_upf_v2_pbe": "accepted for the pinned Si and MgO ONCV workloads",
     "lda_pinned_sha256": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d",
     "pbe_pinned_sha256": "481a5fae1167fd712d4e8e2e4df33f8bfc1e7d2abbc0565290d39fbba9dccb41",
+    "al_lda_pinned_sha256": "4eab06b63f87f07ede2d5a193e6d993a09107167fd6b8647afa807342501d6e5",
     "mg_pbe_pinned_sha256": "7d19fe11bd630b5e4092c8fa884d11d76731386fd36ea0cdd999d723a6330e80",
     "o_pbe_pinned_sha256": "374452e85db23c51d33c3f69a541d6be6a74c6eed080a0545b06ac697c8b7cad",
     "multi_species_exact_map_and_mixed_charge_ewald": "accepted for pinned MgO",
@@ -86,6 +87,26 @@
       "radial_transform": "QE-compatible 10 bohr tail cutoff and odd Simpson mesh",
       "multi_species_hamiltonian_hermiticity": "passed",
       "mixed_charge_ewald_eta_invariance": "passed"
+    },
+    "al1_lda_4x4x4_fermi_dirac_scf": {
+      "accepted": true,
+      "iterations": 74,
+      "full_k_point_count": 64,
+      "irreducible_k_point_count": 32,
+      "band_count_per_k_point": 6,
+      "smearing_ry": 0.02,
+      "total_energy_ry": -4.185517198042083,
+      "qe_total_energy_ry": -4.185517352607298,
+      "energy_error_mev_atom": 0.002102966880729972,
+      "maximum_occupied_eigenvalue_error_mev": 0.0017443825038299208,
+      "maximum_occupation_error": 7.125562074272729e-7,
+      "electron_count_error": 4.440892098500626e-16,
+      "chemical_potential_ry": 0.6135522909665372,
+      "smearing_entropy": 0.4209874148887849,
+      "smearing_free_energy_correction_ry": -0.008419748297775698,
+      "maximum_orbital_residual_ry": 8.61456528187146e-11,
+      "density_residual": 8.436154319961822e-9,
+      "pseudopotential_scope": "legacy QE table fixture for numerical validation only; not a production recommendation"
     }
   },
   "metal": {
@@ -259,6 +280,7 @@
     "si2_metal_history_records": 45,
     "si2_pbe_cpu_history_records": 54,
     "si2_pbe_2x2x2_cpu_history_records": 50,
+    "al1_lda_4x4x4_cpu_history_records": 74,
     "si2_pbe_metal_history_records": 47,
     "si16_cpu_history_records": 47,
     "si16_metal_history_records": 52,
@@ -269,7 +291,7 @@
   },
   "fixture_provenance": {
     "manifest_schema_version": 1,
-    "verified_fixture_count": 18,
+    "verified_fixture_count": 22,
     "ci_enforced": true,
     "path_traversal_rejected": true,
     "tamper_detection": "passed",
@@ -290,7 +312,7 @@
     "phase_3_pbe_silicon": "go for the pinned Si2 ONCV workload; point, grid, CPU/QE, and Metal/CPU gates passed",
     "phase_3_multi_species_mgo": "go for the pinned MgO ONCV workload; multi-species CPU/QE and Metal/CPU gates passed, while its 0.786x matched benchmark rejects a performance claim",
     "phase_3_cpu_k_points": "go for the pinned shifted 2x2x2 Si2 PBE workload; coordinates, weights, occupied eigenvalues, occupations, charge, and total energy pass against QE 7.6",
-    "phase_3_fermi_dirac_occupations": "experimental; invariant and charge-conservation tests pass, but no independent metallic full-SCF fixture is accepted",
-    "production_science_or_scope_expansion": "no-go beyond the explicitly validated silicon and MgO workloads until metallic occupations, forces, spin, and broader chemistry have independent fixtures"
+    "phase_3_fermi_dirac_occupations": "go for the pinned CPU-FP64 fcc Al LDA-PZ 4x4x4 workload; free energy, occupied eigenvalues, occupations, and charge pass against QE 7.6",
+    "production_science_or_scope_expansion": "no-go beyond the explicitly validated silicon, MgO, and aluminum workloads until Metal k-points, forces, spin, and broader chemistry have independent fixtures"
   }
 }

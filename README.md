@@ -4,10 +4,11 @@ An educational, fail-closed plane-wave DFT prototype aimed at Apple Silicon.
 It is dual-licensed under MIT or Apache-2.0 and contains no code copied from
 GPL DFT implementations.
 
-Version 0.6 adds CPU-FP64 Monkhorst-Pack and explicit k-point sampling,
-time-reversal reduction, fixed and Fermi-Dirac occupations, and an independently
-validated 2x2x2 silicon PBE SCF. Version 0.5 added true multi-species
-norm-conserving operators and independently validated CPU and Metal PBE MgO
+Version 0.7 adds an independently validated CPU-FP64 metallic aluminum SCF,
+including global Fermi-Dirac occupations and free-energy terms. Version 0.6
+added Monkhorst-Pack and explicit k-point sampling, time-reversal reduction,
+and an independently validated 2x2x2 silicon PBE SCF. Version 0.5 added true
+multi-species norm-conserving operators and validated CPU and Metal PBE MgO
 SCFs. Earlier releases added native variational PBE, complete SCF convergence
 histories, a CI-enforced scientific-fixture provenance manifest, and atomic
 checksummed CPU/Metal restart checkpoints.
@@ -183,9 +184,8 @@ to `-15.7186708554 Ry`. Against full-precision QE 7.6 XML it differs by
 `1.9e-14` electrons. The release-mode CI test compares coordinates, weights,
 occupied eigenvalues, occupations, charge, and total energy.
 
-This accepts only the CPU-FP64 silicon fixture. Fermi-Dirac machinery is tested
-for invariants but does not yet have an independent metallic SCF fixture, and
-multi-k-point Metal execution and checkpoint/restart both fail closed. Exact-
+This accepts only the CPU-FP64 silicon fixture with fixed occupations.
+Multi-k-point Metal execution and checkpoint/restart both fail closed. Exact-
 source records are
 [`results/si2-pbe-2x2x2-cpu-scf.json`](results/si2-pbe-2x2x2-cpu-scf.json),
 [`results/qe-si2-pbe-2x2x2-reference.json`](results/qe-si2-pbe-2x2x2-reference.json),
@@ -193,6 +193,31 @@ and
 [`results/si2-pbe-2x2x2-cpu-vs-qe.json`](results/si2-pbe-2x2x2-cpu-vs-qe.json).
 The input schema and conventions are documented in
 [`docs/kpoints.md`](docs/kpoints.md).
+
+## Accepted metallic aluminum result
+
+The one-atom fcc aluminum fixture uses a shifted 4x4x4 mesh, 0.02 Ry
+Fermi-Dirac smearing, six bands, and the official legacy QE `Al.pz-vbc.UPF`
+LDA-PZ norm-conserving pseudopotential. The full 64-point mesh reduces to 32
+time-reversal representatives. CPU FP64 converges in 74 iterations to a Mermin
+free energy of `-4.1855171980 Ry`, with chemical potential `0.6135522910 Ry`
+and dimensionless entropy `0.4209874149`.
+
+Against clean QE 7.6 XML, the free-energy error is `0.00210 meV/atom`, the
+maximum occupied eigenvalue error is `0.00174 meV`, the maximum absolute
+occupation error is `7.13e-7`, and the charge error is `4.4e-16` electrons.
+The release-mode CI gate also requires a nonzero entropy, a negative `-TS`
+correction, a reported chemical potential, and at least one fractional
+occupation. Exact-source evidence is
+[`results/al1-lda-4x4x4-cpu-scf.json`](results/al1-lda-4x4x4-cpu-scf.json),
+[`results/qe-al1-lda-4x4x4-reference.json`](results/qe-al1-lda-4x4x4-reference.json),
+and
+[`results/al1-lda-4x4x4-cpu-vs-qe.json`](results/al1-lda-4x4x4-cpu-vs-qe.json).
+
+The pseudopotential comes from QE's original legacy table, which QE itself
+keeps for reference rather than recommends for new research. This result
+validates the solver's metallic numerical path for the exact fixture; it is not
+a recommendation of that pseudopotential or a converged materials prediction.
 
 ## Commands
 
@@ -210,6 +235,8 @@ cargo run --release -- run examples/si2-pbe.toml --backend cpu --output result-p
 cargo run --release -- compare result-pbe.json results/qe-pbe-reference.json
 cargo run --release -- run examples/si2-pbe-2x2x2.toml --backend cpu --output result-kmesh.json
 cargo run --release -- compare result-kmesh.json results/qe-si2-pbe-2x2x2-reference.json
+cargo run --release -- run examples/al1-lda-4x4x4.toml --backend cpu --output result-al.json
+cargo run --release -- compare result-al.json results/qe-al1-lda-4x4x4-reference.json
 cargo run --release -- run examples/mgo2-pbe.toml --backend cpu --output result-mgo.json
 cargo run --release -- compare result-mgo.json results/qe-mgo2-pbe-reference.json
 cargo run --release --features metal -- run examples/mgo2-pbe.toml --backend metal --output result-mgo-metal.json
@@ -230,13 +257,13 @@ Fixture provenance and reproduction commands are documented in
 [`docs/fixtures.md`](docs/fixtures.md); [`fixtures/manifest.toml`](fixtures/manifest.toml)
 is the machine-readable authority.
 
-The LDA and PBE Si2, PBE MgO, and PBE Si2 2x2x2 CPU scientific milestones and
-the Gamma-point resident Metal accuracy milestones are accepted. The LDA Si16
-transfer and matched-performance milestones are also accepted. The stateful driver is
+The LDA and PBE Si2, PBE MgO, PBE Si2 2x2x2, and metallic Al CPU scientific
+milestones and the Gamma-point resident Metal accuracy milestones are accepted.
+The LDA Si16 transfer and matched-performance milestones are also accepted. The stateful driver is
 integrated into production SCF, and its normal-iteration
 zero-full-vector-transfer contract is checked at runtime and in portable and
-Apple-GPU tests. The next physics frontier is an independently validated
-metallic occupation fixture followed by resident multi-k-point Metal execution,
+Apple-GPU tests. The next physics frontier is resident multi-k-point Metal
+execution, followed by denser-mesh convergence studies and analytic forces,
 with the same CPU-reference-first acceptance policy. The
 resident buffer contract, dataflow, transfer
 accounting, and fail-closed gates are specified in
