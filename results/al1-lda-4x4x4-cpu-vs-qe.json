@@ -1,0 +1,13 @@
+{
+  "schema_version": 3,
+  "accepted": true,
+  "total_energy_error_mev_atom": 0.002102966880729972,
+  "total_energy_tolerance_mev_atom": 2.0,
+  "maximum_occupied_eigenvalue_error_mev": 0.0017443825038299208,
+  "occupied_eigenvalue_tolerance_mev": 5.0,
+  "maximum_occupation_error": 7.125562074272729e-7,
+  "occupation_tolerance": 1e-6,
+  "electron_count_error": 4.440892098500626e-16,
+  "electron_count_tolerance": 1e-8,
+  "k_point_count": 32
+}

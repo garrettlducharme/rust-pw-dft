@@ -70,8 +70,10 @@ not yet implemented.
 
 ## Current acceptance boundary
 
-The CPU-FP64 shifted 2x2x2 silicon PBE fixture is independently accepted
-against QE 7.6. Fermi-Dirac invariants pass, but no metallic full-SCF fixture is
-accepted yet. Multi-k-point Metal execution and multi-k-point checkpoint/resume
-are rejected explicitly; the program never substitutes a Gamma calculation or
-silently falls back to CPU.
+The CPU-FP64 shifted 2x2x2 silicon PBE fixed-occupation fixture and shifted
+4x4x4 fcc aluminum LDA-PZ Fermi-Dirac fixture are independently accepted
+against QE 7.6. These establish only the exact published workloads; users must
+still perform cutoff, band-count, smearing, and k-mesh convergence studies.
+Multi-k-point Metal execution and multi-k-point checkpoint/resume are rejected
+explicitly; the program never substitutes a Gamma calculation or silently
+falls back to CPU.

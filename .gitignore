@@ -1,4 +1,5 @@
 /target/
 *.profraw
 .DS_Store
+__pycache__/
 pseudopotentials/*.UPF

@@ -1,0 +1,36 @@
+schema_version = 2
+cutoff_ry = 12.0
+xc = "lda-pz"
+spin_components = 1
+pseudopotentials = { Al = "../pseudopotentials/Al.pz-vbc.UPF" }
+
+[k_points]
+kind = "monkhorst-pack"
+grid = [4, 4, 4]
+shift = [0.5, 0.5, 0.5]
+reduce_time_reversal = true
+
+[occupations]
+kind = "fermi-dirac"
+smearing_ry = 0.02
+extra_bands = 4
+
+[cell]
+lattice_bohr = [
+  [0.0, 3.75, 3.75],
+  [3.75, 0.0, 3.75],
+  [3.75, 3.75, 0.0],
+]
+fixed = true
+
+[[atoms]]
+element = "Al"
+fractional = [0.0, 0.0, 0.0]
+
+[scf_options]
+max_iterations = 100
+energy_tolerance_ry = 1.0e-8
+density_tolerance = 1.0e-8
+orbital_residual_tolerance = 1.0e-8
+mixing_beta = 0.2
+seed = 27182818

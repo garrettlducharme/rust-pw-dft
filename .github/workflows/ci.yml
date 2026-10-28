@@ -25,6 +25,11 @@ jobs:
           echo 'd75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d  pseudopotentials/Si.pz-vbc.UPF' \
             | sha256sum --check
           curl --fail --location \
+            https://pseudopotentials.quantumespresso.org/upf_files/Al.pz-vbc.UPF \
+            --output pseudopotentials/Al.pz-vbc.UPF
+          echo '4eab06b63f87f07ede2d5a193e6d993a09107167fd6b8647afa807342501d6e5  pseudopotentials/Al.pz-vbc.UPF' \
+            | sha256sum --check
+          curl --fail --location \
             https://raw.githubusercontent.com/wannier-developers/wannier90/1d6b187374a2d50b509e5e79e2cab01a79ff7ce1/pseudo/Si_ONCV_PBE-1.0.upf \
             --output pseudopotentials/Si_ONCV_PBE-1.0.upf
           echo '481a5fae1167fd712d4e8e2e4df33f8bfc1e7d2abbc0565290d39fbba9dccb41  pseudopotentials/Si_ONCV_PBE-1.0.upf' \
@@ -41,11 +46,18 @@ jobs:
             | sha256sum --check
       - name: Verify fixture provenance manifest
         run: cargo run --locked -- verify-fixtures
+      - name: Check QE normalization tool syntax
+        run: python3 -m py_compile tools/normalize_qe_xml.py
       - run: cargo test --locked
       - name: Run silicon 2x2x2 k-point CPU scientific gate in release mode
         run: >-
           cargo test --locked --release
           scf::checkpoint_tests::pbe_2x2x2_cpu_scf_matches_pinned_qe_reference
+          -- --ignored --exact
+      - name: Run aluminum Fermi-Dirac CPU scientific gate in release mode
+        run: >-
+          cargo test --locked --release
+          scf::checkpoint_tests::aluminum_fermi_dirac_cpu_scf_matches_pinned_qe_reference
           -- --ignored --exact
       - name: Run 100 Ry MgO CPU scientific gate in release mode
         run: >-

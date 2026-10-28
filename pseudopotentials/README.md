@@ -1,6 +1,6 @@
 # Pseudopotential fixture
 
-The validation examples use four pinned norm-conserving pseudopotentials. The files
+The validation examples use five pinned norm-conserving pseudopotentials. The files
 are intentionally not redistributed by this project. Download them from the
 repository root:
 
@@ -9,6 +9,12 @@ curl --fail --location \
   https://gitlab.com/QEF/q-e/-/raw/qe-7.6/EPW/examples/sic/pp/Si.pz-vbc.UPF \
   --output pseudopotentials/Si.pz-vbc.UPF
 echo 'd75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d  pseudopotentials/Si.pz-vbc.UPF' \
+  | shasum -a 256 --check
+
+curl --fail --location \
+  https://pseudopotentials.quantumespresso.org/upf_files/Al.pz-vbc.UPF \
+  --output pseudopotentials/Al.pz-vbc.UPF
+echo '4eab06b63f87f07ede2d5a193e6d993a09107167fd6b8647afa807342501d6e5  pseudopotentials/Al.pz-vbc.UPF' \
   | shasum -a 256 --check
 
 curl --fail --location \
@@ -33,6 +39,11 @@ echo '374452e85db23c51d33c3f69a541d6be6a74c6eed080a0545b06ac697c8b7cad  pseudopo
 `Si.pz-vbc.UPF` supplies the LDA-PZ cases. `Si_ONCV_PBE-1.0.upf` is the
 CC-BY-SA-4.0 Schlipf-Gygi/ONCV PBE fixture at the exact Wannier90 revision
 pinned by Quantum ESPRESSO 7.6.
+
+`Al.pz-vbc.UPF` is a legacy QE LDA-PZ fixture used only to validate the
+fractional-occupation path. QE's upstream table keeps this collection for
+reference and does not recommend it for new production work. Its data license
+is recorded as `NOASSERTION`, and the file is not redistributed.
 
 The MgO workload uses the ten-electron Mg and six-electron O ONCV PBE files
 from the `d3q` revision pinned by QE 7.6. Their embedded metadata does not
