@@ -207,6 +207,19 @@ The five-run matched benchmark records CPU min/median/max times of
 `0.494/0.811/0.837 s` and Metal times of `3.527/3.818/4.035 s`, a `0.212x`
 speedup that explicitly fails the `1.20x` gate. The report is
 [`results/si2-pbe-2x2x2-matched-benchmark.json`](results/si2-pbe-2x2x2-matched-benchmark.json).
+
+The compute-bound sixteen-atom, 24 Ry version of the same shifted mesh shows
+the opposite regime. Five warmed matched runs measured CPU min/median/max
+times of `73.525/73.600/73.632 s` and Metal times of
+`39.573/39.659/39.686 s`, a `1.856x` median speedup. Both backends converged in
+42 SCF iterations under the same policy; Metal/CPU errors were
+`0.00227 meV/atom`, `0.00502 meV` for the worst occupied eigenvalue, zero for
+occupations, and `1.01e-12` electrons. This accepts a performance claim only
+for [`examples/si16-lda-2x2x2.toml`](examples/si16-lda-2x2x2.toml) on the
+Apple M5 Pro. It also makes the crossover explicit: GPU residency helps once
+the per-k-point Hamiltonian is large enough, but does not erase launch and
+context overhead for tiny cells. The authoritative report is
+[`results/si16-lda-2x2x2-matched-benchmark.json`](results/si16-lda-2x2x2-matched-benchmark.json).
 The input schema and conventions are documented in
 [`docs/kpoints.md`](docs/kpoints.md).
 
@@ -270,6 +283,7 @@ cargo run --release -- compare result-mgo.json results/qe-mgo2-pbe-reference.jso
 cargo run --release --features metal -- run examples/mgo2-pbe.toml --backend metal --output result-mgo-metal.json
 cargo run --release --features metal -- run examples/si2.toml --backend metal --output result-metal.json
 cargo run --release --features metal -- bench-compare examples/si16.toml --repetitions 5 --output benchmark-comparison.json
+cargo run --release --features metal -- bench-compare examples/si16-lda-2x2x2.toml --repetitions 5 --output kpoint-benchmark-comparison.json
 cargo run --release -- verify-fixtures
 cargo run --release --features metal -- run examples/si16.toml --backend metal --output paused.json --checkpoint si16.chk --stop-after 10
 cargo run --release -- inspect-checkpoint si16.chk

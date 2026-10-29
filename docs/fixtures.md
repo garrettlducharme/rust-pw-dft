@@ -30,6 +30,14 @@ The UPF declares CC-BY-SA-4.0 and identifies the Schlipf-Gygi
 norm-conserving library and ONCVPSP generator. The project records that license
 and source but still avoids redistributing the file.
 
+The LDA silicon performance fixtures use the same pinned legacy file. The
+Gamma-point `si16.toml` input measures the original resident-Hamiltonian
+crossover. `si16-lda-2x2x2.toml` expands that cell to a shifted mesh and a
+24 Ry cutoff so each of its four irreducible-point contexts is compute-bound.
+Its five-run report is a performance fixture, not an independent physical
+reference: scientific parity is measured against the CPU-FP64 backend, while
+the smaller Si2 k-point workload remains the independently QE-validated case.
+
 ## Independent QE result
 
 The accepted Si2 reference was produced by Quantum ESPRESSO 7.6 source commit

@@ -81,3 +81,14 @@ exact published workloads; users must still perform cutoff, band-count,
 smearing, and k-mesh convergence studies. Multi-k-point checkpoint/resume is
 rejected explicitly, and the program never substitutes a Gamma calculation or
 silently falls back to CPU.
+
+## Performance boundary
+
+K-point sampling is not an automatic GPU win. On the two-atom 12 Ry silicon
+fixture, five matched runs measure only `0.212x` CPU/Metal speedup because four
+small persistent contexts are dominated by fixed overhead. The sixteen-atom,
+24 Ry shifted 2x2x2 fixture is compute-bound: five matched runs on the Apple M5
+Pro measure `1.856x` median end-to-end speedup while passing the same scientific
+comparison gates. Both reports are committed. Claims therefore attach to the
+exact workload, convergence policy, source revision, and device rather than to
+"Metal" or "k points" in general.
