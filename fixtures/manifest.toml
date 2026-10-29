@@ -34,6 +34,17 @@ redistribution = "project-tracked"
 description = "Sixteen-atom Gamma-point silicon matched-performance input."
 
 [[fixtures]]
+id = "rust-pw-dft-si16-lda-2x2x2-input"
+kind = "input"
+path = "examples/si16-lda-2x2x2.toml"
+sha256 = "ce2ae81ae401669b4435e410feb0f6d152ba6ee2f3b1ead49cadcb749cf0f82d"
+source = "repository expansion of the accepted sixteen-atom silicon performance input"
+source_revision = "input-schema-2"
+license = "MIT OR Apache-2.0"
+redistribution = "project-tracked"
+description = "Sixteen-atom shifted 2x2x2 silicon multi-k-point matched-performance input."
+
+[[fixtures]]
 id = "qe-7.6-si2-portable-input"
 kind = "input"
 path = "fixtures/qe/si2-reference.in"
