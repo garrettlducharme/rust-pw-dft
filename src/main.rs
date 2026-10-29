@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-const COMPARISON_SCHEMA_VERSION: u32 = 3;
+const COMPARISON_SCHEMA_VERSION: u32 = 4;
 const BENCHMARK_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Parser)]
@@ -108,6 +108,9 @@ struct Comparison {
     occupation_tolerance: f64,
     electron_count_error: f64,
     electron_count_tolerance: f64,
+    force_comparison_performed: bool,
+    maximum_force_error_ry_bohr: Option<f64>,
+    force_tolerance_ry_bohr: Option<f64>,
     k_point_count: usize,
 }
 
@@ -278,6 +281,23 @@ fn compare_results(result: &ScfResult, reference: &ScfResult) -> Result<Comparis
             .electron_count
             .context("reference has no electron count")?)
     .abs();
+    let maximum_force_error_ry_bohr = match (&result.forces_ry_bohr, &reference.forces_ry_bohr) {
+        (Some(actual), Some(expected)) => {
+            ensure!(
+                actual.len() == expected.len() && actual.len() == result.atom_count,
+                "force counts differ"
+            );
+            Some(
+                actual
+                    .iter()
+                    .flatten()
+                    .zip(expected.iter().flatten())
+                    .map(|(&left, &right)| (left - right).abs())
+                    .fold(0.0_f64, f64::max),
+            )
+        }
+        _ => None,
+    };
     // 1 Ry = 13.605693122994 eV.
     let energy_mev =
         (energy - reference_energy).abs() * 13_605.693_122_994 / result.atom_count as f64;
@@ -289,12 +309,22 @@ fn compare_results(result: &ScfResult, reference: &ScfResult) -> Result<Comparis
             (2.0, 1.0e-6, 1.0e-8)
         };
     let occupied_eigenvalue_tolerance_mev = 5.0;
+    let force_tolerance_ry_bohr = maximum_force_error_ry_bohr.map(|_| {
+        if result.provenance.actual_backend == BackendKind::MetalMixed {
+            5.0e-4
+        } else {
+            1.0e-4
+        }
+    });
     Ok(Comparison {
         schema_version: COMPARISON_SCHEMA_VERSION,
         accepted: energy_mev <= energy_tolerance_mev_atom
             && eigen_mev <= occupied_eigenvalue_tolerance_mev
             && maximum_occupation_error <= occupation_tolerance
-            && electron_error <= electron_tolerance,
+            && electron_error <= electron_tolerance
+            && maximum_force_error_ry_bohr
+                .zip(force_tolerance_ry_bohr)
+                .is_none_or(|(error, tolerance)| error <= tolerance),
         total_energy_error_mev_atom: energy_mev,
         total_energy_tolerance_mev_atom: energy_tolerance_mev_atom,
         maximum_occupied_eigenvalue_error_mev: eigen_mev,
@@ -303,6 +333,9 @@ fn compare_results(result: &ScfResult, reference: &ScfResult) -> Result<Comparis
         occupation_tolerance,
         electron_count_error: electron_error,
         electron_count_tolerance: electron_tolerance,
+        force_comparison_performed: maximum_force_error_ry_bohr.is_some(),
+        maximum_force_error_ry_bohr,
+        force_tolerance_ry_bohr,
         k_point_count,
     })
 }
@@ -521,4 +554,34 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn comparison_enforces_schema_four_forces_without_breaking_legacy_references() {
+        let reference =
+            read_result(Path::new("results/qe-si2-displaced-force-reference.json")).unwrap();
+        let identical = compare_results(&reference, &reference).unwrap();
+        assert!(identical.accepted);
+        assert!(identical.force_comparison_performed);
+        assert_eq!(identical.maximum_force_error_ry_bohr, Some(0.0));
+
+        let mut perturbed = reference.clone();
+        perturbed.forces_ry_bohr.as_mut().unwrap()[0][0] += 2.0e-4;
+        let rejected = compare_results(&perturbed, &reference).unwrap();
+        assert!(!rejected.accepted);
+        assert!(rejected.force_comparison_performed);
+
+        let mut legacy = reference.clone();
+        legacy.schema_version = 3;
+        legacy.forces_ry_bohr = None;
+        legacy.validate().unwrap();
+        let compatible = compare_results(&reference, &legacy).unwrap();
+        assert!(compatible.accepted);
+        assert!(!compatible.force_comparison_performed);
+        assert_eq!(compatible.maximum_force_error_ry_bohr, None);
+    }
 }

@@ -8,7 +8,7 @@ use crate::kpoints::{KPoint, OccupationScheme, assign_occupations};
 use crate::lattice::Lattice;
 use crate::operator::{
     CpuHamiltonian, accumulate_density_from_orbitals, atomic_starting_density,
-    density_from_orbitals, ewald_energy_ry, hartree_xc_potential,
+    density_from_orbitals, ewald_energy_ry, ewald_forces_ry_bohr, hartree_xc_potential,
 };
 use crate::provenance::{git_revision, sha256};
 use crate::pseudo::NormConservingPseudo;
@@ -143,6 +143,23 @@ fn relative_density_residual(input: &[f64], output: &[f64]) -> f64 {
         .sum::<f64>();
     let reference = output.iter().map(|value| value * value).sum::<f64>();
     (difference / reference.max(f64::MIN_POSITIVE)).sqrt()
+}
+
+fn accumulate_forces(target: &mut [[f64; 3]], source: &[[f64; 3]], scale: f64) -> Result<()> {
+    ensure!(
+        target.len() == source.len() && scale.is_finite(),
+        "force accumulation dimensions or scale are invalid"
+    );
+    for (target_force, source_force) in target.iter_mut().zip(source) {
+        for axis in 0..3 {
+            target_force[axis] += scale * source_force[axis];
+        }
+    }
+    ensure!(
+        target.iter().flatten().all(|value| value.is_finite()),
+        "force accumulation produced a non-finite value"
+    );
+    Ok(())
 }
 
 fn metal_metrics(context: &crate::metal::HamiltonianContext) -> BTreeMap<String, f64> {
@@ -524,6 +541,7 @@ fn run_with_profile(
     let mut final_density_residual = f64::INFINITY;
     let mut final_energy_change = f64::INFINITY;
     let mut previous_orbitals: Option<Vec<Vec<num_complex::Complex64>>> = None;
+    let mut final_output_density = None;
     let mut davidson_iterations = 0_usize;
     let mut hamiltonian_applications = 0_usize;
     let mut eigensolver_stop_reason = None;
@@ -806,6 +824,7 @@ fn run_with_profile(
             hamiltonian_applications: eigenpairs.hamiltonian_applications,
         });
         if iteration_converged {
+            final_output_density = Some(output_density);
             converged = true;
             break;
         }
@@ -858,6 +877,31 @@ fn run_with_profile(
             break;
         }
     }
+    let forces_ry_bohr = if converged {
+        let force_started = Instant::now();
+        let mut forces = hamiltonian.local_ionic_forces_ry_bohr(
+            final_output_density
+                .as_deref()
+                .context("converged Gamma-point SCF has no final density")?,
+        )?;
+        let nonlocal = hamiltonian.nonlocal_ionic_forces_ry_bohr(
+            previous_orbitals
+                .as_deref()
+                .context("converged Gamma-point SCF has no final orbitals")?,
+            &occupations,
+        )?;
+        accumulate_forces(&mut forces, &nonlocal, 1.0)?;
+        let ewald = ewald_forces_ry_bohr(&lattice, &input.atoms, &ionic_charges, 0.7)?;
+        accumulate_forces(&mut forces, &ewald, 1.0)?;
+        add_timing(
+            &mut timings,
+            "forces_seconds",
+            force_started.elapsed().as_secs_f64(),
+        );
+        Some(forces)
+    } else {
+        None
+    };
     timings.insert(
         "total_seconds".into(),
         prior_elapsed_seconds + total_started.elapsed().as_secs_f64(),
@@ -917,6 +961,7 @@ fn run_with_profile(
         eigenvalues_ry: final_eigenvalues.clone(),
         electron_count: Some(final_charge),
         residuals: final_residuals.clone(),
+        forces_ry_bohr,
         k_points: vec![KPointResult {
             reduced: [0.0; 3],
             weight: 1.0,
@@ -1087,6 +1132,7 @@ fn run_kpoint_scf(
     let mut final_energy_change = f64::INFINITY;
     let mut final_chemical_potential = None;
     let mut final_entropy = 0.0;
+    let mut final_output_density = None;
     let mut davidson_iterations = 0_usize;
     let mut hamiltonian_applications = 0_usize;
     let mut completed_iterations = 0_usize;
@@ -1454,6 +1500,7 @@ fn run_kpoint_scf(
             hamiltonian_applications: iteration_hamiltonian,
         });
         if iteration_converged {
+            final_output_density = Some(output_density);
             converged = true;
             break;
         }
@@ -1511,6 +1558,38 @@ fn run_kpoint_scf(
         }
     }
 
+    let forces_ry_bohr = if converged {
+        let force_started = Instant::now();
+        let mut forces = states
+            .first()
+            .context("converged k-point SCF has no states")?
+            .hamiltonian
+            .local_ionic_forces_ry_bohr(
+                final_output_density
+                    .as_deref()
+                    .context("converged k-point SCF has no final density")?,
+            )?;
+        for state in &states {
+            let nonlocal = state.hamiltonian.nonlocal_ionic_forces_ry_bohr(
+                state
+                    .previous_orbitals
+                    .as_deref()
+                    .context("converged k-point SCF has no final orbitals")?,
+                &state.occupations,
+            )?;
+            accumulate_forces(&mut forces, &nonlocal, state.point.weight)?;
+        }
+        let ewald = ewald_forces_ry_bohr(lattice, &input.atoms, &ionic_charges, 0.7)?;
+        accumulate_forces(&mut forces, &ewald, 1.0)?;
+        add_timing(
+            &mut timings,
+            "forces_seconds",
+            force_started.elapsed().as_secs_f64(),
+        );
+        Some(forces)
+    } else {
+        None
+    };
     timings.insert(
         "total_seconds".into(),
         prior_elapsed_seconds + total_started.elapsed().as_secs_f64(),
@@ -1607,6 +1686,7 @@ fn run_kpoint_scf(
         eigenvalues_ry: final_eigenvalues,
         electron_count: Some(final_charge),
         residuals: final_residuals,
+        forces_ry_bohr,
         k_points: k_point_results,
         history,
         history_complete: true,
@@ -1638,6 +1718,109 @@ mod checkpoint_tests {
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
         ))
+    }
+
+    fn write_temporary_input(label: &str, input: &SimulationInput) -> PathBuf {
+        let path = temporary_path(label);
+        std::fs::write(&path, toml::to_string_pretty(input).unwrap()).unwrap();
+        path
+    }
+
+    fn maximum_force_difference(left: &ScfResult, right: &ScfResult) -> f64 {
+        left.forces_ry_bohr
+            .as_ref()
+            .unwrap()
+            .iter()
+            .flatten()
+            .zip(right.forces_ry_bohr.as_ref().unwrap().iter().flatten())
+            .map(|(&actual, &expected)| (actual - expected).abs())
+            .fold(0.0_f64, f64::max)
+    }
+
+    #[test]
+    #[ignore = "five converged CPU SCFs; run explicitly in release mode"]
+    fn analytic_scf_force_matches_total_energy_finite_difference() {
+        let input_path = Path::new("examples/si2.toml");
+        if !Path::new("pseudopotentials/Si.pz-vbc.UPF").exists() {
+            return;
+        }
+        let mut input = SimulationInput::from_path(input_path).unwrap();
+        for pseudo in input.pseudopotentials.values_mut() {
+            *pseudo = std::fs::canonicalize(&*pseudo).unwrap();
+        }
+        input.scf_options.energy_tolerance_ry = 1.0e-10;
+        input.scf_options.density_tolerance = 1.0e-10;
+        input.scf_options.orbital_residual_tolerance = 1.0e-10;
+        let lattice = Lattice::new(input.cell.lattice_bohr).unwrap();
+        let cartesian_axis = 0;
+        let base_displacement_bohr = 0.05;
+        for fractional_axis in 0..3 {
+            input.atoms[1].fractional[fractional_axis] += base_displacement_bohr
+                * lattice.reciprocal[fractional_axis][cartesian_axis]
+                / std::f64::consts::TAU;
+        }
+        let step_bohr = 2.0e-3;
+        let displaced = |atom: usize, sign: f64| {
+            let mut displaced = input.clone();
+            for fractional_axis in 0..3 {
+                let delta_fractional =
+                    sign * step_bohr * lattice.reciprocal[fractional_axis][cartesian_axis]
+                        / std::f64::consts::TAU;
+                displaced.atoms[atom].fractional[fractional_axis] += delta_fractional;
+            }
+            displaced
+        };
+        let plus_zero = displaced(0, 1.0);
+        let minus_zero = displaced(0, -1.0);
+        let plus_one = displaced(1, 1.0);
+        let minus_one = displaced(1, -1.0);
+        let base_path = write_temporary_input("force-base", &input);
+        let plus_zero_path = write_temporary_input("force-plus-zero", &plus_zero);
+        let minus_zero_path = write_temporary_input("force-minus-zero", &minus_zero);
+        let plus_one_path = write_temporary_input("force-plus-one", &plus_one);
+        let minus_one_path = write_temporary_input("force-minus-one", &minus_one);
+        let base = run(&base_path, BackendKind::CpuF64).unwrap();
+        let energy = |path: &Path| {
+            run(path, BackendKind::CpuF64)
+                .unwrap()
+                .total_energy_ry
+                .unwrap()
+        };
+        let finite_differences = [
+            -(energy(&plus_zero_path) - energy(&minus_zero_path)) / (2.0 * step_bohr),
+            -(energy(&plus_one_path) - energy(&minus_one_path)) / (2.0 * step_bohr),
+        ];
+        for path in [
+            &base_path,
+            &plus_zero_path,
+            &minus_zero_path,
+            &plus_one_path,
+            &minus_one_path,
+        ] {
+            std::fs::remove_file(path).unwrap();
+        }
+
+        base.validate().unwrap();
+        let forces = base.forces_ry_bohr.as_ref().unwrap();
+        for atom in 0..2 {
+            let analytic = forces[atom][cartesian_axis];
+            let finite_difference = finite_differences[atom];
+            let error = (analytic - finite_difference).abs();
+            eprintln!(
+                "atom {atom}: analytic {analytic:.12e} Ry/bohr; finite difference {finite_difference:.12e} Ry/bohr; error {error:.3e}"
+            );
+            assert!(
+                analytic.abs() > 1.0e-4,
+                "force fixture is not discriminating"
+            );
+            assert!(error < 2.0e-4, "self-consistent force error {error:e}");
+        }
+        let analytic_net: f64 = forces.iter().map(|force| force[cartesian_axis]).sum();
+        let finite_difference_net: f64 = finite_differences.iter().sum();
+        assert!(
+            (analytic_net - finite_difference_net).abs() < 2.0e-8,
+            "net analytic force {analytic_net:e} differs from the summed energy derivatives {finite_difference_net:e}"
+        );
     }
 
     #[test]
@@ -1695,6 +1878,7 @@ mod checkpoint_tests {
                 .zip(&uninterrupted.eigenvalues_ry)
                 .all(|(left, right)| (left - right).abs() < 1.0e-13)
         );
+        assert!(maximum_force_difference(&resumed, &uninterrupted) < 1.0e-13);
         let restart = resumed.provenance.restart.as_ref().unwrap();
         assert_eq!(restart.checkpoint_iteration, 5);
         assert_eq!(restart.checkpoint_sha256, loaded.file_sha256);
@@ -1770,6 +1954,7 @@ mod checkpoint_tests {
             (resumed.total_energy_ry.unwrap() - uninterrupted.total_energy_ry.unwrap()).abs()
                 < 1.0e-13
         );
+        assert!(maximum_force_difference(&resumed, &uninterrupted) < 1.0e-13);
         assert_eq!(resumed.k_points.len(), uninterrupted.k_points.len());
         for (actual, expected) in resumed.k_points.iter().zip(&uninterrupted.k_points) {
             assert_eq!(actual.reduced, expected.reduced);
@@ -1805,6 +1990,38 @@ mod checkpoint_tests {
         );
         std::fs::remove_file(checkpoint_path).unwrap();
         std::fs::remove_file(bad_checkpoint_path).unwrap();
+    }
+
+    #[test]
+    fn displaced_lda_cpu_scf_matches_pinned_qe_forces() {
+        let input_path = Path::new("examples/si2-displaced.toml");
+        if !Path::new("pseudopotentials/Si.pz-vbc.UPF").exists() {
+            return;
+        }
+        let result = run(input_path, BackendKind::CpuF64).unwrap();
+        result.validate().unwrap();
+        assert!(result.converged);
+
+        let reference: ScfResult = serde_json::from_str(
+            &std::fs::read_to_string("results/qe-si2-displaced-force-reference.json").unwrap(),
+        )
+        .unwrap();
+        reference.validate().unwrap();
+        let energy_error_mev_atom =
+            (result.total_energy_ry.unwrap() - reference.total_energy_ry.unwrap()).abs()
+                * 13_605.693_122_994
+                / result.atom_count as f64;
+        let eigenvalue_error_mev = result
+            .eigenvalues_ry
+            .iter()
+            .zip(&reference.eigenvalues_ry)
+            .map(|(left, right)| (left - right).abs() * 13_605.693_122_994)
+            .fold(0.0_f64, f64::max);
+        let force_error_ry_bohr = maximum_force_difference(&result, &reference);
+        assert!(energy_error_mev_atom <= 2.0, "{energy_error_mev_atom:e}");
+        assert!(eigenvalue_error_mev <= 5.0, "{eigenvalue_error_mev:e}");
+        assert!(force_error_ry_bohr <= 1.0e-4, "{force_error_ry_bohr:e}");
+        assert!((result.electron_count.unwrap() - reference.electron_count.unwrap()).abs() <= 1e-8);
     }
 
     #[test]
@@ -1998,6 +2215,17 @@ mod checkpoint_tests {
 mod tests {
     use super::*;
 
+    fn maximum_force_difference(left: &ScfResult, right: &ScfResult) -> f64 {
+        left.forces_ry_bohr
+            .as_ref()
+            .unwrap()
+            .iter()
+            .flatten()
+            .zip(right.forces_ry_bohr.as_ref().unwrap().iter().flatten())
+            .map(|(&actual, &expected)| (actual - expected).abs())
+            .fold(0.0_f64, f64::max)
+    }
+
     fn assert_kpoint_metal_matches_cpu(
         input_path: &Path,
         maximum_occupation_error: f64,
@@ -2040,6 +2268,8 @@ mod tests {
             "{occupation_error:e}"
         );
         assert!((metal.electron_count.unwrap() - cpu.electron_count.unwrap()).abs() <= 1.0e-5);
+        let force_error = maximum_force_difference(&metal, &cpu);
+        assert!(force_error <= 5.0e-4, "{force_error:e}");
         assert_eq!(
             metal.energy_terms["metal_k_point_context_count"],
             metal.k_points.len() as f64
@@ -2104,6 +2334,8 @@ mod tests {
         assert!(energy_error_mev_atom <= 1.0, "{energy_error_mev_atom:e}");
         assert!(eigenvalue_error_mev <= 5.0, "{eigenvalue_error_mev:e}");
         assert!((metal.electron_count.unwrap() - cpu.electron_count.unwrap()).abs() <= 1.0e-5);
+        let force_error = maximum_force_difference(&metal, &cpu);
+        assert!(force_error <= 5.0e-4, "{force_error:e}");
 
         let terms = &metal.energy_terms;
         assert_eq!(terms["metal_resident_projection_resyncs"], 0.0);
@@ -2187,6 +2419,7 @@ mod tests {
                 .zip(&metal.eigenvalues_ry)
                 .all(|(left, right)| (left - right).abs() < 1.0e-9)
         );
+        assert!(maximum_force_difference(&resumed, &metal) < 1.0e-8);
         assert_eq!(
             resumed.energy_terms["metal_full_vector_upload_bytes"],
             metal.energy_terms["metal_full_vector_upload_bytes"]
@@ -2205,6 +2438,32 @@ mod tests {
             5
         );
         std::fs::remove_file(checkpoint_path).unwrap();
+    }
+
+    #[test]
+    fn resident_metal_displaced_lda_forces_match_cpu() {
+        let _device_guard = crate::metal::test_device_lock();
+        let input_path = Path::new("examples/si2-displaced.toml");
+        if !Path::new("pseudopotentials/Si.pz-vbc.UPF").exists() {
+            return;
+        }
+        let cpu = run(input_path, BackendKind::CpuF64).unwrap();
+        let metal = run(input_path, BackendKind::MetalMixed).unwrap();
+        cpu.validate().unwrap();
+        metal.validate().unwrap();
+        assert!(cpu.converged && metal.converged);
+        let force_error = maximum_force_difference(&metal, &cpu);
+        assert!(
+            cpu.forces_ry_bohr.as_ref().unwrap()[0][0].abs() > 1.0e-2,
+            "force fixture is not discriminating"
+        );
+        assert!(force_error <= 5.0e-4, "{force_error:e}");
+        let energy_error_mev_atom = (metal.total_energy_ry.unwrap() - cpu.total_energy_ry.unwrap())
+            .abs()
+            * 13_605.693_122_994
+            / metal.atom_count as f64;
+        assert!(energy_error_mev_atom <= 1.0, "{energy_error_mev_atom:e}");
+        assert!((metal.electron_count.unwrap() - cpu.electron_count.unwrap()).abs() <= 1.0e-5);
     }
 
     #[test]
@@ -2233,6 +2492,8 @@ mod tests {
         assert!(energy_error_mev_atom <= 1.0, "{energy_error_mev_atom:e}");
         assert!(eigenvalue_error_mev <= 5.0, "{eigenvalue_error_mev:e}");
         assert!((metal.electron_count.unwrap() - cpu.electron_count.unwrap()).abs() <= 1e-5);
+        let force_error = maximum_force_difference(&metal, &cpu);
+        assert!(force_error <= 5.0e-4, "{force_error:e}");
         assert_eq!(metal.energy_terms["metal_resident_projection_resyncs"], 0.0);
         assert_eq!(
             metal.energy_terms["metal_resident_transfer_invariant_checks"],

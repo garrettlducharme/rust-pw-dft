@@ -1,9 +1,9 @@
 use crate::backend::{BackendKind, PrecisionPolicy};
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub const RESULT_SCHEMA_VERSION: u32 = 3;
+pub const RESULT_SCHEMA_VERSION: u32 = 4;
 const MINIMUM_RESULT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -87,6 +87,10 @@ pub struct ScfResult {
     pub eigenvalues_ry: Vec<f64>,
     pub electron_count: Option<f64>,
     pub residuals: Vec<f64>,
+    /// Cartesian Hellmann-Feynman forces in Rydberg per bohr, ordered exactly
+    /// like the input atoms. Schema-2/3 records predate analytic forces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forces_ry_bohr: Option<Vec<[f64; 3]>>,
     /// Per-k-point band data. Schema-2 Gamma-only records predate this field
     /// and deserialize to an empty vector.
     #[serde(default)]
@@ -116,7 +120,7 @@ impl ScfResult {
         } else {
             ensure!(
                 !self.k_points.is_empty(),
-                "schema-3 results require per-k-point data"
+                "schema-3 and newer results require per-k-point data"
             );
             let weight_sum: f64 = self.k_points.iter().map(|point| point.weight).sum();
             ensure!(
@@ -145,6 +149,27 @@ impl ScfResult {
             }
         }
         ensure!(self.atom_count > 0, "result atom_count must be positive");
+        if self.schema_version < 4 {
+            ensure!(
+                self.forces_ry_bohr.is_none(),
+                "result schemas before 4 cannot contain forces"
+            );
+        } else if self.converged {
+            let forces = self
+                .forces_ry_bohr
+                .as_ref()
+                .context("converged schema-4 result requires forces")?;
+            ensure!(
+                forces.len() == self.atom_count
+                    && forces.iter().flatten().all(|value| value.is_finite()),
+                "result forces are invalid"
+            );
+        } else {
+            ensure!(
+                self.forces_ry_bohr.is_none(),
+                "unconverged result cannot contain scientific forces"
+            );
+        }
         ensure!(
             self.timings
                 .values()
@@ -250,6 +275,7 @@ mod tests {
             eigenvalues_ry: vec![0.25],
             electron_count: Some(2.0),
             residuals: vec![0.1],
+            forces_ry_bohr: None,
             k_points: vec![KPointResult {
                 reduced: [0.0; 3],
                 weight: 1.0,
@@ -299,5 +325,35 @@ mod tests {
                 .to_string()
                 .contains("Davidson history total differs")
         );
+    }
+
+    #[test]
+    fn schema_four_requires_forces_only_for_converged_results() {
+        let mut result = failed_result();
+        result.forces_ry_bohr = Some(vec![[0.0; 3]]);
+        assert!(
+            result
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("unconverged result")
+        );
+
+        result.forces_ry_bohr = None;
+        result.converged = true;
+        result.stop_reason = None;
+        let final_record = result.history.last_mut().unwrap();
+        final_record.status = ScfIterationStatus::Converged;
+        final_record.total_energy_ry = result.total_energy_ry;
+        final_record.electron_count = result.electron_count;
+        assert!(
+            result
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("requires forces")
+        );
+        result.forces_ry_bohr = Some(vec![[0.1, -0.2, 0.3]]);
+        result.validate().unwrap();
     }
 }
