@@ -271,6 +271,7 @@ struct DenseReferenceData {
 #[derive(Clone)]
 pub struct CpuHamiltonian {
     k_reduced: [f64; 3],
+    wavefunction_cutoff_ry: f64,
     kinetic_ry: Vec<f64>,
     local_ry: OnceLock<Vec<Complex64>>,
     dense_reference: DenseReferenceData,
@@ -444,6 +445,7 @@ impl CpuHamiltonian {
             .collect();
         Ok(Self {
             k_reduced,
+            wavefunction_cutoff_ry,
             kinetic_ry,
             local_ry: OnceLock::new(),
             dense_reference: DenseReferenceData {
@@ -482,6 +484,174 @@ impl CpuHamiltonian {
 
     pub fn ionic_local_real_ry(&self) -> &[f64] {
         &self.ionic_local_real_ry
+    }
+
+    /// Hellmann-Feynman force from the local ionic pseudopotential at fixed
+    /// density, in Rydberg per bohr.
+    pub fn local_ionic_forces_ry_bohr(&self, density: &[f64]) -> Result<Vec<Vec3>> {
+        ensure!(
+            density.len() == self.fft.len() && density.iter().all(|value| value.is_finite()),
+            "force density is invalid"
+        );
+        let grid_points = self.fft.len() as f64;
+        let mut density_g: Vec<_> = density
+            .iter()
+            .map(|&value| Complex64::new(value, 0.0))
+            .collect();
+        self.fft.forward(&mut density_g)?;
+        for coefficient in &mut density_g {
+            *coefficient /= grid_points;
+        }
+
+        let reference = &self.dense_reference;
+        let shape = self.fft.shape();
+        let mut forces = vec![[0.0; 3]; reference.atoms.len()];
+        for x in 0..shape[0] {
+            for y in 0..shape[1] {
+                for z in 0..shape[2] {
+                    let flat = (x * shape[1] + y) * shape[2] + z;
+                    let index = [
+                        signed_frequency(x, shape[0]),
+                        signed_frequency(y, shape[1]),
+                        signed_frequency(z, shape[2]),
+                    ];
+                    let g = reference.lattice.cartesian_g(index);
+                    let q2 = norm_squared(g);
+                    if q2 <= 1.0e-20
+                        || q2 > 4.0 * self.wavefunction_cutoff_ry * (1.0 + 32.0 * f64::EPSILON)
+                    {
+                        continue;
+                    }
+                    let q = q2.sqrt();
+                    for (atom_index, atom) in reference.atoms.iter().enumerate() {
+                        let radial = local_form_factor_ry(
+                            &reference.pseudos[&atom.element],
+                            q,
+                            reference.lattice.volume,
+                        )?;
+                        let phase = -TAU
+                            * index
+                                .iter()
+                                .zip(atom.fractional)
+                                .map(|(&n, f)| n as f64 * f)
+                                .sum::<f64>();
+                        let potential_g = radial * Complex64::from_polar(1.0, phase);
+                        let product = density_g[flat] * potential_g.conj();
+                        for axis in 0..3 {
+                            forces[atom_index][axis] +=
+                                reference.lattice.volume * g[axis] * product.im;
+                        }
+                    }
+                }
+            }
+        }
+        ensure!(
+            forces
+                .iter()
+                .flatten()
+                .all(|component| component.is_finite()),
+            "local ionic force contains a non-finite value"
+        );
+        Ok(forces)
+    }
+
+    /// Hellmann-Feynman force from separable nonlocal projectors for one
+    /// k-point, before applying its Brillouin-zone weight.
+    pub fn nonlocal_ionic_forces_ry_bohr(
+        &self,
+        orbitals: &[Vec<Complex64>],
+        occupations: &[f64],
+    ) -> Result<Vec<Vec3>> {
+        ensure!(
+            orbitals.len() == occupations.len() && !orbitals.is_empty(),
+            "nonlocal force orbital and occupation counts differ"
+        );
+        ensure!(
+            orbitals.iter().all(|orbital| {
+                orbital.len() == self.dimension()
+                    && orbital
+                        .iter()
+                        .all(|value| value.re.is_finite() && value.im.is_finite())
+            }) && occupations
+                .iter()
+                .all(|value| value.is_finite() && (0.0..=2.0).contains(value)),
+            "nonlocal force inputs are invalid"
+        );
+        let reference = &self.dense_reference;
+        let k_cartesian = reference.lattice.cartesian_k(self.k_reduced);
+        let momenta: Vec<_> = reference
+            .g_vectors
+            .iter()
+            .map(|g_vector| {
+                let mut value = reference.lattice.cartesian_g(g_vector.index);
+                for axis in 0..3 {
+                    value[axis] += k_cartesian[axis];
+                }
+                value
+            })
+            .collect();
+        let mut forces = vec![[0.0; 3]; reference.atoms.len()];
+        for (orbital, &occupation) in orbitals.iter().zip(occupations) {
+            if occupation == 0.0 {
+                continue;
+            }
+            for (atom_index, atom) in self.atom_projectors.iter().enumerate() {
+                let overlaps: Vec<Complex64> = atom
+                    .columns
+                    .iter()
+                    .map(|beta| {
+                        beta.iter()
+                            .zip(orbital)
+                            .map(|(coefficient, psi)| coefficient.conj() * psi)
+                            .sum()
+                    })
+                    .collect();
+                let weighted: Vec<Complex64> = (0..atom.columns.len())
+                    .map(|left| {
+                        overlaps
+                            .iter()
+                            .enumerate()
+                            .filter(|(right, _)| atom.component[left] == atom.component[*right])
+                            .map(|(right, &overlap)| {
+                                atom.dij_ry[atom.radial_projector[left]]
+                                    [atom.radial_projector[right]]
+                                    * overlap
+                            })
+                            .sum()
+                    })
+                    .collect();
+                for axis in 0..3 {
+                    let derivative_overlaps: Vec<Complex64> = atom
+                        .columns
+                        .iter()
+                        .map(|beta| {
+                            beta.iter()
+                                .zip(orbital)
+                                .zip(&momenta)
+                                .map(|((coefficient, psi), momentum)| {
+                                    Complex64::new(0.0, momentum[axis]) * coefficient.conj() * psi
+                                })
+                                .sum()
+                        })
+                        .collect();
+                    let derivative_energy = 2.0
+                        * derivative_overlaps
+                            .iter()
+                            .zip(&weighted)
+                            .map(|(derivative, value)| (derivative.conj() * value).re)
+                            .sum::<f64>();
+                    forces[atom_index][axis] -= occupation * derivative_energy;
+                }
+            }
+        }
+        ensure!(
+            forces
+                .iter()
+                .flatten()
+                .all(|component| component.is_finite()),
+            "nonlocal ionic force contains a non-finite value"
+        );
+        Ok(forces)
     }
 
     fn add_nonlocal(&self, wavefunction: &[Complex64], result: &mut [Complex64]) {
@@ -1204,6 +1374,126 @@ pub fn ewald_energy_ry(
             .sum::<f64>();
     let background = PI * total_charge * total_charge / (2.0 * eta * eta * lattice.volume);
     Ok(2.0 * (real_sum + reciprocal_sum - self_energy - background))
+}
+
+/// Analytic ion-ion Ewald forces in Rydberg per bohr.
+///
+/// The returned Cartesian vectors are the negative derivatives of
+/// [`ewald_energy_ry`] with respect to each ionic position. The same real and
+/// reciprocal cutoffs are used so finite-difference checks compare an exactly
+/// matched summation convention.
+pub fn ewald_forces_ry_bohr(
+    lattice: &Lattice,
+    atoms: &[AtomInput],
+    ionic_charges: &[f64],
+    eta: f64,
+) -> Result<Vec<Vec3>> {
+    ensure!(eta.is_finite() && eta > 0.0, "Ewald eta must be positive");
+    ensure!(!atoms.is_empty(), "Ewald sum requires atoms");
+    ensure!(
+        ionic_charges.len() == atoms.len()
+            && ionic_charges
+                .iter()
+                .all(|charge| charge.is_finite() && *charge > 0.0),
+        "Ewald ionic charges are invalid"
+    );
+    let positions: Vec<_> = atoms
+        .iter()
+        .map(|atom| fractional_to_cartesian(lattice, atom.fractional))
+        .collect();
+    let mut forces = vec![[0.0; 3]; atoms.len()];
+
+    let shortest_direct = lattice
+        .direct
+        .iter()
+        .map(|&vector| norm_squared(vector).sqrt())
+        .fold(f64::INFINITY, f64::min);
+    let real_cutoff = 8.0 / eta;
+    let direct_bound = (real_cutoff / shortest_direct).ceil() as i32 + 2;
+    for (i, (&ri, &charge_i)) in positions.iter().zip(ionic_charges).enumerate() {
+        for (j, (&rj, &charge_j)) in positions.iter().zip(ionic_charges).enumerate() {
+            for a in -direct_bound..=direct_bound {
+                for b in -direct_bound..=direct_bound {
+                    for c in -direct_bound..=direct_bound {
+                        if i == j && a == 0 && b == 0 && c == 0 {
+                            continue;
+                        }
+                        let translation = add(
+                            add(
+                                scale(lattice.direct[0], a as f64),
+                                scale(lattice.direct[1], b as f64),
+                            ),
+                            scale(lattice.direct[2], c as f64),
+                        );
+                        let displacement = add(subtract(ri, rj), translation);
+                        let distance_squared = norm_squared(displacement);
+                        let distance = distance_squared.sqrt();
+                        if distance <= real_cutoff {
+                            let coefficient = 2.0
+                                * charge_i
+                                * charge_j
+                                * (libm::erfc(eta * distance) / (distance_squared * distance)
+                                    + 2.0 * eta / PI.sqrt()
+                                        * (-eta * eta * distance_squared).exp()
+                                        / distance_squared);
+                            for axis in 0..3 {
+                                forces[i][axis] += coefficient * displacement[axis];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let reciprocal_cutoff = 2.0 * eta * (-1.0e-14_f64.ln()).sqrt();
+    let shortest_reciprocal = lattice
+        .reciprocal
+        .iter()
+        .map(|&vector| norm_squared(vector).sqrt())
+        .fold(f64::INFINITY, f64::min);
+    let reciprocal_bound = (reciprocal_cutoff / shortest_reciprocal).ceil() as i32 + 2;
+    for a in -reciprocal_bound..=reciprocal_bound {
+        for b in -reciprocal_bound..=reciprocal_bound {
+            for c in -reciprocal_bound..=reciprocal_bound {
+                if a == 0 && b == 0 && c == 0 {
+                    continue;
+                }
+                let g = lattice.cartesian_g([a, b, c]);
+                let g2 = norm_squared(g);
+                if g2.sqrt() > reciprocal_cutoff {
+                    continue;
+                }
+                let structure: Complex64 = positions
+                    .iter()
+                    .zip(ionic_charges)
+                    .map(|(&position, &charge)| {
+                        let phase = -(g[0] * position[0] + g[1] * position[1] + g[2] * position[2]);
+                        charge * Complex64::from_polar(1.0, phase)
+                    })
+                    .sum();
+                let reciprocal_prefactor =
+                    -8.0 * PI / lattice.volume * (-g2 / (4.0 * eta * eta)).exp() / g2;
+                for (i, (&position, &charge)) in positions.iter().zip(ionic_charges).enumerate() {
+                    let phase = -(g[0] * position[0] + g[1] * position[1] + g[2] * position[2]);
+                    let phase_factor = Complex64::from_polar(1.0, phase);
+                    let coefficient =
+                        reciprocal_prefactor * charge * (structure.conj() * phase_factor).im;
+                    for axis in 0..3 {
+                        forces[i][axis] += coefficient * g[axis];
+                    }
+                }
+            }
+        }
+    }
+    ensure!(
+        forces
+            .iter()
+            .flatten()
+            .all(|component| component.is_finite()),
+        "Ewald force contains a non-finite value"
+    );
+    Ok(forces)
 }
 
 pub fn hartree_xc_potential(
@@ -2148,6 +2438,194 @@ mod tests {
         let ewald_a = ewald_energy_ry(&lattice, &atoms, &charges, 0.6).unwrap();
         let ewald_b = ewald_energy_ry(&lattice, &atoms, &charges, 0.8).unwrap();
         assert!((ewald_a - ewald_b).abs() < 1.0e-10, "Ewald eta dependence");
+    }
+
+    #[test]
+    fn analytic_ewald_forces_match_energy_finite_differences() {
+        let length = 8.0;
+        let lattice =
+            Lattice::new([[length, 0.0, 0.0], [0.0, length, 0.0], [0.0, 0.0, length]]).unwrap();
+        let atoms = vec![
+            AtomInput {
+                element: "A".into(),
+                fractional: [0.13, 0.22, 0.31],
+            },
+            AtomInput {
+                element: "B".into(),
+                fractional: [0.61, 0.47, 0.79],
+            },
+        ];
+        let charges = [2.0, 3.0];
+        let eta = 0.65;
+        let analytic = ewald_forces_ry_bohr(&lattice, &atoms, &charges, eta).unwrap();
+        let step_bohr = 1.0e-5;
+        let mut maximum_error = 0.0_f64;
+        for (atom, analytic_force) in analytic.iter().enumerate() {
+            for (axis, &analytic_component) in analytic_force.iter().enumerate() {
+                let mut plus = atoms.clone();
+                let mut minus = atoms.clone();
+                plus[atom].fractional[axis] += step_bohr / length;
+                minus[atom].fractional[axis] -= step_bohr / length;
+                let energy_plus = ewald_energy_ry(&lattice, &plus, &charges, eta).unwrap();
+                let energy_minus = ewald_energy_ry(&lattice, &minus, &charges, eta).unwrap();
+                let finite_difference = -(energy_plus - energy_minus) / (2.0 * step_bohr);
+                maximum_error = maximum_error.max((analytic_component - finite_difference).abs());
+            }
+        }
+        assert!(
+            maximum_error < 2.0e-8,
+            "Ewald force error {maximum_error:e}"
+        );
+
+        for axis in 0..3 {
+            let total: f64 = analytic.iter().map(|force| force[axis]).sum();
+            assert!(total.abs() < 1.0e-12, "net Ewald force {total:e}");
+        }
+        let alternate = ewald_forces_ry_bohr(&lattice, &atoms, &charges, 0.8).unwrap();
+        let eta_error = analytic
+            .iter()
+            .flatten()
+            .zip(alternate.iter().flatten())
+            .map(|(left, right)| (left - right).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(eta_error < 1.0e-10, "Ewald force eta error {eta_error:e}");
+    }
+
+    #[test]
+    fn local_ionic_forces_match_fixed_density_energy_derivative_when_available() {
+        let input_path = Path::new("examples/si2.toml");
+        if !input_path.exists() || !Path::new("pseudopotentials/Si.pz-vbc.UPF").exists() {
+            return;
+        }
+        let input = SimulationInput::from_path(input_path).unwrap();
+        let pseudo = NormConservingPseudo::from_upf(&input.pseudopotentials["Si"]).unwrap();
+        let pseudos = BTreeMap::from([("Si".to_owned(), pseudo)]);
+        let lattice = Lattice::new(input.cell.lattice_bohr).unwrap();
+        let g_vectors = lattice.enumerate_g_vectors(input.cutoff_ry);
+        let reference = CpuHamiltonian::new(
+            &lattice,
+            &g_vectors,
+            &input.atoms,
+            &pseudos,
+            input.cutoff_ry,
+        )
+        .unwrap();
+        let density: Vec<_> = (0..reference.fft().len())
+            .map(|index| {
+                0.12 + 0.013 * (index as f64 * 0.37).sin() + 0.009 * (index as f64 * 0.19).cos()
+            })
+            .collect();
+        let analytic = reference.local_ionic_forces_ry_bohr(&density).unwrap();
+        let cell_weight = lattice.volume / reference.fft().len() as f64;
+        let local_energy = |atoms: &[AtomInput]| {
+            let hamiltonian =
+                CpuHamiltonian::new(&lattice, &g_vectors, atoms, &pseudos, input.cutoff_ry)
+                    .unwrap();
+            density
+                .iter()
+                .zip(hamiltonian.ionic_local_real_ry())
+                .map(|(&rho, &potential)| rho * potential * cell_weight)
+                .sum::<f64>()
+        };
+
+        let step_bohr = 1.0e-5;
+        let mut maximum_error = 0.0_f64;
+        for (atom, analytic_force) in analytic.iter().enumerate() {
+            for (cartesian_axis, &analytic_component) in analytic_force.iter().enumerate() {
+                let mut plus = input.atoms.clone();
+                let mut minus = input.atoms.clone();
+                for fractional_axis in 0..3 {
+                    let delta_fractional =
+                        step_bohr * lattice.reciprocal[fractional_axis][cartesian_axis] / TAU;
+                    plus[atom].fractional[fractional_axis] += delta_fractional;
+                    minus[atom].fractional[fractional_axis] -= delta_fractional;
+                }
+                let finite_difference =
+                    -(local_energy(&plus) - local_energy(&minus)) / (2.0 * step_bohr);
+                maximum_error = maximum_error.max((analytic_component - finite_difference).abs());
+            }
+        }
+        assert!(
+            maximum_error < 2.0e-7,
+            "local force error {maximum_error:e}"
+        );
+    }
+
+    #[test]
+    fn nonlocal_ionic_forces_match_fixed_orbital_energy_derivative_when_available() {
+        let input_path = Path::new("examples/si2.toml");
+        if !input_path.exists() || !Path::new("pseudopotentials/Si.pz-vbc.UPF").exists() {
+            return;
+        }
+        let input = SimulationInput::from_path(input_path).unwrap();
+        let pseudo = NormConservingPseudo::from_upf(&input.pseudopotentials["Si"]).unwrap();
+        let pseudos = BTreeMap::from([("Si".to_owned(), pseudo)]);
+        let lattice = Lattice::new(input.cell.lattice_bohr).unwrap();
+        let g_vectors = lattice.enumerate_g_vectors(input.cutoff_ry);
+        let reference = CpuHamiltonian::new(
+            &lattice,
+            &g_vectors,
+            &input.atoms,
+            &pseudos,
+            input.cutoff_ry,
+        )
+        .unwrap();
+        let mut orbital: Vec<_> = (0..reference.dimension())
+            .map(|index| {
+                Complex64::new(
+                    (index as f64 * 0.137 + 0.23).sin(),
+                    (index as f64 * 0.091 - 0.41).cos(),
+                )
+            })
+            .collect();
+        let norm = orbital
+            .iter()
+            .map(|value| value.norm_sqr())
+            .sum::<f64>()
+            .sqrt();
+        for coefficient in &mut orbital {
+            *coefficient /= norm;
+        }
+        let occupation = 1.7;
+        let analytic = reference
+            .nonlocal_ionic_forces_ry_bohr(&[orbital.clone()], &[occupation])
+            .unwrap();
+        let nonlocal_energy = |atoms: &[AtomInput]| {
+            let hamiltonian =
+                CpuHamiltonian::new(&lattice, &g_vectors, atoms, &pseudos, input.cutoff_ry)
+                    .unwrap();
+            let mut applied = vec![Complex64::default(); hamiltonian.dimension()];
+            hamiltonian.add_nonlocal(&orbital, &mut applied);
+            occupation
+                * orbital
+                    .iter()
+                    .zip(applied)
+                    .map(|(left, right)| left.conj() * right)
+                    .sum::<Complex64>()
+                    .re
+        };
+
+        let step_bohr = 1.0e-5;
+        let mut maximum_error = 0.0_f64;
+        for (atom, analytic_force) in analytic.iter().enumerate() {
+            for (cartesian_axis, &analytic_component) in analytic_force.iter().enumerate() {
+                let mut plus = input.atoms.clone();
+                let mut minus = input.atoms.clone();
+                for fractional_axis in 0..3 {
+                    let delta_fractional =
+                        step_bohr * lattice.reciprocal[fractional_axis][cartesian_axis] / TAU;
+                    plus[atom].fractional[fractional_axis] += delta_fractional;
+                    minus[atom].fractional[fractional_axis] -= delta_fractional;
+                }
+                let finite_difference =
+                    -(nonlocal_energy(&plus) - nonlocal_energy(&minus)) / (2.0 * step_bohr);
+                maximum_error = maximum_error.max((analytic_component - finite_difference).abs());
+            }
+        }
+        assert!(
+            maximum_error < 2.0e-8,
+            "nonlocal force error {maximum_error:e}"
+        );
     }
 
     #[test]
