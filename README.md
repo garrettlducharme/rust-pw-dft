@@ -4,7 +4,9 @@ An educational, fail-closed plane-wave DFT prototype aimed at Apple Silicon.
 It is dual-licensed under MIT or Apache-2.0 and contains no code copied from
 GPL DFT implementations.
 
-Version 0.10 adds schema-4 analytic norm-conserving forces to converged CPU and
+Version 0.11 adds fail-closed fixed-cell ionic relaxation with conjugate-gradient
+directions, Armijo backtracking, complete per-geometry provenance, and matched
+CPU/Metal displaced-silicon acceptance gates. Version 0.10 added schema-4 analytic norm-conserving forces to converged CPU and
 Metal results, independently validates a displaced silicon force against QE
 7.6 and total-energy finite differences, and makes force parity part of the
 comparison contract. Version 0.9 added schema-3 CPU/Metal checkpoint and
@@ -52,6 +54,11 @@ machine-readable evidence rather than feature presence alone.
   forces in Ry/bohr; converged Gamma and weighted multi-k-point CPU/Metal SCFs
   aggregate them into a fail-closed schema-4 result, while unconverged results
   are forbidden from carrying scientific forces;
+- fixed-cell ionic relaxation with Cartesian displacement limits, reciprocal-
+  lattice coordinate updates, rigid-translation projection of search
+  directions, raw-force convergence checks, conjugate-gradient updates,
+  backtracking line searches, and a versioned history of every accepted
+  geometry and SCF evaluation;
 - QE-compatible numerical UPF radial transforms that discard cancellation-noisy
   tails beyond 10 bohr and use an odd Simpson mesh;
 - explicit provenance and precision policy in JSON results;
@@ -155,6 +162,22 @@ The exact native outputs and accepted comparisons are
 [`results/si2-displaced-metal-scf.json`](results/si2-displaced-metal-scf.json),
 and
 [`results/si2-displaced-metal-vs-cpu.json`](results/si2-displaced-metal-vs-cpu.json).
+
+## Accepted fixed-cell relaxation
+
+Starting from the same `0.05 bohr` displaced silicon fixture, both CPU and
+resident Metal relaxations recover the ideal relative fractional coordinate
+`[0.25, 0.25, 0.25]` after one accepted ionic step and three SCF evaluations.
+CPU finishes at `6.11e-6 Ry/bohr` raw maximum force and Metal at
+`6.17e-6 Ry/bohr`; corresponding final fractional-coordinate components differ
+by less than `1.3e-8`. The optimizer reports raw forces and uses raw-force
+convergence even though rigid translation is removed from the search direction.
+
+This accepts only the exact fixed-cell Si2 fixture. Constraints, relaxation
+restart, stress, variable-cell optimization, molecular dynamics, ultrasoft,
+and PAW remain unsupported. The algorithm, output schema, convergence rules,
+and source-linked artifacts are documented in
+[`docs/relaxation.md`](docs/relaxation.md).
 
 ## Metal result and boundary
 
@@ -313,6 +336,7 @@ cargo run -- run examples/si2.toml --backend cpu --output result.json
 cargo run --release -- compare results/cpu-scf.json results/qe-reference.json
 cargo run --release -- run examples/si2-displaced.toml --backend cpu --output result-force.json
 cargo run --release -- compare result-force.json results/qe-si2-displaced-force-reference.json
+cargo run --release -- relax examples/si2-displaced.toml --backend cpu --output relaxation.json --max-steps 12 --force-tolerance-ry-bohr 1e-4 --initial-step-bohr 0.05 --maximum-step-bohr 0.15
 cargo run --release -- run examples/si2-pbe.toml --backend cpu --output result-pbe.json
 cargo run --release -- compare result-pbe.json results/qe-pbe-reference.json
 cargo run --release -- run examples/si2-pbe-2x2x2.toml --backend cpu --output result-kmesh.json
@@ -349,9 +373,9 @@ milestones are accepted. The LDA Si16 transfer and matched-performance
 milestones are also accepted. The stateful driver is integrated into
 production SCF, and its normal-iteration
 zero-full-vector-transfer contract is checked at runtime and in portable and
-Apple-GPU tests. The next physics frontier is fail-closed fixed-cell ionic
-relaxation built on the accepted force boundary, broader force transfer tests,
-and collinear spin, with the same CPU-reference-first acceptance policy. The
+Apple-GPU tests. The next physics frontier is relaxation restart and broader
+force/relaxation transfer tests, followed by collinear spin and stress only
+after the fixed-cell boundary matures, with the same CPU-reference-first acceptance policy. The
 resident buffer contract, dataflow, transfer
 accounting, and fail-closed gates are specified in
 [`docs/resident-davidson.md`](docs/resident-davidson.md).
