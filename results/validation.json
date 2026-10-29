@@ -1,13 +1,13 @@
 {
-  "schema_version": 16,
-  "source_revision": "611d503b16765ad5b7a5c5a2683f85f0e3c15de1",
+  "schema_version": 17,
+  "source_revision": "e361cf28f2597532bf212584d65859ae1f7061ea",
   "tests": {
     "cpu_passed": 46,
-    "cpu_release_scientific_passed": 3,
-    "cpu_debug_ignored_release_scientific": 3,
+    "cpu_release_scientific_passed": 4,
+    "cpu_debug_ignored_release_scientific": 4,
     "metal_feature_passed": 51,
-    "metal_release_scientific_passed": 3,
-    "metal_debug_ignored_release_scientific": 6,
+    "metal_release_scientific_passed": 4,
+    "metal_debug_ignored_release_scientific": 8,
     "failed": 0,
     "clippy_all_targets_metal_feature": "passed"
   },
@@ -16,9 +16,9 @@
     "result": 3,
     "comparison": 3,
     "benchmark": 1,
-    "checkpoint": 2,
+    "checkpoint": 3,
     "fixture_manifest": 1,
-    "validation_manifest": 16
+    "validation_manifest": 17
   },
   "input_and_pseudopotential": {
     "legacy_si_upf": "accepted",
@@ -360,7 +360,7 @@
     }
   },
   "checkpoint_restart": {
-    "binary_schema_version": 2,
+    "binary_schema_version": 3,
     "atomic_same_filesystem_replace": true,
     "payload_sha256_verified": true,
     "tamper_detection": "passed",
@@ -375,11 +375,29 @@
       "maximum_energy_difference_ry": 1e-10,
       "maximum_eigenvalue_difference_ry": 1e-9,
       "cumulative_full_vector_transfer_counts_equal": true
+    },
+    "cpu_si2_pbe_2x2x2": {
+      "irreducible_k_point_count": 4,
+      "same_final_scf_iteration": true,
+      "complete_history_equal": true,
+      "maximum_energy_difference_ry": 1e-13,
+      "maximum_per_k_eigenvalue_difference_ry": 1e-13,
+      "tampered_k_point_coordinate_rejected": true
+    },
+    "metal_si2_pbe_2x2x2": {
+      "irreducible_k_point_count": 4,
+      "same_final_scf_iteration": true,
+      "complete_history_equal_within_precision_policy": true,
+      "maximum_energy_difference_ry": 1e-9,
+      "maximum_per_k_eigenvalue_difference_ry": 1e-8,
+      "cumulative_full_vector_transfer_counts_equal": true,
+      "cumulative_projection_resynchronizations_equal": true
     }
   },
   "structured_diagnostics": {
     "result_schema_version": 3,
     "history_survives_checkpoint_resume": true,
+    "multi_k_point_history_survives_checkpoint_resume": true,
     "validated_fields": [
       "status",
       "total_energy_ry",
@@ -425,7 +443,7 @@
     "gpu_direct_residual_norms": "go for the pinned silicon and MgO workloads",
     "gpu_resident_basis_and_updates": "go for the pinned silicon and MgO workloads",
     "phase_1_resident_eigensolver": "go; scientific and matched performance gates passed",
-    "phase_2_checkpoint_restart": "go for the current CPU and Metal SCF state boundary",
+    "phase_2_checkpoint_restart": "go for Gamma and multi-k-point CPU/Metal SCF state boundaries; schema 3 validates every ordered k-point identity, basis, orbital block, history, timing, and cumulative backend counter",
     "phase_2_structured_diagnostics": "go for native SCF iteration histories",
     "phase_2_fixture_manifest": "go; hashes and provenance are enforced in CI",
     "phase_3_pbe_silicon": "go for the pinned Si2 ONCV workload; point, grid, CPU/QE, and Metal/CPU gates passed",
