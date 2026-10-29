@@ -49,6 +49,11 @@ jobs:
       - name: Check QE normalization tool syntax
         run: python3 -m py_compile tools/normalize_qe_xml.py
       - run: cargo test --locked
+      - name: Run displaced-silicon total-energy force-derivative gate in release mode
+        run: >-
+          cargo test --locked --release
+          scf::checkpoint_tests::analytic_scf_force_matches_total_energy_finite_difference
+          -- --ignored --exact
       - name: Run silicon 2x2x2 k-point CPU scientific gate in release mode
         run: >-
           cargo test --locked --release
@@ -79,6 +84,11 @@ jobs:
           components: clippy
       - run: cargo clippy --all-targets --features metal -- -D warnings
       - run: cargo test --locked --features metal --no-run
+      - name: Run nonzero displaced-silicon Metal force parity gate
+        run: >-
+          cargo test --locked --features metal
+          scf::tests::resident_metal_displaced_lda_forces_match_cpu
+          -- --exact
       - name: Run silicon 2x2x2 k-point Metal scientific gate in release mode
         run: >-
           cargo test --locked --release --features metal

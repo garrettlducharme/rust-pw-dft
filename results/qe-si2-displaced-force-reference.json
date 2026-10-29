@@ -1,0 +1,78 @@
+{
+  "schema_version": 4,
+  "converged": true,
+  "iterations": 28,
+  "atom_count": 2,
+  "total_energy_ry": -14.52872545401912,
+  "energy_terms": {
+    "band_energy_ry": 2.400970503908926,
+    "hartree_ry": 1.6451036329452073,
+    "integral_rho_vxc_ry": -6.564933910960622,
+    "xc_ry": -5.032827616408094,
+    "ewald_ry": -16.816698554641405
+  },
+  "eigenvalues_ry": [
+    -0.371177868954442,
+    0.5133853876959747,
+    0.5239874815428508,
+    0.5342902516700792
+  ],
+  "electron_count": 8.0,
+  "residuals": [],
+  "k_points": [
+    {
+      "reduced": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "weight": 1.0,
+      "eigenvalues_ry": [
+        -0.371177868954442,
+        0.5133853876959747,
+        0.5239874815428508,
+        0.5342902516700792
+      ],
+      "occupations": [
+        2.0,
+        2.0,
+        2.0,
+        2.0
+      ],
+      "residuals": []
+    }
+  ],
+  "history": [],
+  "history_complete": false,
+  "timings": {
+    "wall_seconds": 0.3169479370117188
+  },
+  "provenance": {
+    "requested_backend": "cpu-f64",
+    "actual_backend": "cpu-f64",
+    "actual_device": "Quantum ESPRESSO 7.6 CPU reference",
+    "precision_policy": {
+      "storage": "complex-f64",
+      "reductions": "f64",
+      "eigensolve": "f64",
+      "energy": "f64"
+    },
+    "input_sha256": "5877342d20476babf0d875b9a1f62b04515c795cdff5a2d7f37ba1429dcebea1",
+    "pseudopotential_sha256": {
+      "Si": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d"
+    },
+    "git_revision": "9f93ddec427d2b9a45bb72d828c6d324f62fcabd"
+  },
+  "forces_ry_bohr": [
+    [
+      0.0297079861482498,
+      5.147332156641852e-09,
+      5.31675908183968e-09
+    ],
+    [
+      -0.0297079861482498,
+      -5.147332156641852e-09,
+      -5.31675908183968e-09
+    ]
+  ]
+}

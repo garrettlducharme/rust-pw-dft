@@ -49,6 +49,13 @@ def vector(element: ET.Element) -> list[float]:
     return values
 
 
+def optional_descendant(parent: ET.Element, name: str) -> ET.Element | None:
+    for value in parent.iter():
+        if local_name(value.tag) == name:
+            return value
+    return None
+
+
 def solve_reduced(reciprocal: list[list[float]], cartesian: list[float]) -> list[float]:
     # cartesian_j = sum_i reduced_i * reciprocal_i,j
     matrix = [
@@ -272,6 +279,21 @@ def main() -> None:
     )
     if atom_count == 0:
         raise ValueError("QE XML contains no atoms")
+    forces_element = optional_descendant(output, "forces")
+    forces_ry_bohr: list[list[float]] | None = None
+    if forces_element is not None:
+        if forces_element.text is None:
+            raise ValueError("QE XML forces are empty")
+        raw_forces = [
+            2.0 * float(value.replace("D", "E"))
+            for value in forces_element.text.split()
+        ]
+        if len(raw_forces) != 3 * atom_count:
+            raise ValueError("QE XML force dimensions do not match the atom count")
+        forces_ry_bohr = [
+            raw_forces[offset : offset + 3]
+            for offset in range(0, len(raw_forces), 3)
+        ]
 
     timing_total = next(
         (
@@ -300,7 +322,7 @@ def main() -> None:
         )
 
     result = {
-        "schema_version": 3,
+        "schema_version": 4 if forces_ry_bohr is not None else 3,
         "converged": True,
         "iterations": int(iterations[-1]),
         "atom_count": atom_count,
@@ -331,6 +353,8 @@ def main() -> None:
             "git_revision": args.qe_revision,
         },
     }
+    if forces_ry_bohr is not None:
+        result["forces_ry_bohr"] = forces_ry_bohr
     args.output.write_text(json.dumps(result, indent=2) + "\n")
 
 

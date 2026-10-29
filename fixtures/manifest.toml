@@ -71,6 +71,43 @@ reference_command = "pw.x -in fixtures/qe/si2-reference.in"
 reference_input_sha256 = "9b302b5617fff4ca77edc5af118c17b91ebc1c69e661f8156cf0f96b3bfb8004"
 
 [[fixtures]]
+id = "rust-pw-dft-si2-displaced-input"
+kind = "input"
+path = "examples/si2-displaced.toml"
+sha256 = "19d221f9ed73f85cdfa910cd9a55b5b1bbfd78dbb23dc909122b4862113d9e99"
+source = "repository"
+source_revision = "input-schema-1"
+license = "MIT OR Apache-2.0"
+redistribution = "project-tracked"
+description = "Two-atom Gamma-point silicon force-validation input with the second atom displaced by 0.05 bohr along Cartesian x."
+
+[[fixtures]]
+id = "qe-7.6-si2-displaced-force-portable-input"
+kind = "input"
+path = "fixtures/qe/si2-displaced-force-reference.in"
+sha256 = "5877342d20476babf0d875b9a1f62b04515c795cdff5a2d7f37ba1429dcebea1"
+source = "repository adaptation of the accepted QE 7.6 force-reference input"
+source_revision = "Quantum ESPRESSO qe-7.6"
+license = "MIT OR Apache-2.0"
+redistribution = "project-tracked"
+description = "Portable QE input for the displaced-silicon analytic-force reference."
+reference_command = "pw.x -in fixtures/qe/si2-displaced-force-reference.in"
+reference_input_sha256 = "5877342d20476babf0d875b9a1f62b04515c795cdff5a2d7f37ba1429dcebea1"
+
+[[fixtures]]
+id = "qe-7.6-si2-displaced-force-normalized-result"
+kind = "reference-result"
+path = "results/qe-si2-displaced-force-reference.json"
+sha256 = "b0e657d6b193ed4247b7927d7c991b404ebdc1f95c0ad3a7574fdb62df1065bd"
+source = "Quantum ESPRESSO 7.6 pw.x XML normalized into rust-pw-dft result schema"
+source_revision = "QE source commit 9f93ddec427d2b9a45bb72d828c6d324f62fcabd"
+license = "NOASSERTION"
+redistribution = "project-tracked"
+description = "Independent CPU-FP64 displaced-Si2 total-energy, eigenvalue, electron-count, energy-component, and Cartesian-force reference."
+reference_command = "pw.x -in fixtures/qe/si2-displaced-force-reference.in"
+reference_input_sha256 = "5877342d20476babf0d875b9a1f62b04515c795cdff5a2d7f37ba1429dcebea1"
+
+[[fixtures]]
 id = "libxc-7.1.2-pbe-unpolarized-points"
 kind = "reference-result"
 path = "fixtures/xc/libxc-7.1.2-pbe-unpolarized.json"
