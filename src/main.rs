@@ -4,7 +4,10 @@ use rust_pw_dft::backend::BackendKind;
 use rust_pw_dft::checkpoint;
 use rust_pw_dft::fixtures;
 use rust_pw_dft::input::SimulationInput;
-use rust_pw_dft::relax::{RelaxationOptions, relax};
+use rust_pw_dft::relax::{
+    RelaxationControl, RelaxationOptions, RelaxationResult, relax_with_control,
+};
+use rust_pw_dft::relax_checkpoint;
 use rust_pw_dft::result::{Provenance, ScfResult};
 use rust_pw_dft::scf::{ScfRunControl, run_matched_benchmark, run_with_control};
 use serde::Serialize;
@@ -65,8 +68,31 @@ enum Command {
         initial_step_bohr: f64,
         #[arg(long, default_value_t = 0.3)]
         maximum_step_bohr: f64,
+        #[arg(long)]
+        checkpoint: Option<PathBuf>,
+        #[arg(long, default_value_t = 1)]
+        checkpoint_every: usize,
+        #[arg(long)]
+        stop_after: Option<usize>,
+    },
+    RelaxResume {
+        input: PathBuf,
+        checkpoint: PathBuf,
+        #[arg(long, value_enum)]
+        backend: BackendArg,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        checkpoint_output: Option<PathBuf>,
+        #[arg(long, default_value_t = 1)]
+        checkpoint_every: usize,
+        #[arg(long)]
+        stop_after: Option<usize>,
     },
     InspectCheckpoint {
+        checkpoint: PathBuf,
+    },
+    InspectRelaxationCheckpoint {
         checkpoint: PathBuf,
     },
     VerifyFixtures {
@@ -180,6 +206,23 @@ struct CheckpointSummary {
     elapsed_seconds: f64,
 }
 
+#[derive(Serialize)]
+struct RelaxationCheckpointSummary {
+    schema_version: u32,
+    file_sha256: String,
+    writer_git_revision: String,
+    initial_input_sha256: String,
+    pseudopotential_sha256: std::collections::BTreeMap<String, String>,
+    requested_backend: BackendKind,
+    accepted_steps: usize,
+    atom_count: usize,
+    total_scf_evaluations: usize,
+    elapsed_seconds: f64,
+    current_total_energy_ry: Option<f64>,
+    current_maximum_force_norm_ry_bohr: f64,
+    options: RelaxationOptions,
+}
+
 fn read_result(path: &Path) -> Result<ScfResult> {
     let result: ScfResult = serde_json::from_slice(
         &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
@@ -202,6 +245,25 @@ fn write_result(path: &Path, result: &ScfResult) -> Result<()> {
     if !result.converged {
         bail!(
             "SCF did not converge: {}",
+            result.stop_reason.as_deref().unwrap_or("unknown reason")
+        );
+    }
+    Ok(())
+}
+
+fn write_relaxation_result(path: &Path, result: &RelaxationResult) -> Result<()> {
+    result.validate()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, serde_json::to_vec_pretty(result)?)?;
+    println!(
+        "actual backend: {:?}; device: {}",
+        result.final_scf.provenance.actual_backend, result.final_scf.provenance.actual_device
+    );
+    if !result.converged {
+        bail!(
+            "ionic relaxation did not converge: {}",
             result.stop_reason.as_deref().unwrap_or("unknown reason")
         );
     }
@@ -453,6 +515,9 @@ fn main() -> Result<()> {
             force_tolerance_ry_bohr,
             initial_step_bohr,
             maximum_step_bohr,
+            checkpoint,
+            checkpoint_every,
+            stop_after,
         } => {
             let input = SimulationInput::from_path(&input)?;
             let options = RelaxationOptions {
@@ -462,23 +527,35 @@ fn main() -> Result<()> {
                 maximum_step_bohr,
                 ..RelaxationOptions::default()
             };
-            let result = relax(&input, backend.into(), &options)?;
-            result.validate()?;
-            if let Some(parent) = output.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::write(&output, serde_json::to_vec_pretty(&result)?)?;
-            println!(
-                "actual backend: {:?}; device: {}",
-                result.final_scf.provenance.actual_backend,
-                result.final_scf.provenance.actual_device
-            );
-            if !result.converged {
-                bail!(
-                    "ionic relaxation did not converge: {}",
-                    result.stop_reason.as_deref().unwrap_or("unknown reason")
-                );
-            }
+            let control = RelaxationControl {
+                checkpoint_output: checkpoint,
+                checkpoint_every,
+                stop_after_accepted_steps: stop_after,
+                ..RelaxationControl::default()
+            };
+            let result = relax_with_control(&input, backend.into(), &options, &control)?;
+            write_relaxation_result(&output, &result)?;
+        }
+        Command::RelaxResume {
+            input,
+            checkpoint: checkpoint_path,
+            backend,
+            output,
+            checkpoint_output,
+            checkpoint_every,
+            stop_after,
+        } => {
+            let input = SimulationInput::from_path(&input)?;
+            let loaded = relax_checkpoint::read(&checkpoint_path)?;
+            let options = loaded.checkpoint.options;
+            let control = RelaxationControl {
+                resume_from: Some(checkpoint_path.clone()),
+                checkpoint_output: Some(checkpoint_output.unwrap_or(checkpoint_path)),
+                checkpoint_every,
+                stop_after_accepted_steps: stop_after,
+            };
+            let result = relax_with_control(&input, backend.into(), &options, &control)?;
+            write_relaxation_result(&output, &result)?;
         }
         Command::InspectCheckpoint { checkpoint: path } => {
             let loaded = checkpoint::read(&path)?;
@@ -512,6 +589,34 @@ fn main() -> Result<()> {
                     .map(|point| point.orbitals.len())
                     .collect(),
                 elapsed_seconds: value.elapsed_seconds,
+            };
+            println!("{}", serde_json::to_string_pretty(&summary)?);
+        }
+        Command::InspectRelaxationCheckpoint { checkpoint: path } => {
+            let loaded = relax_checkpoint::read(&path)?;
+            let value = loaded.checkpoint;
+            let current_maximum_force_norm_ry_bohr = value
+                .current_scf
+                .forces_ry_bohr
+                .as_ref()
+                .context("relaxation checkpoint current SCF has no forces")?
+                .iter()
+                .map(|force| force.iter().map(|value| value * value).sum::<f64>().sqrt())
+                .fold(0.0_f64, f64::max);
+            let summary = RelaxationCheckpointSummary {
+                schema_version: value.schema_version,
+                file_sha256: loaded.file_sha256,
+                writer_git_revision: value.writer_git_revision,
+                initial_input_sha256: value.initial_input_sha256,
+                pseudopotential_sha256: value.pseudopotential_sha256,
+                requested_backend: value.requested_backend,
+                accepted_steps: value.accepted_steps,
+                atom_count: value.current_input.atoms.len(),
+                total_scf_evaluations: value.total_scf_evaluations,
+                elapsed_seconds: value.elapsed_seconds,
+                current_total_energy_ry: value.current_scf.total_energy_ry,
+                current_maximum_force_norm_ry_bohr,
+                options: value.options,
             };
             println!("{}", serde_json::to_string_pretty(&summary)?);
         }

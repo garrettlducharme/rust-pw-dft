@@ -1,13 +1,19 @@
 use crate::backend::BackendKind;
 use crate::input::SimulationInput;
 use crate::lattice::Lattice;
+use crate::provenance::{git_revision, sha256};
+use crate::relax_checkpoint::{self, RELAXATION_CHECKPOINT_SCHEMA_VERSION, RelaxationCheckpoint};
 use crate::result::ScfResult;
-use crate::scf::run_input;
+use crate::scf::{input_sha256, run_input};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::f64::consts::TAU;
+use std::path::PathBuf;
+use std::time::Instant;
 
-pub const RELAXATION_SCHEMA_VERSION: u32 = 1;
+pub const RELAXATION_SCHEMA_VERSION: u32 = 2;
+const MINIMUM_RELAXATION_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -86,6 +92,14 @@ pub struct RelaxationStep {
     pub accepted_maximum_displacement_bohr: Option<f64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RelaxationRestartProvenance {
+    pub checkpoint_sha256: String,
+    pub checkpoint_step: usize,
+    pub writer_git_revision: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RelaxationResult {
@@ -98,6 +112,10 @@ pub struct RelaxationResult {
     pub unaccepted_terminal_scf_evaluations: usize,
     pub steps: Vec<RelaxationStep>,
     pub final_scf: ScfResult,
+    #[serde(default)]
+    pub elapsed_seconds: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub restart: Option<RelaxationRestartProvenance>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<String>,
 }
@@ -105,10 +123,36 @@ pub struct RelaxationResult {
 impl RelaxationResult {
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            self.schema_version == RELAXATION_SCHEMA_VERSION,
-            "unsupported relaxation schema_version {}",
-            self.schema_version
+            (MINIMUM_RELAXATION_SCHEMA_VERSION..=RELAXATION_SCHEMA_VERSION)
+                .contains(&self.schema_version),
+            "unsupported relaxation schema_version {}; expected {} through {}",
+            self.schema_version,
+            MINIMUM_RELAXATION_SCHEMA_VERSION,
+            RELAXATION_SCHEMA_VERSION
         );
+        ensure!(
+            self.elapsed_seconds.is_finite() && self.elapsed_seconds >= 0.0,
+            "relaxation elapsed time is invalid"
+        );
+        if self.schema_version == 1 {
+            ensure!(
+                self.restart.is_none(),
+                "relaxation schema 1 cannot contain restart provenance"
+            );
+        }
+        if let Some(restart) = &self.restart {
+            ensure!(
+                restart.checkpoint_sha256.len() == 64
+                    && restart
+                        .checkpoint_sha256
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit())
+                    && !restart.writer_git_revision.is_empty()
+                    && restart.checkpoint_step < self.steps.len()
+                    && restart.writer_git_revision == self.final_scf.provenance.git_revision,
+                "relaxation restart provenance is invalid"
+            );
+        }
         self.options.validate()?;
         ensure!(
             self.atom_count > 0,
@@ -178,6 +222,207 @@ impl RelaxationResult {
             "relaxation stop reason disagrees with convergence"
         );
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RelaxationControl {
+    pub resume_from: Option<PathBuf>,
+    pub checkpoint_output: Option<PathBuf>,
+    pub checkpoint_every: usize,
+    pub stop_after_accepted_steps: Option<usize>,
+}
+
+fn pseudopotential_hashes(input: &SimulationInput) -> Result<BTreeMap<String, String>> {
+    input
+        .pseudopotentials
+        .iter()
+        .map(|(element, path)| Ok((element.clone(), sha256(path)?)))
+        .collect()
+}
+
+fn vectors_are_finite(vectors: &[[f64; 3]]) -> bool {
+    vectors.iter().flatten().all(|value| value.is_finite())
+}
+
+fn validate_checkpoint(
+    checkpoint: &RelaxationCheckpoint,
+    initial_input: &SimulationInput,
+    initial_input_hash: &str,
+    pseudopotential_sha256: &BTreeMap<String, String>,
+    requested_backend: BackendKind,
+    options: &RelaxationOptions,
+) -> Result<()> {
+    ensure!(
+        checkpoint.schema_version == RELAXATION_CHECKPOINT_SCHEMA_VERSION,
+        "unsupported relaxation checkpoint schema_version {}",
+        checkpoint.schema_version
+    );
+    ensure!(
+        checkpoint.writer_git_revision == git_revision(),
+        "relaxation checkpoint was written by git revision {}, but the current revision is {}",
+        checkpoint.writer_git_revision,
+        git_revision()
+    );
+    ensure!(
+        checkpoint.initial_input_sha256 == initial_input_hash,
+        "relaxation checkpoint initial input hash differs"
+    );
+    ensure!(
+        &checkpoint.pseudopotential_sha256 == pseudopotential_sha256,
+        "relaxation checkpoint pseudopotential hashes differ"
+    );
+    ensure!(
+        checkpoint.requested_backend == requested_backend,
+        "relaxation checkpoint backend differs"
+    );
+    ensure!(
+        &checkpoint.options == options,
+        "relaxation checkpoint options differ"
+    );
+    ensure!(
+        checkpoint.elapsed_seconds.is_finite() && checkpoint.elapsed_seconds >= 0.0,
+        "relaxation checkpoint elapsed time is invalid"
+    );
+    ensure!(
+        checkpoint.accepted_steps.checked_add(1) == Some(checkpoint.history.len())
+            && checkpoint.accepted_steps <= options.max_steps,
+        "relaxation checkpoint history length is inconsistent"
+    );
+    ensure!(
+        checkpoint.total_scf_evaluations
+            == checkpoint
+                .history
+                .iter()
+                .map(|step| step.scf_evaluations)
+                .sum::<usize>(),
+        "relaxation checkpoint SCF evaluation count is inconsistent"
+    );
+    let atom_count = initial_input.atoms.len();
+    ensure!(
+        checkpoint.current_input.atoms.len() == atom_count
+            && checkpoint.direction.len() == atom_count
+            && checkpoint.projected_force.len() == atom_count
+            && vectors_are_finite(&checkpoint.direction)
+            && vectors_are_finite(&checkpoint.projected_force),
+        "relaxation checkpoint vector dimensions or values are invalid"
+    );
+    ensure!(
+        checkpoint.proposed_step_bohr.is_finite()
+            && checkpoint.proposed_step_bohr >= options.minimum_step_bohr
+            && checkpoint.proposed_step_bohr <= options.maximum_step_bohr,
+        "relaxation checkpoint proposed step is invalid"
+    );
+    checkpoint.current_input.validate()?;
+    checkpoint.current_scf.validate()?;
+    ensure!(
+        checkpoint.current_scf.converged,
+        "relaxation checkpoint current SCF is not converged"
+    );
+    ensure!(
+        checkpoint.current_scf.provenance.requested_backend == requested_backend,
+        "relaxation checkpoint current SCF backend is inconsistent"
+    );
+    ensure!(
+        checkpoint.current_scf.provenance.pseudopotential_sha256 == *pseudopotential_sha256,
+        "relaxation checkpoint current SCF pseudopotential provenance is inconsistent"
+    );
+    let final_force = maximum_norm(
+        checkpoint
+            .current_scf
+            .forces_ry_bohr
+            .as_ref()
+            .context("relaxation checkpoint current SCF has no forces")?,
+    );
+    let converged = final_force <= options.force_tolerance_ry_bohr;
+    RelaxationResult {
+        schema_version: RELAXATION_SCHEMA_VERSION,
+        converged,
+        requested_backend,
+        atom_count,
+        options: options.clone(),
+        total_scf_evaluations: checkpoint.total_scf_evaluations,
+        unaccepted_terminal_scf_evaluations: 0,
+        steps: checkpoint.history.clone(),
+        final_scf: checkpoint.current_scf.clone(),
+        elapsed_seconds: checkpoint.elapsed_seconds,
+        restart: None,
+        stop_reason: (!converged).then(|| "checkpoint is not ionically converged".into()),
+    }
+    .validate()
+    .context("relaxation checkpoint history is invalid")?;
+    let mut reconstructed_initial = checkpoint.current_input.clone();
+    reconstructed_initial.atoms = initial_input.atoms.clone();
+    ensure!(
+        serde_json::to_value(&reconstructed_initial)? == serde_json::to_value(initial_input)?,
+        "relaxation checkpoint changed immutable simulation input fields"
+    );
+    let current_forces = checkpoint.current_scf.forces_ry_bohr.as_ref().unwrap();
+    let expected_projected = project_translation(current_forces);
+    ensure!(
+        expected_projected
+            .iter()
+            .flatten()
+            .zip(checkpoint.projected_force.iter().flatten())
+            .all(|(expected, actual)| (expected - actual).abs() <= 1.0e-15),
+        "relaxation checkpoint projected force is inconsistent"
+    );
+    for (index, step) in checkpoint.history.iter().enumerate() {
+        ensure!(
+            step.step == index,
+            "relaxation checkpoint history is not sequential"
+        );
+    }
+    let last = checkpoint
+        .history
+        .last()
+        .context("relaxation checkpoint history is empty")?;
+    ensure!(
+        last.step == checkpoint.accepted_steps
+            && last.positions_fractional
+                == checkpoint
+                    .current_input
+                    .atoms
+                    .iter()
+                    .map(|atom| atom.fractional)
+                    .collect::<Vec<_>>()
+            && Some(&last.forces_ry_bohr) == checkpoint.current_scf.forces_ry_bohr.as_ref()
+            && Some(last.total_energy_ry) == checkpoint.current_scf.total_energy_ry,
+        "relaxation checkpoint current state differs from its history"
+    );
+    ensure!(
+        last.scf_input_sha256 == checkpoint.current_scf.provenance.input_sha256,
+        "relaxation checkpoint current SCF input hash differs from its history"
+    );
+    Ok(())
+}
+
+impl RelaxationControl {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.checkpoint_every > 0,
+            "relaxation checkpoint interval must be positive"
+        );
+        ensure!(
+            self.stop_after_accepted_steps.is_none_or(|steps| steps > 0),
+            "relaxation stop-after count must be positive"
+        );
+        ensure!(
+            self.stop_after_accepted_steps.is_none() || self.checkpoint_output.is_some(),
+            "pausing relaxation requires a checkpoint output path"
+        );
+        Ok(())
+    }
+}
+
+impl Default for RelaxationControl {
+    fn default() -> Self {
+        Self {
+            resume_from: None,
+            checkpoint_output: None,
+            checkpoint_every: 1,
+            stop_after_accepted_steps: None,
+        }
     }
 }
 
@@ -295,29 +540,98 @@ pub fn relax(
     requested_backend: BackendKind,
     options: &RelaxationOptions,
 ) -> Result<RelaxationResult> {
+    relax_with_control(
+        input,
+        requested_backend,
+        options,
+        &RelaxationControl::default(),
+    )
+}
+
+pub fn relax_with_control(
+    input: &SimulationInput,
+    requested_backend: BackendKind,
+    options: &RelaxationOptions,
+    control: &RelaxationControl,
+) -> Result<RelaxationResult> {
     input.validate()?;
     options.validate()?;
+    control.validate()?;
     ensure!(input.cell.fixed, "ionic relaxation requires a fixed cell");
     let lattice = Lattice::new(input.cell.lattice_bohr)?;
-    let mut current_input = input.clone();
-    let mut current_result = run_input(&current_input, requested_backend)?;
-    ensure!(
-        current_result.converged,
-        "initial electronic SCF did not converge: {}",
-        current_result
-            .stop_reason
-            .as_deref()
-            .unwrap_or("unknown reason")
-    );
-    let mut total_scf_evaluations = 1_usize;
-    let mut steps = vec![step_record(0, &current_input, &current_result, 1, None)?];
-    let mut force = project_translation(current_result.forces_ry_bohr.as_ref().unwrap());
-    let mut direction = force.clone();
-    let mut proposed_step = options.initial_step_bohr;
+    let initial_input_hash = input_sha256(input)?;
+    let pseudopotential_sha256 = pseudopotential_hashes(input)?;
+    let invocation_started = Instant::now();
+    let mut restart = None;
+    let (
+        mut current_input,
+        mut current_result,
+        mut total_scf_evaluations,
+        mut steps,
+        mut force,
+        mut direction,
+        mut proposed_step,
+        accepted_steps_at_start,
+        prior_elapsed_seconds,
+    ) = if let Some(path) = &control.resume_from {
+        let loaded = relax_checkpoint::read(path)?;
+        validate_checkpoint(
+            &loaded.checkpoint,
+            input,
+            &initial_input_hash,
+            &pseudopotential_sha256,
+            requested_backend,
+            options,
+        )?;
+        restart = Some(RelaxationRestartProvenance {
+            checkpoint_sha256: loaded.file_sha256,
+            checkpoint_step: loaded.checkpoint.accepted_steps,
+            writer_git_revision: loaded.checkpoint.writer_git_revision.clone(),
+        });
+        let checkpoint = loaded.checkpoint;
+        (
+            checkpoint.current_input,
+            checkpoint.current_scf,
+            checkpoint.total_scf_evaluations,
+            checkpoint.history,
+            checkpoint.projected_force,
+            checkpoint.direction,
+            checkpoint.proposed_step_bohr,
+            checkpoint.accepted_steps,
+            checkpoint.elapsed_seconds,
+        )
+    } else {
+        let current_input = input.clone();
+        let current_result = run_input(&current_input, requested_backend)?;
+        ensure!(
+            current_result.converged,
+            "initial electronic SCF did not converge: {}",
+            current_result
+                .stop_reason
+                .as_deref()
+                .unwrap_or("unknown reason")
+        );
+        let force = project_translation(current_result.forces_ry_bohr.as_ref().unwrap());
+        let direction = force.clone();
+        (
+            current_input.clone(),
+            current_result.clone(),
+            1,
+            vec![step_record(0, &current_input, &current_result, 1, None)?],
+            force,
+            direction,
+            options.initial_step_bohr,
+            0,
+            0.0,
+        )
+    };
     let mut stop_reason = None;
     let mut unaccepted_terminal_scf_evaluations = 0_usize;
+    let mut paused = false;
 
-    for step in 1..=options.max_steps {
+    for (accepted_step_index, step) in
+        ((accepted_steps_at_start + 1)..=options.max_steps).enumerate()
+    {
         if maximum_norm(current_result.forces_ry_bohr.as_ref().unwrap())
             <= options.force_tolerance_ry_bohr
         {
@@ -417,6 +731,46 @@ pub fn relax(
         } else {
             accepted_displacement
         };
+        let accepted_steps_this_run = accepted_step_index + 1;
+
+        let current_is_converged = maximum_norm(current_result.forces_ry_bohr.as_ref().unwrap())
+            <= options.force_tolerance_ry_bohr;
+        let pause_requested = !current_is_converged
+            && control
+                .stop_after_accepted_steps
+                .is_some_and(|limit| accepted_steps_this_run >= limit);
+        let checkpoint_due = control.checkpoint_output.is_some()
+            && (step % control.checkpoint_every == 0 || pause_requested);
+        if checkpoint_due {
+            let checkpoint = RelaxationCheckpoint {
+                schema_version: RELAXATION_CHECKPOINT_SCHEMA_VERSION,
+                writer_git_revision: git_revision(),
+                initial_input_sha256: initial_input_hash.clone(),
+                pseudopotential_sha256: pseudopotential_sha256.clone(),
+                requested_backend,
+                options: options.clone(),
+                accepted_steps: step,
+                current_input: current_input.clone(),
+                current_scf: current_result.clone(),
+                direction: direction.clone(),
+                projected_force: force.clone(),
+                proposed_step_bohr: proposed_step,
+                total_scf_evaluations,
+                history: steps.clone(),
+                elapsed_seconds: prior_elapsed_seconds + invocation_started.elapsed().as_secs_f64(),
+            };
+            relax_checkpoint::write_atomic(
+                control.checkpoint_output.as_deref().unwrap(),
+                &checkpoint,
+            )?;
+        }
+        if pause_requested {
+            paused = true;
+            stop_reason = Some(format!(
+                "ionic relaxation paused after accepted step {step}; resume from the written checkpoint"
+            ));
+            break;
+        }
     }
 
     let final_raw_force = maximum_norm(current_result.forces_ry_bohr.as_ref().unwrap());
@@ -440,8 +794,14 @@ pub fn relax(
         unaccepted_terminal_scf_evaluations,
         steps,
         final_scf: current_result,
+        elapsed_seconds: prior_elapsed_seconds + invocation_started.elapsed().as_secs_f64(),
+        restart,
         stop_reason,
     };
+    ensure!(
+        !paused || !result.converged,
+        "a converged relaxation cannot be marked as paused"
+    );
     result.validate()?;
     Ok(result)
 }
@@ -529,6 +889,106 @@ mod tests {
             ..RelaxationOptions::default()
         };
         assert!(options.validate().is_err());
+
+        let control = RelaxationControl {
+            checkpoint_every: 0,
+            ..RelaxationControl::default()
+        };
+        assert!(control.validate().is_err());
+        let control = RelaxationControl {
+            stop_after_accepted_steps: Some(1),
+            ..RelaxationControl::default()
+        };
+        assert!(control.validate().is_err());
+    }
+
+    fn checkpoint_resume_options() -> RelaxationOptions {
+        RelaxationOptions {
+            max_steps: 12,
+            force_tolerance_ry_bohr: 1.0e-4,
+            initial_step_bohr: 0.01,
+            maximum_step_bohr: 0.01,
+            ..RelaxationOptions::default()
+        }
+    }
+
+    fn assert_checkpoint_resume_equivalence(backend: BackendKind) {
+        let input_path = std::path::Path::new("examples/si2-displaced.toml");
+        if !std::path::Path::new("pseudopotentials/Si.pz-vbc.UPF").exists() {
+            return;
+        }
+        let input = SimulationInput::from_path(input_path).unwrap();
+        let options = checkpoint_resume_options();
+        let uninterrupted = relax(&input, backend, &options).unwrap();
+        assert!(uninterrupted.converged);
+        assert!(uninterrupted.steps.len() > 2);
+
+        let checkpoint_path = std::env::temp_dir().join(format!(
+            "rust-pw-dft-relax-resume-{}-{backend:?}.bin",
+            std::process::id()
+        ));
+        let paused = relax_with_control(
+            &input,
+            backend,
+            &options,
+            &RelaxationControl {
+                checkpoint_output: Some(checkpoint_path.clone()),
+                stop_after_accepted_steps: Some(1),
+                ..RelaxationControl::default()
+            },
+        )
+        .unwrap();
+        assert!(!paused.converged);
+        assert_eq!(paused.steps.len(), 2);
+        assert!(checkpoint_path.exists());
+
+        let mut modified_input = input.clone();
+        modified_input.atoms[1].fractional[0] += 1.0e-3;
+        let resume_control = RelaxationControl {
+            resume_from: Some(checkpoint_path.clone()),
+            checkpoint_output: Some(checkpoint_path.clone()),
+            ..RelaxationControl::default()
+        };
+        assert!(
+            relax_with_control(&modified_input, backend, &options, &resume_control)
+                .unwrap_err()
+                .to_string()
+                .contains("initial input hash differs")
+        );
+        let modified_options = RelaxationOptions {
+            max_steps: options.max_steps + 1,
+            ..options.clone()
+        };
+        assert!(
+            relax_with_control(&input, backend, &modified_options, &resume_control)
+                .unwrap_err()
+                .to_string()
+                .contains("options differ")
+        );
+
+        let resumed = relax_with_control(&input, backend, &options, &resume_control).unwrap();
+        assert!(resumed.converged);
+        assert_eq!(resumed.steps, uninterrupted.steps);
+        assert_eq!(
+            resumed.total_scf_evaluations,
+            uninterrupted.total_scf_evaluations
+        );
+        assert_eq!(
+            resumed.final_scf.total_energy_ry,
+            uninterrupted.final_scf.total_energy_ry
+        );
+        assert_eq!(
+            resumed.final_scf.forces_ry_bohr,
+            uninterrupted.final_scf.forces_ry_bohr
+        );
+        assert_eq!(resumed.restart.as_ref().unwrap().checkpoint_step, 1);
+        std::fs::remove_file(checkpoint_path).unwrap();
+    }
+
+    #[test]
+    #[ignore = "multiple converged CPU SCFs; run explicitly in release mode"]
+    fn interrupted_cpu_relaxation_resumes_equivalently_and_rejects_mismatch() {
+        assert_checkpoint_resume_equivalence(BackendKind::CpuF64);
     }
 
     #[test]
@@ -583,5 +1043,13 @@ mod tests {
                 assert!(difference.abs() < 2.0e-8, "position error {difference:e}");
             }
         }
+    }
+
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    #[test]
+    #[ignore = "multiple Metal SCFs; run explicitly in release mode"]
+    fn interrupted_metal_relaxation_resumes_equivalently_and_rejects_mismatch() {
+        let _device_guard = crate::metal::test_device_lock();
+        assert_checkpoint_resume_equivalence(BackendKind::MetalMixed);
     }
 }

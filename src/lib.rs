@@ -18,6 +18,7 @@ pub mod operator;
 pub mod provenance;
 pub mod pseudo;
 pub mod relax;
+pub mod relax_checkpoint;
 pub mod result;
 pub mod scf;
 pub mod xc;

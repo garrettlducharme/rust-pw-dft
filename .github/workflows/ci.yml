@@ -59,6 +59,11 @@ jobs:
           cargo test --locked --release
           relax::tests::cpu_relaxation_recovers_displaced_silicon_minimum
           -- --ignored --exact
+      - name: Run CPU relaxation checkpoint equivalence gate in release mode
+        run: >-
+          cargo test --locked --release
+          relax::tests::interrupted_cpu_relaxation_resumes_equivalently_and_rejects_mismatch
+          -- --ignored --exact
       - name: Run silicon 2x2x2 k-point CPU scientific gate in release mode
         run: >-
           cargo test --locked --release
@@ -98,6 +103,11 @@ jobs:
         run: >-
           cargo test --locked --release --features metal
           relax::tests::metal_relaxation_matches_cpu_final_geometry
+          -- --ignored --exact
+      - name: Run Metal relaxation checkpoint equivalence gate in release mode
+        run: >-
+          cargo test --locked --release --features metal
+          relax::tests::interrupted_metal_relaxation_resumes_equivalently_and_rejects_mismatch
           -- --ignored --exact
       - name: Run silicon 2x2x2 k-point Metal scientific gate in release mode
         run: >-
