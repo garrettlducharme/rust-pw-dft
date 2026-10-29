@@ -3,6 +3,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use rust_pw_dft::backend::BackendKind;
 use rust_pw_dft::checkpoint;
 use rust_pw_dft::fixtures;
+use rust_pw_dft::input::SimulationInput;
+use rust_pw_dft::relax::{RelaxationOptions, relax};
 use rust_pw_dft::result::{Provenance, ScfResult};
 use rust_pw_dft::scf::{ScfRunControl, run_matched_benchmark, run_with_control};
 use serde::Serialize;
@@ -48,6 +50,21 @@ enum Command {
         checkpoint_every: usize,
         #[arg(long)]
         stop_after: Option<usize>,
+    },
+    Relax {
+        input: PathBuf,
+        #[arg(long, value_enum)]
+        backend: BackendArg,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long, default_value_t = 40)]
+        max_steps: usize,
+        #[arg(long, default_value_t = 1.0e-4)]
+        force_tolerance_ry_bohr: f64,
+        #[arg(long, default_value_t = 0.1)]
+        initial_step_bohr: f64,
+        #[arg(long, default_value_t = 0.3)]
+        maximum_step_bohr: f64,
     },
     InspectCheckpoint {
         checkpoint: PathBuf,
@@ -427,6 +444,41 @@ fn main() -> Result<()> {
             };
             let result = run_with_control(&input, backend.into(), &control)?;
             write_result(&output, &result)?;
+        }
+        Command::Relax {
+            input,
+            backend,
+            output,
+            max_steps,
+            force_tolerance_ry_bohr,
+            initial_step_bohr,
+            maximum_step_bohr,
+        } => {
+            let input = SimulationInput::from_path(&input)?;
+            let options = RelaxationOptions {
+                max_steps,
+                force_tolerance_ry_bohr,
+                initial_step_bohr,
+                maximum_step_bohr,
+                ..RelaxationOptions::default()
+            };
+            let result = relax(&input, backend.into(), &options)?;
+            result.validate()?;
+            if let Some(parent) = output.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&output, serde_json::to_vec_pretty(&result)?)?;
+            println!(
+                "actual backend: {:?}; device: {}",
+                result.final_scf.provenance.actual_backend,
+                result.final_scf.provenance.actual_device
+            );
+            if !result.converged {
+                bail!(
+                    "ionic relaxation did not converge: {}",
+                    result.stop_reason.as_deref().unwrap_or("unknown reason")
+                );
+            }
         }
         Command::InspectCheckpoint { checkpoint: path } => {
             let loaded = checkpoint::read(&path)?;
