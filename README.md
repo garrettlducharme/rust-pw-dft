@@ -4,8 +4,11 @@ An educational, fail-closed plane-wave DFT prototype aimed at Apple Silicon.
 It is dual-licensed under MIT or Apache-2.0 and contains no code copied from
 GPL DFT implementations.
 
-Version 0.9 adds schema-3 CPU/Metal checkpoint and deterministic restart for
-Gamma and multi-k-point SCFs. Version 0.8 extended the resident Metal Davidson
+Version 0.10 adds schema-4 analytic norm-conserving forces to converged CPU and
+Metal results, independently validates a displaced silicon force against QE
+7.6 and total-energy finite differences, and makes force parity part of the
+comparison contract. Version 0.9 added schema-3 CPU/Metal checkpoint and
+deterministic restart for Gamma and multi-k-point SCFs. Version 0.8 extended the resident Metal Davidson
 path across independently weighted k points and validated complete silicon and
 metallic aluminum Apple-GPU SCFs. Version 0.7 added an independently validated
 CPU-FP64 metallic aluminum SCF, including global Fermi-Dirac occupations and
@@ -45,6 +48,10 @@ machine-readable evidence rather than feature presence alone.
   separable projectors, and `Dij`;
 - species-resolved local potentials, nonlocal projector couplings, atomic
   starting densities, valence counts, and mixed-charge Ewald sums;
+- analytic Cartesian local-pseudopotential, separable-nonlocal, and Ewald
+  forces in Ry/bohr; converged Gamma and weighted multi-k-point CPU/Metal SCFs
+  aggregate them into a fail-closed schema-4 result, while unconverged results
+  are forbidden from carrying scientific forces;
 - QE-compatible numerical UPF radial transforms that discard cancellation-noisy
   tails beyond 10 bohr and use an odd Simpson mesh;
 - explicit provenance and precision policy in JSON results;
@@ -118,6 +125,26 @@ For the pinned two-atom silicon LDA case, the CPU solver converges to
 The result is in `results/cpu-scf.json` and the normalized QE reference is in
 `results/qe-reference.json`.
 
+## Accepted analytic-force result
+
+The displaced-Si2 fixture moves one atom by `0.05 bohr` along Cartesian x so
+the force is nonzero and cannot pass by crystal symmetry. Both atomic force
+components agree with central total-energy derivatives within
+`9.23e-9 Ry/bohr`. Against full-precision forces from the pinned QE 7.6 XML,
+the maximum component error is `5.17e-6 Ry/bohr` (about
+`1.33e-4 eV/angstrom`). The same schema-4 comparison reports
+`0.0000583 meV/atom` total-energy error, `0.000152 meV` maximum occupied-
+eigenvalue error, and `4.35e-14` electrons.
+
+This accepts fixed-cell Hellmann-Feynman forces only for the published
+norm-conserving fixtures. It does not yet provide ionic relaxation, stress,
+variable cells, ultrasoft, or PAW forces. The independent artifacts are
+[`fixtures/qe/si2-displaced-force-reference.in`](fixtures/qe/si2-displaced-force-reference.in)
+and
+[`results/qe-si2-displaced-force-reference.json`](results/qe-si2-displaced-force-reference.json).
+Units, implemented terms, mixed-precision behavior, validation layers, and the
+known raw net-force residue are documented in [`docs/forces.md`](docs/forces.md).
+
 ## Metal result and boundary
 
 The latest two-atom resident Metal SCF converges to `-14.5294700206 Ry`.
@@ -169,7 +196,7 @@ by `0.0203 meV/atom`, `0.00734 meV` for occupied eigenvalues, and `3.0e-13`
 electrons, with zero projection resynchronizations.
 
 This closes one binary-insulator transfer test. It does not establish broad
-oxide chemistry, forces, stress, or pseudopotential transferability. The
+oxide chemistry, oxide-force transferability, stress, or pseudopotential transferability. The
 matched five-warm-run performance gate is intentionally
 retained as a negative result: CPU min/median/max were
 `2.821/2.843/2.865 s`, Metal was `3.592/3.619/3.699 s`, and the `0.786x`
@@ -273,6 +300,8 @@ cargo test
 cargo test --features metal
 cargo run -- run examples/si2.toml --backend cpu --output result.json
 cargo run --release -- compare results/cpu-scf.json results/qe-reference.json
+cargo run --release -- run examples/si2-displaced.toml --backend cpu --output result-force.json
+cargo run --release -- compare result-force.json results/qe-si2-displaced-force-reference.json
 cargo run --release -- run examples/si2-pbe.toml --backend cpu --output result-pbe.json
 cargo run --release -- compare result-pbe.json results/qe-pbe-reference.json
 cargo run --release -- run examples/si2-pbe-2x2x2.toml --backend cpu --output result-kmesh.json
@@ -303,14 +332,15 @@ Fixture provenance and reproduction commands are documented in
 [`docs/fixtures.md`](docs/fixtures.md); [`fixtures/manifest.toml`](fixtures/manifest.toml)
 is the machine-readable authority.
 
-The LDA and PBE Si2, PBE MgO, PBE Si2 2x2x2, and metallic Al CPU scientific
-milestones and their resident Metal accuracy milestones are accepted.
-The LDA Si16 transfer and matched-performance milestones are also accepted. The stateful driver is
-integrated into production SCF, and its normal-iteration
+The LDA and PBE Si2, displaced-Si2 force, PBE MgO, PBE Si2 2x2x2, and
+metallic Al CPU scientific milestones and their resident Metal accuracy
+milestones are accepted. The LDA Si16 transfer and matched-performance
+milestones are also accepted. The stateful driver is integrated into
+production SCF, and its normal-iteration
 zero-full-vector-transfer contract is checked at runtime and in portable and
-Apple-GPU tests. The next physics frontier is resident multi-k-point Metal
-execution, followed by denser-mesh convergence studies and analytic forces,
-with the same CPU-reference-first acceptance policy. The
+Apple-GPU tests. The next physics frontier is fail-closed fixed-cell ionic
+relaxation built on the accepted force boundary, broader force transfer tests,
+and collinear spin, with the same CPU-reference-first acceptance policy. The
 resident buffer contract, dataflow, transfer
 accounting, and fail-closed gates are specified in
 [`docs/resident-davidson.md`](docs/resident-davidson.md).

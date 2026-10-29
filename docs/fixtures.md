@@ -61,6 +61,33 @@ marked incomplete because QE's iteration log was not embedded in the original
 normalized artifact; native `rust-pw-dft` results require a complete structured
 history.
 
+### Displaced-silicon force reference
+
+[`fixtures/qe/si2-displaced-force-reference.in`](../fixtures/qe/si2-displaced-force-reference.in)
+moves the second silicon atom by `0.05 bohr` along Cartesian x and requests QE
+forces. This prevents a symmetry-zero force from satisfying the validation.
+The pinned QE 7.6 XML records forces in Hartree/bohr; the normalizer converts
+them to the schema-4 Ry/bohr convention and requires exactly three finite
+components per atom. The resulting independent artifact is
+[`results/qe-si2-displaced-force-reference.json`](../results/qe-si2-displaced-force-reference.json).
+
+Regenerate it with:
+
+```sh
+python3 tools/normalize_qe_xml.py \
+  qe-si2-displaced-force-reference-tmp/si2-displaced-force-reference.save/data-file-schema.xml \
+  qe-si2-displaced-force-reference.out \
+  fixtures/qe/si2-displaced-force-reference.in \
+  pseudopotentials/Si.pz-vbc.UPF \
+  results/qe-si2-displaced-force-reference.json \
+  --qe-revision 9f93ddec427d2b9a45bb72d828c6d324f62fcabd
+```
+
+The accepted CPU result differs from QE by `5.17e-6 Ry/bohr` in its largest
+force component. A separate five-SCF central-difference gate checks both atoms
+at the displaced geometry; its maximum analytic-versus-energy-derivative error
+is `9.23e-9 Ry/bohr`.
+
 The accepted PBE reference uses the tracked, byte-identical
 [`fixtures/qe/si2-pbe-reference.in`](../fixtures/qe/si2-pbe-reference.in), QE
 7.6 source commit `9f93ddec427d2b9a45bb72d828c6d324f62fcabd`, and the pinned ONCV PBE

@@ -108,7 +108,12 @@ validation and independent fixtures.
    production pseudopotential remain pending.**
 4. Collinear spin polarization.
 5. Analytic norm-conserving forces, finite-difference verification, and fixed-
-   cell ionic relaxation.
+   cell ionic relaxation. **Local, separable-nonlocal, and Ewald derivatives
+   are implemented for Gamma and weighted multi-k-point SCFs. A displaced-Si2
+   CPU result agrees with both total-energy finite differences and an
+   independent QE 7.6 force reference; CPU/Metal force parity passes for LDA,
+   PBE, multi-k silicon, and metallic aluminum fixtures. Fixed-cell ionic
+   relaxation and broader chemical force validation remain pending.**
 6. Stress and variable-cell relaxation only after force validation is mature.
 
 Each feature must pass CPU FP64 first. Metal acceptance then requires a
