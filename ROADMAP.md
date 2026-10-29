@@ -91,7 +91,10 @@ validation and independent fixtures.
    CPU result for the same fixture, with one persistent GPU context per
    irreducible point, zero projection resynchronizations, and explicit transfer
    accounting. The contexts currently run sequentially and do not establish a
-   performance claim. Multi-k-point checkpoint/restart remains fail closed.**
+   universal performance claim. A two-atom matched benchmark records a
+   deliberate `0.212x` no-go, while the compute-bound sixteen-atom, 24 Ry
+   shifted 2x2x2 fixture passes the five-run end-to-end gate at `1.856x` on the
+   Apple M5 Pro. Multi-k-point checkpoint/restart remains fail closed.**
 3. Fractional occupations and finite-temperature smearing for metals.
    **Global Fermi-Dirac chemical-potential solving, entropy/free-energy terms,
    extra-band allocation, and charge-conservation tests are implemented on CPU.

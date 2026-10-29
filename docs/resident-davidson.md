@@ -179,6 +179,9 @@ tolerances differ, or if either scientific accuracy or speed misses its gate.
 PBE, MgO multi-species operators, silicon k-point sampling, and metallic
 aluminum occupations now reuse this resident boundary and pass their published
 accuracy gates. K-point contexts are persistent but scheduled sequentially, so
-their `0.212x` silicon matched benchmark is a documented negative performance
-result rather than a speed claim. Forces, spin, broader chemical validation,
-ultrasoft pseudopotentials, and PAW remain outside the accepted scope.
+the tiny-cell `0.212x` silicon matched benchmark is a documented negative
+performance result rather than a speed claim. The compute-bound sixteen-atom,
+24 Ry shifted-mesh fixture passes the same five-run gate at `1.856x`, defining
+the current multi-k-point crossover on the Apple M5 Pro. Forces, spin, broader
+chemical validation, ultrasoft pseudopotentials, and PAW remain outside the
+accepted scope.

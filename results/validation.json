@@ -1,6 +1,6 @@
 {
-  "schema_version": 15,
-  "source_revision": "8046f934ae9c2f1300337155e571c67fe87d1249",
+  "schema_version": 16,
+  "source_revision": "611d503b16765ad5b7a5c5a2683f85f0e3c15de1",
   "tests": {
     "cpu_passed": 46,
     "cpu_release_scientific_passed": 3,
@@ -18,7 +18,7 @@
     "benchmark": 1,
     "checkpoint": 2,
     "fixture_manifest": 1,
-    "validation_manifest": 15
+    "validation_manifest": 16
   },
   "input_and_pseudopotential": {
     "legacy_si_upf": "accepted",
@@ -312,6 +312,51 @@
         "electron_count_error": 4.796163466380676E-14
       },
       "decision": "scientific multi-k-point Metal execution accepted; sequential per-k-point scheduling rejects a performance claim"
+    },
+    "si16_lda_2x2x2_matched": {
+      "accepted_for_performance_claim": true,
+      "workload": "examples/si16-lda-2x2x2.toml",
+      "cutoff_ry": 24.0,
+      "full_k_point_count": 8,
+      "irreducible_k_point_count": 4,
+      "convergence_profile": "matched-metal-compatible-v1",
+      "cold_processes": 1,
+      "warmed_repetitions": 5,
+      "cpu_seconds": {
+        "min": 73.524654708,
+        "median": 73.600367959,
+        "max": 73.632232917,
+        "scf_iterations": 42
+      },
+      "metal_seconds": {
+        "min": 39.5733915,
+        "median": 39.659455792,
+        "max": 39.685812,
+        "scf_iterations": 42
+      },
+      "median_speedup": 1.8558088226174414,
+      "numeric_1_20x_gate_passed": true,
+      "scientific_parity": {
+        "accepted": true,
+        "energy_error_mev_atom": 0.0022654857203135066,
+        "maximum_occupied_eigenvalue_error_mev": 0.005018877655870096,
+        "maximum_occupation_error": 0.0,
+        "electron_count_error": 1.0089706847793423E-12
+      },
+      "strict_scientific_run": {
+        "cpu_iterations": 47,
+        "metal_iterations": 42,
+        "metal_energy_error_mev_atom": 0.0022650767881762144,
+        "metal_maximum_occupied_eigenvalue_error_mev": 0.007011495050538483,
+        "metal_electron_count_error": 1.8616219676914625E-12,
+        "metal_persistent_context_count": 4,
+        "metal_persistent_buffer_bytes": 1145038144,
+        "metal_peak_device_allocated_bytes": 1302495232,
+        "metal_resident_driver_iterations": 629,
+        "metal_resident_projection_resyncs": 0,
+        "metal_resident_transfer_invariant_checks": 629
+      },
+      "claim_scope": "the pinned sixteen-atom 24 Ry shifted 2x2x2 LDA silicon workload on Apple M5 Pro"
     }
   },
   "checkpoint_restart": {
@@ -356,6 +401,8 @@
     "si2_pbe_metal_history_records": 47,
     "si16_cpu_history_records": 47,
     "si16_metal_history_records": 52,
+    "si16_lda_2x2x2_cpu_history_records": 47,
+    "si16_lda_2x2x2_metal_history_records": 42,
     "mgo2_cpu_history_records": 73,
     "mgo2_metal_history_records": 66,
     "native_histories_complete": true,
@@ -363,7 +410,7 @@
   },
   "fixture_provenance": {
     "manifest_schema_version": 1,
-    "verified_fixture_count": 22,
+    "verified_fixture_count": 23,
     "ci_enforced": true,
     "path_traversal_rejected": true,
     "tamper_detection": "passed",
@@ -383,7 +430,7 @@
     "phase_2_fixture_manifest": "go; hashes and provenance are enforced in CI",
     "phase_3_pbe_silicon": "go for the pinned Si2 ONCV workload; point, grid, CPU/QE, and Metal/CPU gates passed",
     "phase_3_multi_species_mgo": "go for the pinned MgO ONCV workload; multi-species CPU/QE and Metal/CPU gates passed, while its 0.786x matched benchmark rejects a performance claim",
-    "phase_3_k_points": "go for the pinned shifted 2x2x2 Si2 PBE workload; CPU passes QE 7.6 and resident Metal passes CPU accuracy and transfer gates, while its 0.212x matched benchmark rejects a performance claim",
+    "phase_3_k_points": "go for the pinned shifted 2x2x2 Si2 PBE workload; CPU passes QE 7.6 and resident Metal passes CPU accuracy and transfer gates. Performance is workload-dependent: Si2 rejects a claim at 0.212x while the compute-bound sixteen-atom 24 Ry fixture passes at 1.856x",
     "phase_3_fermi_dirac_occupations": "go for the pinned fcc Al LDA-PZ 4x4x4 workload; CPU passes QE 7.6 and resident Metal passes CPU free-energy, occupied-eigenvalue, occupation, charge, and transfer gates",
     "production_science_or_scope_expansion": "no-go beyond the explicitly validated silicon, MgO, and aluminum workloads until forces, spin, denser-mesh convergence, and broader chemistry have independent fixtures"
   }
