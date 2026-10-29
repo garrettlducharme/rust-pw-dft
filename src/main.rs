@@ -152,10 +152,11 @@ struct CheckpointSummary {
     run_profile: String,
     iteration_completed: usize,
     fft_shape: [usize; 3],
-    g_vector_count: usize,
-    occupied_states: usize,
+    k_point_count: usize,
+    g_vector_counts: Vec<usize>,
+    band_counts: Vec<usize>,
     density_values: usize,
-    orbital_count: usize,
+    orbital_counts: Vec<usize>,
     elapsed_seconds: f64,
 }
 
@@ -408,10 +409,23 @@ fn main() -> Result<()> {
                 run_profile: value.run_profile,
                 iteration_completed: value.iteration_completed,
                 fft_shape: value.fft_shape,
-                g_vector_count: value.g_vector_count,
-                occupied_states: value.occupied_states,
+                k_point_count: value.k_points.len(),
+                g_vector_counts: value
+                    .k_points
+                    .iter()
+                    .map(|point| point.g_vector_count)
+                    .collect(),
+                band_counts: value
+                    .k_points
+                    .iter()
+                    .map(|point| point.band_count)
+                    .collect(),
                 density_values: value.density.len(),
-                orbital_count: value.orbitals.len(),
+                orbital_counts: value
+                    .k_points
+                    .iter()
+                    .map(|point| point.orbitals.len())
+                    .collect(),
                 elapsed_seconds: value.elapsed_seconds,
             };
             println!("{}", serde_json::to_string_pretty(&summary)?);

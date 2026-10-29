@@ -54,6 +54,11 @@ jobs:
           cargo test --locked --release
           scf::checkpoint_tests::pbe_2x2x2_cpu_scf_matches_pinned_qe_reference
           -- --ignored --exact
+      - name: Run multi-k-point CPU checkpoint equivalence gate in release mode
+        run: >-
+          cargo test --locked --release
+          scf::checkpoint_tests::interrupted_multi_kpoint_cpu_scf_resumes_equivalently
+          -- --ignored --exact
       - name: Run aluminum Fermi-Dirac CPU scientific gate in release mode
         run: >-
           cargo test --locked --release
@@ -83,4 +88,9 @@ jobs:
         run: >-
           cargo test --locked --release --features metal
           scf::tests::resident_metal_aluminum_fermi_dirac_scf_matches_cpu
+          -- --ignored --exact
+      - name: Run multi-k-point Metal checkpoint equivalence gate in release mode
+        run: >-
+          cargo test --locked --release --features metal
+          scf::tests::interrupted_multi_kpoint_metal_scf_resumes_equivalently
           -- --ignored --exact

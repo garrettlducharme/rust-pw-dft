@@ -1,5 +1,5 @@
 use crate::backend::{BackendKind, PrecisionPolicy};
-use crate::checkpoint::{self, CHECKPOINT_SCHEMA_VERSION, ScfCheckpoint};
+use crate::checkpoint::{self, CHECKPOINT_SCHEMA_VERSION, CheckpointKPointState, ScfCheckpoint};
 use crate::eigensolver::{
     DavidsonOptions, ResidentDavidsonBackend, block_davidson_batched, block_davidson_resident,
 };
@@ -257,7 +257,10 @@ fn accumulated_metrics(
     let mut accumulated = baseline.clone();
     if let Some(context) = current {
         for (name, value) in metal_metrics(context) {
-            if name == "metal_projector_count" || name == "metal_persistent_buffer_bytes" {
+            if name == "metal_projector_count"
+                || name == "metal_persistent_buffer_bytes"
+                || name == "metal_k_point_context_count"
+            {
                 accumulated.insert(name, value);
             } else if name == "metal_peak_device_allocated_bytes" {
                 accumulated
@@ -267,6 +270,54 @@ fn accumulated_metrics(
             } else {
                 *accumulated.entry(name).or_default() += value;
             }
+        }
+    }
+    accumulated
+}
+
+fn current_kpoint_metal_metrics(states: &[KPointState]) -> BTreeMap<String, f64> {
+    let mut aggregate = BTreeMap::new();
+    let mut context_count = 0_usize;
+    for context in states
+        .iter()
+        .filter_map(|state| state.metal_context.as_ref())
+    {
+        context_count += 1;
+        for (name, value) in metal_metrics(context) {
+            if name == "metal_peak_device_allocated_bytes" {
+                aggregate
+                    .entry(name)
+                    .and_modify(|prior: &mut f64| *prior = prior.max(value))
+                    .or_insert(value);
+            } else {
+                *aggregate.entry(name).or_default() += value;
+            }
+        }
+    }
+    if context_count > 0 {
+        aggregate.insert("metal_k_point_context_count".into(), context_count as f64);
+    }
+    aggregate
+}
+
+fn accumulated_kpoint_metrics(
+    baseline: &BTreeMap<String, f64>,
+    states: &[KPointState],
+) -> BTreeMap<String, f64> {
+    let mut accumulated = baseline.clone();
+    for (name, value) in current_kpoint_metal_metrics(states) {
+        if name == "metal_projector_count"
+            || name == "metal_persistent_buffer_bytes"
+            || name == "metal_k_point_context_count"
+        {
+            accumulated.insert(name, value);
+        } else if name == "metal_peak_device_allocated_bytes" {
+            accumulated
+                .entry(name)
+                .and_modify(|prior| *prior = prior.max(value))
+                .or_insert(value);
+        } else {
+            *accumulated.entry(name).or_default() += value;
         }
     }
     accumulated
@@ -484,7 +535,7 @@ fn run_with_profile(
 
     if let Some(path) = &control.resume_from {
         let loaded = checkpoint::read(path)?;
-        let checkpoint = loaded.checkpoint;
+        let mut checkpoint = loaded.checkpoint;
         ensure!(
             checkpoint.writer_git_revision == current_git_revision,
             "checkpoint source revision differs ({} != {})",
@@ -512,10 +563,16 @@ fn run_with_profile(
             "checkpoint run profile differs"
         );
         ensure!(
-            checkpoint.fft_shape == hamiltonian.fft().shape()
-                && checkpoint.g_vector_count == g_vectors.len()
-                && checkpoint.occupied_states == occupied_states,
-            "checkpoint basis or FFT dimensions differ"
+            checkpoint.fft_shape == hamiltonian.fft().shape() && checkpoint.k_points.len() == 1,
+            "checkpoint k-point count or FFT dimensions differ"
+        );
+        let checkpoint_point = checkpoint.k_points.pop().unwrap();
+        ensure!(
+            checkpoint_point.reduced == [0.0, 0.0, 0.0]
+                && checkpoint_point.weight == 1.0
+                && checkpoint_point.g_vector_count == g_vectors.len()
+                && checkpoint_point.band_count == occupied_states,
+            "checkpoint Gamma-point basis dimensions differ"
         );
         ensure!(
             checkpoint.iteration_completed > 0
@@ -528,8 +585,8 @@ fn run_with_profile(
             "checkpoint density is invalid"
         );
         ensure!(
-            checkpoint.orbitals.len() == occupied_states
-                && checkpoint.orbitals.iter().all(|orbital| {
+            checkpoint_point.orbitals.len() == occupied_states
+                && checkpoint_point.orbitals.iter().all(|orbital| {
                     orbital.len() == g_vectors.len()
                         && orbital
                             .iter()
@@ -571,7 +628,7 @@ fn run_with_profile(
         completed_iterations = checkpoint.iteration_completed;
         density = checkpoint.density;
         previous_energy = Some(checkpoint.previous_energy_ry);
-        previous_orbitals = Some(checkpoint.orbitals);
+        previous_orbitals = Some(checkpoint_point.orbitals);
         davidson_iterations = checkpoint.davidson_iterations;
         hamiltonian_applications = checkpoint.hamiltonian_applications;
         history = checkpoint.history;
@@ -772,14 +829,18 @@ fn run_with_profile(
                 run_profile: profile.identifier().into(),
                 iteration_completed: iteration,
                 fft_shape: hamiltonian.fft().shape(),
-                g_vector_count: g_vectors.len(),
-                occupied_states,
                 density: density.clone(),
                 previous_energy_ry: previous_energy
                     .context("checkpoint requested before a complete SCF iteration")?,
-                orbitals: previous_orbitals
-                    .clone()
-                    .context("checkpoint requested without orbitals")?,
+                k_points: vec![CheckpointKPointState {
+                    reduced: [0.0, 0.0, 0.0],
+                    weight: 1.0,
+                    g_vector_count: g_vectors.len(),
+                    band_count: occupied_states,
+                    orbitals: previous_orbitals
+                        .clone()
+                        .context("checkpoint requested without orbitals")?,
+                }],
                 davidson_iterations,
                 hamiltonian_applications,
                 history: history.clone(),
@@ -906,12 +967,6 @@ fn run_kpoint_scf(
     control: &ScfRunControl,
     total_started: Instant,
 ) -> Result<ScfResult> {
-    ensure!(
-        control.resume_from.is_none()
-            && control.checkpoint_output.is_none()
-            && control.stop_after_scf_iterations.is_none(),
-        "multi-k-point checkpoints are not yet supported; refusing an incomplete restart"
-    );
     let setup_started = Instant::now();
     let band_count = input.occupations.band_count(electron_count)?;
     ensure!(band_count > 0, "k-point SCF requires at least one band");
@@ -1022,10 +1077,7 @@ fn run_kpoint_scf(
         .collect();
     let ewald_ry = ewald_energy_ry(lattice, &input.atoms, &ionic_charges, 0.7)?;
 
-    let mut timings = BTreeMap::from([(
-        "setup_seconds".into(),
-        setup_started.elapsed().as_secs_f64(),
-    )]);
+    let mut timings = BTreeMap::new();
     let mut history = Vec::new();
     let mut previous_energy = None;
     let mut final_energy = None;
@@ -1040,8 +1092,131 @@ fn run_kpoint_scf(
     let mut completed_iterations = 0_usize;
     let mut converged = false;
     let mut eigensolver_stop_reason = None;
+    let mut paused = false;
+    let mut prior_elapsed_seconds = 0.0_f64;
+    let mut baseline_backend_metrics = BTreeMap::new();
+    let mut restart_provenance = None;
 
-    for iteration in 1..=input.scf_options.max_iterations {
+    if let Some(path) = &control.resume_from {
+        let loaded = checkpoint::read(path)?;
+        let mut checkpoint = loaded.checkpoint;
+        ensure!(
+            checkpoint.writer_git_revision == current_git_revision,
+            "checkpoint source revision differs ({} != {})",
+            checkpoint.writer_git_revision,
+            current_git_revision
+        );
+        ensure!(
+            checkpoint.input_sha256 == input_hash,
+            "checkpoint input hash differs"
+        );
+        ensure!(
+            checkpoint.pseudopotential_sha256 == *pseudo_hashes,
+            "checkpoint pseudopotential hashes differ"
+        );
+        ensure!(
+            checkpoint.requested_backend == requested_backend,
+            "checkpoint backend differs"
+        );
+        ensure!(
+            checkpoint.precision_policy == precision_policy,
+            "checkpoint precision policy differs"
+        );
+        ensure!(
+            checkpoint.run_profile == profile.identifier(),
+            "checkpoint run profile differs"
+        );
+        ensure!(
+            checkpoint.fft_shape == fft.shape() && checkpoint.k_points.len() == states.len(),
+            "checkpoint k-point count or FFT dimensions differ"
+        );
+        ensure!(
+            checkpoint.iteration_completed > 0
+                && checkpoint.iteration_completed < input.scf_options.max_iterations,
+            "checkpoint iteration is outside the resumable range"
+        );
+        ensure!(
+            checkpoint.density.len() == fft.len()
+                && checkpoint.density.iter().all(|value| value.is_finite()),
+            "checkpoint density is invalid"
+        );
+        let checkpoint_points = std::mem::take(&mut checkpoint.k_points);
+        for (state, checkpoint_point) in states.iter_mut().zip(checkpoint_points) {
+            ensure!(
+                checkpoint_point.reduced == state.point.reduced
+                    && checkpoint_point.weight == state.point.weight
+                    && checkpoint_point.g_vector_count == state.g_vectors.len()
+                    && checkpoint_point.band_count == band_count,
+                "checkpoint k-point coordinates, weights, or basis dimensions differ"
+            );
+            ensure!(
+                checkpoint_point.orbitals.len() == band_count
+                    && checkpoint_point.orbitals.iter().all(|orbital| {
+                        orbital.len() == state.g_vectors.len()
+                            && orbital
+                                .iter()
+                                .all(|value| value.re.is_finite() && value.im.is_finite())
+                    }),
+                "checkpoint k-point orbitals are invalid"
+            );
+            state.previous_orbitals = Some(checkpoint_point.orbitals);
+        }
+        ensure!(
+            checkpoint.previous_energy_ry.is_finite()
+                && checkpoint.elapsed_seconds.is_finite()
+                && checkpoint.elapsed_seconds >= 0.0
+                && checkpoint
+                    .timings
+                    .values()
+                    .all(|value| value.is_finite() && *value >= 0.0)
+                && checkpoint
+                    .backend_metrics
+                    .values()
+                    .all(|value| value.is_finite() && *value >= 0.0),
+            "checkpoint scalar state is invalid"
+        );
+        validate_scf_history(&checkpoint.history, Some(checkpoint.iteration_completed))
+            .context("checkpoint SCF history is inconsistent")?;
+        ensure!(
+            checkpoint
+                .history
+                .iter()
+                .map(|record| record.davidson_iterations)
+                .sum::<usize>()
+                == checkpoint.davidson_iterations
+                && checkpoint
+                    .history
+                    .iter()
+                    .map(|record| record.hamiltonian_applications)
+                    .sum::<usize>()
+                    == checkpoint.hamiltonian_applications,
+            "checkpoint SCF history counters are inconsistent"
+        );
+        completed_iterations = checkpoint.iteration_completed;
+        density = checkpoint.density;
+        previous_energy = Some(checkpoint.previous_energy_ry);
+        davidson_iterations = checkpoint.davidson_iterations;
+        hamiltonian_applications = checkpoint.hamiltonian_applications;
+        history = checkpoint.history;
+        timings = checkpoint.timings;
+        prior_elapsed_seconds = checkpoint.elapsed_seconds;
+        baseline_backend_metrics = checkpoint.backend_metrics;
+        restart_provenance = Some(RestartProvenance {
+            checkpoint_sha256: loaded.file_sha256,
+            checkpoint_iteration: checkpoint.iteration_completed,
+            writer_git_revision: checkpoint.writer_git_revision,
+        });
+    }
+    add_timing(
+        &mut timings,
+        "setup_seconds",
+        setup_started.elapsed().as_secs_f64(),
+    );
+
+    for (iterations_this_run, iteration) in
+        (completed_iterations + 1..=input.scf_options.max_iterations).enumerate()
+    {
+        let iterations_this_run = iterations_this_run + 1;
         completed_iterations = iteration;
         let potential_started = Instant::now();
         let potential = hartree_xc_potential(&fft, lattice, &density, input.xc)?;
@@ -1286,11 +1461,59 @@ fn run_kpoint_scf(
         for (current, output) in density.iter_mut().zip(output_density) {
             *current = (1.0 - beta) * *current + beta * output;
         }
+        let pause_due = control
+            .stop_after_scf_iterations
+            .is_some_and(|limit| iterations_this_run >= limit);
+        let checkpoint_due = control.checkpoint_output.is_some()
+            && (iteration % control.checkpoint_every == 0 || pause_due);
+        if checkpoint_due {
+            let checkpoint_points = states
+                .iter()
+                .map(|state| {
+                    Ok(CheckpointKPointState {
+                        reduced: state.point.reduced,
+                        weight: state.point.weight,
+                        g_vector_count: state.g_vectors.len(),
+                        band_count,
+                        orbitals: state
+                            .previous_orbitals
+                            .clone()
+                            .context("checkpoint requested without k-point orbitals")?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let checkpoint = ScfCheckpoint {
+                schema_version: CHECKPOINT_SCHEMA_VERSION,
+                writer_git_revision: current_git_revision.into(),
+                input_sha256: input_hash.into(),
+                pseudopotential_sha256: pseudo_hashes.clone(),
+                requested_backend,
+                precision_policy: precision_policy.clone(),
+                run_profile: profile.identifier().into(),
+                iteration_completed: iteration,
+                fft_shape: fft.shape(),
+                density: density.clone(),
+                previous_energy_ry: previous_energy
+                    .context("checkpoint requested before a complete SCF iteration")?,
+                k_points: checkpoint_points,
+                davidson_iterations,
+                hamiltonian_applications,
+                history: history.clone(),
+                timings: timings.clone(),
+                elapsed_seconds: prior_elapsed_seconds + total_started.elapsed().as_secs_f64(),
+                backend_metrics: accumulated_kpoint_metrics(&baseline_backend_metrics, &states),
+            };
+            checkpoint::write_atomic(control.checkpoint_output.as_ref().unwrap(), &checkpoint)?;
+        }
+        if pause_due {
+            paused = true;
+            break;
+        }
     }
 
     timings.insert(
         "total_seconds".into(),
-        total_started.elapsed().as_secs_f64(),
+        prior_elapsed_seconds + total_started.elapsed().as_secs_f64(),
     );
     let final_residuals: Vec<_> = states
         .iter()
@@ -1333,6 +1556,10 @@ fn run_kpoint_scf(
 
     let stop_reason = if converged {
         None
+    } else if paused {
+        Some(format!(
+            "SCF paused after iteration {completed_iterations}; resume from the written checkpoint"
+        ))
     } else if let Some(reason) = eigensolver_stop_reason {
         Some(format!(
             "{reason}; no scientific acceptance claim is allowed"
@@ -1347,29 +1574,15 @@ fn run_kpoint_scf(
         ))
     };
     if requested_backend == BackendKind::MetalMixed {
-        let mut aggregate = BTreeMap::new();
-        let mut context_count = 0_usize;
-        for context in states
-            .iter()
-            .filter_map(|state| state.metal_context.as_ref())
-        {
-            context_count += 1;
-            for (name, value) in metal_metrics(context) {
-                if name == "metal_peak_device_allocated_bytes" {
-                    aggregate
-                        .entry(name)
-                        .and_modify(|prior: &mut f64| *prior = prior.max(value))
-                        .or_insert(value);
-                } else {
-                    *aggregate.entry(name).or_default() += value;
-                }
-            }
-        }
+        let aggregate = accumulated_kpoint_metrics(&baseline_backend_metrics, &states);
+        let context_count = aggregate
+            .get("metal_k_point_context_count")
+            .copied()
+            .unwrap_or_default() as usize;
         ensure!(
             context_count == states.len(),
             "Metal k-point context count differs from the resolved k-point count"
         );
-        aggregate.insert("metal_k_point_context_count".into(), context_count as f64);
         for (name, value) in aggregate {
             final_terms.insert(name, value);
         }
@@ -1406,7 +1619,7 @@ fn run_kpoint_scf(
             input_sha256: input_hash.into(),
             pseudopotential_sha256: pseudo_hashes.clone(),
             git_revision: current_git_revision.into(),
-            restart: None,
+            restart: restart_provenance,
         },
         stop_reason,
     })
@@ -1500,6 +1713,96 @@ mod checkpoint_tests {
         .unwrap_err();
         assert!(error.to_string().contains("input hash differs"));
 
+        std::fs::remove_file(checkpoint_path).unwrap();
+        std::fs::remove_file(bad_checkpoint_path).unwrap();
+    }
+
+    #[test]
+    #[ignore = "multi-k-point CPU checkpoint fixture; run explicitly in release mode"]
+    fn interrupted_multi_kpoint_cpu_scf_resumes_equivalently() {
+        let input_path = Path::new("examples/si2-pbe-2x2x2.toml");
+        if !Path::new("pseudopotentials/Si_ONCV_PBE-1.0.upf").exists() {
+            return;
+        }
+        let checkpoint_path = temporary_path("multi-k-cpu-resume");
+        let bad_checkpoint_path = temporary_path("multi-k-cpu-bad-resume");
+        let uninterrupted = run(input_path, BackendKind::CpuF64).unwrap();
+        let paused = run_with_control(
+            input_path,
+            BackendKind::CpuF64,
+            &ScfRunControl {
+                checkpoint_output: Some(checkpoint_path.clone()),
+                checkpoint_every: 2,
+                stop_after_scf_iterations: Some(5),
+                ..ScfRunControl::default()
+            },
+        )
+        .unwrap();
+        assert!(!paused.converged);
+        assert_eq!(paused.iterations, 5);
+        assert_eq!(paused.history.len(), 5);
+
+        let loaded = checkpoint::read(&checkpoint_path).unwrap();
+        assert_eq!(loaded.checkpoint.schema_version, CHECKPOINT_SCHEMA_VERSION);
+        assert_eq!(loaded.checkpoint.k_points.len(), 4);
+        assert!(
+            loaded
+                .checkpoint
+                .k_points
+                .iter()
+                .all(|point| point.band_count == 4 && point.orbitals.len() == 4)
+        );
+
+        let resumed = run_with_control(
+            input_path,
+            BackendKind::CpuF64,
+            &ScfRunControl {
+                resume_from: Some(checkpoint_path.clone()),
+                ..ScfRunControl::default()
+            },
+        )
+        .unwrap();
+        resumed.validate().unwrap();
+        assert!(resumed.converged);
+        assert_eq!(resumed.iterations, uninterrupted.iterations);
+        assert_eq!(resumed.history, uninterrupted.history);
+        assert!(
+            (resumed.total_energy_ry.unwrap() - uninterrupted.total_energy_ry.unwrap()).abs()
+                < 1.0e-13
+        );
+        assert_eq!(resumed.k_points.len(), uninterrupted.k_points.len());
+        for (actual, expected) in resumed.k_points.iter().zip(&uninterrupted.k_points) {
+            assert_eq!(actual.reduced, expected.reduced);
+            assert_eq!(actual.weight, expected.weight);
+            assert!(
+                actual
+                    .eigenvalues_ry
+                    .iter()
+                    .zip(&expected.eigenvalues_ry)
+                    .all(|(left, right)| (left - right).abs() < 1.0e-13)
+            );
+        }
+        let restart = resumed.provenance.restart.as_ref().unwrap();
+        assert_eq!(restart.checkpoint_iteration, 5);
+        assert_eq!(restart.checkpoint_sha256, loaded.file_sha256);
+
+        let mut mismatched = loaded.checkpoint;
+        mismatched.k_points[0].reduced[0] += 0.125;
+        checkpoint::write_atomic(&bad_checkpoint_path, &mismatched).unwrap();
+        let error = run_with_control(
+            input_path,
+            BackendKind::CpuF64,
+            &ScfRunControl {
+                resume_from: Some(bad_checkpoint_path.clone()),
+                ..ScfRunControl::default()
+            },
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("k-point coordinates, weights, or basis dimensions differ")
+        );
         std::fs::remove_file(checkpoint_path).unwrap();
         std::fs::remove_file(bad_checkpoint_path).unwrap();
     }
@@ -1960,6 +2263,99 @@ mod tests {
         assert!(metal.energy_terms["smearing_entropy"] > 0.0);
         assert!(metal.energy_terms["smearing_free_energy_correction_ry"] < 0.0);
         assert!(metal.energy_terms.contains_key("chemical_potential_ry"));
+    }
+
+    #[test]
+    #[ignore = "multi-k-point Metal checkpoint fixture; run explicitly in release mode"]
+    fn interrupted_multi_kpoint_metal_scf_resumes_equivalently() {
+        let _device_guard = crate::metal::test_device_lock();
+        let input_path = Path::new("examples/si2-pbe-2x2x2.toml");
+        if !Path::new("pseudopotentials/Si_ONCV_PBE-1.0.upf").exists() {
+            return;
+        }
+        let checkpoint_path = std::env::temp_dir().join(format!(
+            "rust-pw-dft-multi-k-metal-resume-{}.bin",
+            std::process::id()
+        ));
+        let uninterrupted = run(input_path, BackendKind::MetalMixed).unwrap();
+        let paused = run_with_control(
+            input_path,
+            BackendKind::MetalMixed,
+            &ScfRunControl {
+                checkpoint_output: Some(checkpoint_path.clone()),
+                checkpoint_every: 2,
+                stop_after_scf_iterations: Some(5),
+                ..ScfRunControl::default()
+            },
+        )
+        .unwrap();
+        assert!(!paused.converged);
+        assert_eq!(paused.iterations, 5);
+
+        let loaded = checkpoint::read(&checkpoint_path).unwrap();
+        assert_eq!(loaded.checkpoint.k_points.len(), 4);
+        assert_eq!(
+            loaded.checkpoint.backend_metrics["metal_k_point_context_count"],
+            4.0
+        );
+        let resumed = run_with_control(
+            input_path,
+            BackendKind::MetalMixed,
+            &ScfRunControl {
+                resume_from: Some(checkpoint_path.clone()),
+                ..ScfRunControl::default()
+            },
+        )
+        .unwrap();
+        resumed.validate().unwrap();
+        assert!(resumed.converged);
+        assert_eq!(resumed.iterations, uninterrupted.iterations);
+        assert_eq!(resumed.history.len(), uninterrupted.history.len());
+        assert!(
+            resumed
+                .history
+                .iter()
+                .zip(&uninterrupted.history)
+                .all(|(left, right)| {
+                    left.iteration == right.iteration
+                        && left.status == right.status
+                        && (left.total_energy_ry.unwrap() - right.total_energy_ry.unwrap()).abs()
+                            < 1.0e-9
+                        && (left.density_residual.unwrap() - right.density_residual.unwrap()).abs()
+                            < 1.0e-8
+                })
+        );
+        assert!(
+            (resumed.total_energy_ry.unwrap() - uninterrupted.total_energy_ry.unwrap()).abs()
+                < 1.0e-9
+        );
+        for (actual, expected) in resumed.k_points.iter().zip(&uninterrupted.k_points) {
+            assert_eq!(actual.reduced, expected.reduced);
+            assert_eq!(actual.weight, expected.weight);
+            assert!(
+                actual
+                    .eigenvalues_ry
+                    .iter()
+                    .zip(&expected.eigenvalues_ry)
+                    .all(|(left, right)| (left - right).abs() < 1.0e-8)
+            );
+        }
+        assert_eq!(
+            resumed.energy_terms["metal_full_vector_upload_bytes"],
+            uninterrupted.energy_terms["metal_full_vector_upload_bytes"]
+        );
+        assert_eq!(
+            resumed.energy_terms["metal_full_vector_download_bytes"],
+            uninterrupted.energy_terms["metal_full_vector_download_bytes"]
+        );
+        assert_eq!(
+            resumed.energy_terms["metal_resident_projection_resyncs"],
+            uninterrupted.energy_terms["metal_resident_projection_resyncs"]
+        );
+        let restart = resumed.provenance.restart.as_ref().unwrap();
+        assert_eq!(restart.checkpoint_iteration, 5);
+        assert_eq!(restart.checkpoint_sha256, loaded.file_sha256);
+        std::fs::remove_file(checkpoint_path).unwrap();
     }
 
     #[test]

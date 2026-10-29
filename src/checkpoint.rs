@@ -10,11 +10,21 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const CHECKPOINT_SCHEMA_VERSION: u32 = 2;
-const MAGIC: &[u8; 8] = b"RPDFTCK2";
+pub const CHECKPOINT_SCHEMA_VERSION: u32 = 3;
+const MAGIC: &[u8; 8] = b"RPDFTCK3";
 const HEADER_BYTES: usize = 8 + 4 + 8 + 32;
 const MAX_CHECKPOINT_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CheckpointKPointState {
+    pub reduced: [f64; 3],
+    pub weight: f64,
+    pub g_vector_count: usize,
+    pub band_count: usize,
+    pub orbitals: Vec<Vec<Complex64>>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -28,11 +38,9 @@ pub struct ScfCheckpoint {
     pub run_profile: String,
     pub iteration_completed: usize,
     pub fft_shape: [usize; 3],
-    pub g_vector_count: usize,
-    pub occupied_states: usize,
     pub density: Vec<f64>,
     pub previous_energy_ry: f64,
-    pub orbitals: Vec<Vec<Complex64>>,
+    pub k_points: Vec<CheckpointKPointState>,
     pub davidson_iterations: usize,
     pub hamiltonian_applications: usize,
     pub history: Vec<ScfIterationRecord>,
@@ -175,11 +183,15 @@ mod tests {
             run_profile: "scientific-v1".into(),
             iteration_completed: 3,
             fft_shape: [4, 4, 4],
-            g_vector_count: 7,
-            occupied_states: 2,
             density: vec![0.25; 64],
             previous_energy_ry: -1.25,
-            orbitals: vec![vec![Complex64::new(1.0, 0.0); 7]; 2],
+            k_points: vec![CheckpointKPointState {
+                reduced: [0.0, 0.0, 0.0],
+                weight: 1.0,
+                g_vector_count: 7,
+                band_count: 2,
+                orbitals: vec![vec![Complex64::new(1.0, 0.0); 7]; 2],
+            }],
             davidson_iterations: 8,
             hamiltonian_applications: 14,
             history: Vec::new(),
@@ -200,7 +212,10 @@ mod tests {
         let loaded = read(&path).unwrap();
         assert_eq!(loaded.file_sha256, written_hash);
         assert_eq!(loaded.checkpoint.iteration_completed, 3);
-        assert_eq!(loaded.checkpoint.orbitals[0][0], Complex64::new(1.0, 0.0));
+        assert_eq!(
+            loaded.checkpoint.k_points[0].orbitals[0][0],
+            Complex64::new(1.0, 0.0)
+        );
 
         let mut bytes = fs::read(&path).unwrap();
         *bytes.last_mut().unwrap() ^= 1;
