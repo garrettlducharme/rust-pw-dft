@@ -54,6 +54,11 @@ jobs:
           cargo test --locked --release
           scf::checkpoint_tests::analytic_scf_force_matches_total_energy_finite_difference
           -- --ignored --exact
+      - name: Run fixed-cell CPU relaxation gate in release mode
+        run: >-
+          cargo test --locked --release
+          relax::tests::cpu_relaxation_recovers_displaced_silicon_minimum
+          -- --ignored --exact
       - name: Run silicon 2x2x2 k-point CPU scientific gate in release mode
         run: >-
           cargo test --locked --release
@@ -89,6 +94,11 @@ jobs:
           cargo test --locked --features metal
           scf::tests::resident_metal_displaced_lda_forces_match_cpu
           -- --exact
+      - name: Run fixed-cell Metal relaxation parity gate in release mode
+        run: >-
+          cargo test --locked --release --features metal
+          relax::tests::metal_relaxation_matches_cpu_final_geometry
+          -- --ignored --exact
       - name: Run silicon 2x2x2 k-point Metal scientific gate in release mode
         run: >-
           cargo test --locked --release --features metal

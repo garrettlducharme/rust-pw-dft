@@ -9,6 +9,10 @@ pub fn sha256(path: &Path) -> Result<String> {
     Ok(hex::encode(Sha256::digest(bytes)))
 }
 
+pub fn sha256_bytes(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+
 pub fn git_revision() -> String {
     Command::new("git")
         .args(["rev-parse", "HEAD"])

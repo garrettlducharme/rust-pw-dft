@@ -10,7 +10,7 @@ use crate::operator::{
     CpuHamiltonian, accumulate_density_from_orbitals, atomic_starting_density,
     density_from_orbitals, ewald_energy_ry, ewald_forces_ry_bohr, hartree_xc_potential,
 };
-use crate::provenance::{git_revision, sha256};
+use crate::provenance::{git_revision, sha256, sha256_bytes};
 use crate::pseudo::NormConservingPseudo;
 use crate::result::{
     KPointResult, Provenance, RESULT_SCHEMA_VERSION, RestartProvenance, ScfIterationRecord,
@@ -396,6 +396,44 @@ fn run_with_profile(
     }
     let total_started = Instant::now();
     let input = SimulationInput::from_path(input_path)?;
+    let input_hash = sha256(input_path)?;
+    run_prepared_with_profile(
+        &input,
+        &input_hash,
+        requested_backend,
+        profile,
+        control,
+        total_started,
+    )
+}
+
+/// Run an already resolved and validated input without a filesystem round trip.
+///
+/// The input provenance hash covers its canonical TOML serialization. Paths
+/// supplied through [`SimulationInput::from_path`] are already resolved, so a
+/// caller can archive the exact structure and pseudopotential hashes recorded
+/// by the returned result.
+pub fn run_input(input: &SimulationInput, requested_backend: BackendKind) -> Result<ScfResult> {
+    input.validate()?;
+    let encoded = toml::to_string(input).context("failed to serialize in-memory input")?;
+    run_prepared_with_profile(
+        input,
+        &sha256_bytes(encoded.as_bytes()),
+        requested_backend,
+        ScfRunProfile::Scientific,
+        &ScfRunControl::default(),
+        Instant::now(),
+    )
+}
+
+fn run_prepared_with_profile(
+    input: &SimulationInput,
+    input_hash: &str,
+    requested_backend: BackendKind,
+    profile: ScfRunProfile,
+    control: &ScfRunControl,
+    total_started: Instant,
+) -> Result<ScfResult> {
     let resolved_k_points = input.k_points.resolve()?;
     let gamma_fixed = resolved_k_points.len() == 1
         && resolved_k_points[0]
@@ -403,7 +441,6 @@ fn run_with_profile(
             .iter()
             .all(|value| value.abs() <= 1.0e-15)
         && input.occupations == OccupationScheme::Fixed;
-    let input_hash = sha256(input_path)?;
     let current_git_revision = git_revision();
     let lattice = Lattice::new(input.cell.lattice_bohr)?;
     let mut pseudo_hashes = BTreeMap::new();
@@ -431,8 +468,8 @@ fn run_with_profile(
         .sum::<f64>();
     if !gamma_fixed {
         return run_kpoint_scf(
-            &input,
-            &input_hash,
+            input,
+            input_hash,
             &current_git_revision,
             &lattice,
             &pseudos,
@@ -841,7 +878,7 @@ fn run_with_profile(
             let checkpoint = ScfCheckpoint {
                 schema_version: CHECKPOINT_SCHEMA_VERSION,
                 writer_git_revision: current_git_revision.clone(),
-                input_sha256: input_hash.clone(),
+                input_sha256: input_hash.into(),
                 pseudopotential_sha256: pseudo_hashes.clone(),
                 requested_backend,
                 precision_policy: precision_policy.clone(),
@@ -977,7 +1014,7 @@ fn run_with_profile(
             actual_backend: requested_backend,
             actual_device,
             precision_policy,
-            input_sha256: input_hash,
+            input_sha256: input_hash.into(),
             pseudopotential_sha256: pseudo_hashes,
             git_revision: current_git_revision,
             restart: restart_provenance,

@@ -112,8 +112,11 @@ validation and independent fixtures.
    are implemented for Gamma and weighted multi-k-point SCFs. A displaced-Si2
    CPU result agrees with both total-energy finite differences and an
    independent QE 7.6 force reference; CPU/Metal force parity passes for LDA,
-   PBE, multi-k silicon, and metallic aluminum fixtures. Fixed-cell ionic
-   relaxation and broader chemical force validation remain pending.**
+   PBE, multi-k silicon, and metallic aluminum fixtures. A fail-closed fixed-
+   cell conjugate-gradient/Armijo relaxation now recovers the displaced-Si2
+   minimum on CPU and Metal with complete per-geometry provenance. Relaxation
+   restart, constraints, and broader chemical force/relaxation validation
+   remain pending.**
 6. Stress and variable-cell relaxation only after force validation is mature.
 
 Each feature must pass CPU FP64 first. Metal acceptance then requires a
