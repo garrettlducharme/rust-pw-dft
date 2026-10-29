@@ -1,5 +1,5 @@
 schema_version = 2
-cutoff_ry = 12.0
+cutoff_ry = 24.0
 xc = "lda-pz"
 spin_components = 1
 pseudopotentials = { Si = "../pseudopotentials/Si.pz-vbc.UPF" }
