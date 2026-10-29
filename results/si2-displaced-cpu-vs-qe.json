@@ -1,0 +1,16 @@
+{
+  "schema_version": 4,
+  "accepted": true,
+  "total_energy_error_mev_atom": 0.000058316212140153224,
+  "total_energy_tolerance_mev_atom": 2.0,
+  "maximum_occupied_eigenvalue_error_mev": 0.00015174025730446412,
+  "occupied_eigenvalue_tolerance_mev": 5.0,
+  "maximum_occupation_error": 0.0,
+  "occupation_tolerance": 1e-6,
+  "electron_count_error": 4.3520742565306136e-14,
+  "electron_count_tolerance": 1e-8,
+  "force_comparison_performed": true,
+  "maximum_force_error_ry_bohr": 5.1693210350763075e-6,
+  "force_tolerance_ry_bohr": 0.0001,
+  "k_point_count": 1
+}

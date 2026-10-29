@@ -136,6 +136,11 @@ the maximum component error is `5.17e-6 Ry/bohr` (about
 `0.0000583 meV/atom` total-energy error, `0.000152 meV` maximum occupied-
 eigenvalue error, and `4.35e-14` electrons.
 
+On the same nonzero-force fixture, resident Metal differs from CPU by
+`1.38e-7 Ry/bohr` in the largest force component, `0.00900 meV/atom` in total
+energy, `0.00262 meV` in the worst occupied eigenvalue, and `5.77e-14`
+electrons.
+
 This accepts fixed-cell Hellmann-Feynman forces only for the published
 norm-conserving fixtures. It does not yet provide ionic relaxation, stress,
 variable cells, ultrasoft, or PAW forces. The independent artifacts are
@@ -144,6 +149,12 @@ and
 [`results/qe-si2-displaced-force-reference.json`](results/qe-si2-displaced-force-reference.json).
 Units, implemented terms, mixed-precision behavior, validation layers, and the
 known raw net-force residue are documented in [`docs/forces.md`](docs/forces.md).
+The exact native outputs and accepted comparisons are
+[`results/si2-displaced-cpu-scf.json`](results/si2-displaced-cpu-scf.json),
+[`results/si2-displaced-cpu-vs-qe.json`](results/si2-displaced-cpu-vs-qe.json),
+[`results/si2-displaced-metal-scf.json`](results/si2-displaced-metal-scf.json),
+and
+[`results/si2-displaced-metal-vs-cpu.json`](results/si2-displaced-metal-vs-cpu.json).
 
 ## Metal result and boundary
 

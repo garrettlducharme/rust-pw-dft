@@ -44,7 +44,8 @@ Three independent layers guard the implementation:
 
 CPU/Metal parity tests cover Gamma-point LDA and PBE silicon, shifted 2x2x2 PBE
 silicon, and Fermi-Dirac metallic aluminum. Checkpoint/resume tests also compare
-the final forces.
+the final forces. On the nonzero displaced-Si2 fixture, Metal's maximum force
+component error relative to CPU is `1.38e-7 Ry/bohr`.
 
 The code reports raw forces and does not impose an acoustic-sum-rule
 correction. At the displaced low-cutoff fixture, the raw net Cartesian-x force
