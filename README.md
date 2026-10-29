@@ -4,10 +4,12 @@ An educational, fail-closed plane-wave DFT prototype aimed at Apple Silicon.
 It is dual-licensed under MIT or Apache-2.0 and contains no code copied from
 GPL DFT implementations.
 
-Version 0.8 extends the resident Metal Davidson path across independently
-weighted k points and validates complete silicon and metallic aluminum Apple-
-GPU SCFs. Version 0.7 added an independently validated CPU-FP64 metallic
-aluminum SCF, including global Fermi-Dirac occupations and free-energy terms. Version 0.6
+Version 0.9 adds schema-3 CPU/Metal checkpoint and deterministic restart for
+Gamma and multi-k-point SCFs. Version 0.8 extended the resident Metal Davidson
+path across independently weighted k points and validated complete silicon and
+metallic aluminum Apple-GPU SCFs. Version 0.7 added an independently validated
+CPU-FP64 metallic aluminum SCF, including global Fermi-Dirac occupations and
+free-energy terms. Version 0.6
 added Monkhorst-Pack and explicit k-point sampling, time-reversal reduction,
 and an independently validated 2x2x2 silicon PBE SCF. Version 0.5 added true
 multi-species norm-conserving operators and validated CPU and Metal PBE MgO
@@ -50,7 +52,8 @@ machine-readable evidence rather than feature presence alone.
   checkpoint contracts;
 - checksummed binary SCF checkpoints with atomic replacement, strict
   compatibility validation, cumulative timing/counter restoration, compact
-  inspection, and deterministic CPU and Metal interruption/resume tests;
+  per-k-point inspection, and deterministic CPU and Metal interruption/resume
+  tests for Gamma and multi-k-point SCFs;
 - complete per-iteration SCF histories with explicit continue/converged/
   eigensolver-failure states, energy and density changes, charge, orbital
   residuals, and per-step Davidson/Hamiltonian work; histories survive resume;
@@ -195,8 +198,8 @@ resynchronizations, and records a transfer-invariant check for every one of its
 
 This accepts only the exact silicon fixture with fixed occupations. The
 per-k-point GPU contexts currently execute sequentially, so this result adds a
-scientific capability, not a performance claim. Multi-k-point checkpoint/
-restart remains fail closed. Exact-source records are
+scientific capability, not a performance claim. Schema-3 checkpoint/restart is
+accepted for this CPU and Metal multi-k-point path. Exact-source records are
 [`results/si2-pbe-2x2x2-cpu-scf.json`](results/si2-pbe-2x2x2-cpu-scf.json),
 [`results/si2-pbe-2x2x2-metal-scf.json`](results/si2-pbe-2x2x2-metal-scf.json),
 [`results/qe-si2-pbe-2x2x2-reference.json`](results/qe-si2-pbe-2x2x2-reference.json),
@@ -286,6 +289,7 @@ cargo run --release --features metal -- bench-compare examples/si16.toml --repet
 cargo run --release --features metal -- bench-compare examples/si16-lda-2x2x2.toml --repetitions 5 --output kpoint-benchmark-comparison.json
 cargo run --release -- verify-fixtures
 cargo run --release --features metal -- run examples/si16.toml --backend metal --output paused.json --checkpoint si16.chk --stop-after 10
+cargo run --release --features metal -- run examples/si2-pbe-2x2x2.toml --backend metal --output paused-kmesh.json --checkpoint kmesh.chk --stop-after 10
 cargo run --release -- inspect-checkpoint si16.chk
 cargo run --release --features metal -- resume examples/si16.toml si16.chk --backend metal --output resumed.json
 ```

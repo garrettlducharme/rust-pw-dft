@@ -78,9 +78,9 @@ CPU results at the documented mixed-precision thresholds. Metal creates one
 persistent Hamiltonian and resident Davidson context per irreducible point;
 the contexts are currently scheduled sequentially. These establish only the
 exact published workloads; users must still perform cutoff, band-count,
-smearing, and k-mesh convergence studies. Multi-k-point checkpoint/resume is
-rejected explicitly, and the program never substitutes a Gamma calculation or
-silently falls back to CPU.
+smearing, and k-mesh convergence studies. Schema-3 checkpoint/resume stores and
+validates every irreducible-point orbital block on CPU and Metal. The program
+never substitutes a Gamma calculation or silently falls back to CPU.
 
 ## Performance boundary
 
