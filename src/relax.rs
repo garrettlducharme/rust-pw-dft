@@ -541,6 +541,22 @@ mod tests {
         let input = SimulationInput::from_path(input_path).unwrap();
         let result = relax(&input, BackendKind::CpuF64, &silicon_relaxation_options()).unwrap();
         assert_relaxed_silicon(&result);
+
+        let strict_options = RelaxationOptions {
+            max_steps: 1,
+            force_tolerance_ry_bohr: 1.0e-8,
+            ..silicon_relaxation_options()
+        };
+        let incomplete = relax(&input, BackendKind::CpuF64, &strict_options).unwrap();
+        incomplete.validate().unwrap();
+        assert!(!incomplete.converged);
+        assert!(
+            incomplete
+                .stop_reason
+                .as_deref()
+                .unwrap()
+                .contains("did not converge in 1 accepted steps")
+        );
     }
 
     #[cfg(all(feature = "metal", target_os = "macos"))]
