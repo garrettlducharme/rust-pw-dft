@@ -415,15 +415,20 @@ fn run_with_profile(
 /// by the returned result.
 pub fn run_input(input: &SimulationInput, requested_backend: BackendKind) -> Result<ScfResult> {
     input.validate()?;
-    let encoded = toml::to_string(input).context("failed to serialize in-memory input")?;
     run_prepared_with_profile(
         input,
-        &sha256_bytes(encoded.as_bytes()),
+        &input_sha256(input)?,
         requested_backend,
         ScfRunProfile::Scientific,
         &ScfRunControl::default(),
         Instant::now(),
     )
+}
+
+pub fn input_sha256(input: &SimulationInput) -> Result<String> {
+    input.validate()?;
+    let encoded = toml::to_string(input).context("failed to serialize in-memory input")?;
+    Ok(sha256_bytes(encoded.as_bytes()))
 }
 
 fn run_prepared_with_profile(

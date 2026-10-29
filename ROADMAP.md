@@ -52,7 +52,8 @@ Build the machinery required to add physics without weakening evidence.
   validation-manifest schemas; **implemented at the format level**
 - add binary checkpoints with hashes, compatibility checks, atomic writes,
   compact inspection, and CPU/Metal interruption equivalence tests;
-  **implemented for the current SCF state boundary**
+  **implemented for both the SCF state boundary and fixed-cell ionic
+  relaxation optimizer state**
 - provide a fixture manifest that records licenses, origins, download hashes,
   redistribution policy, and independent reference commands; **implemented
   and enforced in CI**
@@ -114,9 +115,11 @@ validation and independent fixtures.
    independent QE 7.6 force reference; CPU/Metal force parity passes for LDA,
    PBE, multi-k silicon, and metallic aluminum fixtures. A fail-closed fixed-
    cell conjugate-gradient/Armijo relaxation now recovers the displaced-Si2
-   minimum on CPU and Metal with complete per-geometry provenance. Relaxation
-   restart, constraints, and broader chemical force/relaxation validation
-   remain pending.**
+   minimum on CPU and Metal with complete per-geometry provenance. Atomic,
+   checksummed relaxation checkpoint/restart preserves the geometry, force,
+   conjugate-gradient direction, step proposal, histories, counters, and timing;
+   CPU and Metal interruption-equivalence gates pass bit-exactly. Constraints
+   and broader chemical force/relaxation validation remain pending.**
 6. Stress and variable-cell relaxation only after force validation is mature.
 
 Each feature must pass CPU FP64 first. Metal acceptance then requires a
@@ -127,7 +130,8 @@ norm-conserving pseudopotentials.
 
 ## Phase 4 — usability for independent researchers
 
-- stable CLI with `run`, `resume`, `inspect`, `compare`, and `bench` workflows;
+- stable CLI with `run`, `resume`, `relax`, `relax-resume`, checkpoint
+  inspection, `compare`, and `bench` workflows;
 - actionable convergence diagnostics and conservative presets;
 - documented units, coordinate conventions, FFT/cutoff behavior, and precision
   implications;
