@@ -4,7 +4,10 @@ An educational, fail-closed plane-wave DFT prototype aimed at Apple Silicon.
 It is dual-licensed under MIT or Apache-2.0 and contains no code copied from
 GPL DFT implementations.
 
-Version 0.11 adds fail-closed fixed-cell ionic relaxation with conjugate-gradient
+Version 0.12 adds atomic, checksummed fixed-cell relaxation checkpoints,
+strict source/input/pseudopotential/backend/optimizer compatibility checks,
+compact inspection, and bit-exact CPU/Metal interruption-equivalence gates.
+Version 0.11 added fail-closed fixed-cell ionic relaxation with conjugate-gradient
 directions, Armijo backtracking, complete per-geometry provenance, and matched
 CPU/Metal displaced-silicon acceptance gates. Version 0.10 added schema-4 analytic norm-conserving forces to converged CPU and
 Metal results, independently validates a displaced silicon force against QE
@@ -59,6 +62,10 @@ machine-readable evidence rather than feature presence alone.
   directions, raw-force convergence checks, conjugate-gradient updates,
   backtracking line searches, and a versioned history of every accepted
   geometry and SCF evaluation;
+- atomic, checksummed relaxation checkpoints that preserve optimizer state and
+  floating-point geometry exactly, reject incompatible source/input/pseudo/
+  backend/options, support compact inspection, and resume with cumulative
+  histories, timings, and SCF counts;
 - QE-compatible numerical UPF radial transforms that discard cancellation-noisy
   tails beyond 10 bohr and use an odd Simpson mesh;
 - explicit provenance and precision policy in JSON results;
@@ -149,8 +156,9 @@ energy, `0.00262 meV` in the worst occupied eigenvalue, and `5.77e-14`
 electrons.
 
 This accepts fixed-cell Hellmann-Feynman forces only for the published
-norm-conserving fixtures. It does not yet provide ionic relaxation, stress,
-variable cells, ultrasoft, or PAW forces. The independent artifacts are
+norm-conserving fixtures. Fixed-cell relaxation is separately accepted only
+for displaced Si2; stress, variable cells, ultrasoft, and PAW forces remain
+unsupported. The independent artifacts are
 [`fixtures/qe/si2-displaced-force-reference.in`](fixtures/qe/si2-displaced-force-reference.in)
 and
 [`results/qe-si2-displaced-force-reference.json`](results/qe-si2-displaced-force-reference.json).
@@ -173,8 +181,14 @@ CPU finishes at `6.11e-6 Ry/bohr` raw maximum force and Metal at
 by less than `1.3e-8`. The optimizer reports raw forces and uses raw-force
 convergence even though rigid translation is removed from the search direction.
 
-This accepts only the exact fixed-cell Si2 fixture. Constraints, relaxation
-restart, stress, variable-cell optimization, molecular dynamics, ultrasoft,
+Version 0.12 also proves bit-exact interruption equivalence for CPU and Metal:
+a deliberately multi-step relaxation paused after its first accepted step and
+resumed to the same accepted history, final energy, forces, hashes, and total
+SCF count as the uninterrupted run. Mismatched inputs and optimizer options are
+rejected before another SCF is started.
+
+This accepts only the exact fixed-cell Si2 fixture. Constraints, stress,
+variable-cell optimization, molecular dynamics, ultrasoft,
 and PAW remain unsupported. The algorithm, output schema, convergence rules,
 and source-linked artifacts are documented in
 [`docs/relaxation.md`](docs/relaxation.md).

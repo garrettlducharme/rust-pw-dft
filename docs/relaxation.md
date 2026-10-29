@@ -1,9 +1,12 @@
 # Fixed-cell ionic relaxation
 
-Version 0.11 adds a fail-closed `relax` command that repeatedly evaluates the
+Version 0.11 added a fail-closed `relax` command that repeatedly evaluates the
 schema-4 SCF energy and analytic forces while holding the lattice fixed. The
 first accepted workload is the published displaced two-atom silicon LDA
 fixture; this is not yet a general geometry-optimization claim.
+
+Version 0.12 adds atomic relaxation checkpoint/restart with exact optimizer-
+state restoration and CPU/Metal interruption-equivalence gates.
 
 ```sh
 cargo run --release -- relax examples/si2-displaced.toml \
@@ -19,6 +22,58 @@ Use `--features metal --backend metal` for the Apple-GPU path. The command
 writes its complete result even when ionic convergence fails, then returns a
 nonzero exit status. An unavailable Metal device or an unconverged initial SCF
 is an error; there is no CPU fallback.
+
+## Checkpoint and resume
+
+Write a checkpoint after every accepted ionic step and deliberately pause after
+one step with:
+
+```sh
+cargo run --release -- relax examples/si2-displaced.toml \
+  --backend cpu \
+  --output paused-relaxation.json \
+  --checkpoint relaxation.chk \
+  --checkpoint-every 1 \
+  --stop-after 1 \
+  --max-steps 12 \
+  --force-tolerance-ry-bohr 1e-4 \
+  --initial-step-bohr 0.01 \
+  --maximum-step-bohr 0.01
+```
+
+The paused result is written before the command returns a nonzero status. Read
+the compact checkpoint metadata without launching an SCF:
+
+```sh
+cargo run --release -- inspect-relaxation-checkpoint relaxation.chk
+```
+
+Resume with the same source revision, input, pseudopotentials, backend, and
+optimizer options recorded in the checkpoint:
+
+```sh
+cargo run --release -- relax-resume examples/si2-displaced.toml relaxation.chk \
+  --backend cpu \
+  --output resumed-relaxation.json
+```
+
+`relax-resume` obtains the optimizer options from the checkpoint and replaces
+the same checkpoint after each subsequent accepted step unless
+`--checkpoint-output` selects another path. `--checkpoint-every` and
+`--stop-after` have the same meaning as on `relax`.
+
+The checkpoint is a schema-1 checksummed MessagePack envelope written through
+an fsync-and-rename sequence. It stores the complete accepted history, current
+input and SCF result, projected force, conjugate-gradient direction, proposed
+step, cumulative elapsed time, and SCF evaluation count. A private binary wire
+representation preserves every floating-point value exactly while supporting
+the human-readable tagged input enums.
+
+Resume fails closed before another SCF if the checksum, schema, source git
+revision, initial input hash, pseudopotential hashes, requested backend, or
+optimizer options differ. It also validates the restored history, force,
+geometry, SCF provenance, counters, and immutable input fields. Checkpoints are
+not promised to be portable across source revisions.
 
 ## Algorithm and coordinates
 
@@ -39,12 +94,12 @@ constraints.
 Each line-search geometry receives a fresh, fully converged electronic SCF.
 Rejected trials count toward `total_scf_evaluations`; if the terminal line
 search fails, its unaccepted evaluations are recorded separately. Orbital and
-density extrapolation between geometries, ionic checkpoint/restart, and
-quasi-Newton Hessian persistence are not implemented yet.
+density extrapolation between geometries and quasi-Newton Hessian persistence
+are not implemented yet.
 
 ## Result contract
 
-Relaxation schema 1 records:
+Relaxation schema 2 records:
 
 - requested backend and exact relaxation options;
 - every accepted geometry, total energy, raw and translation-projected force
@@ -55,10 +110,28 @@ Relaxation schema 1 records:
   input and pseudopotential hashes, source revision, timings, eigenvalues,
   convergence history, energy terms, and forces;
 - an explicit stop reason for every unconverged relaxation.
+- cumulative elapsed time and, after a resume, the source checkpoint hash,
+  accepted step, and writer revision.
+
+Schema-1 relaxation JSON remains readable. It has no elapsed-time or restart-
+provenance claim.
 
 Validation rejects nonsequential histories, invalid numeric values, inconsistent
 evaluation counts, missing final forces, backend mismatches, or convergence
 claims that disagree with the raw final force.
+
+## Interruption-equivalence gate
+
+The release-mode acceptance test uses a `0.01 bohr` displacement cap so the
+published silicon fixture requires three accepted ionic steps. It compares an
+uninterrupted run with a run paused after step one and resumed from disk.
+
+For both CPU FP64 and resident mixed-precision Metal, the complete accepted-step
+history, final total energy, final forces, SCF input hashes, and cumulative SCF
+evaluation count are bit-exact. The same test verifies that changed input atoms
+and changed optimizer options are rejected. CI runs these gates explicitly;
+the ordinary test suite keeps them ignored because each invokes multiple full
+SCFs.
 
 ## Accepted displaced-silicon gate
 
