@@ -157,8 +157,9 @@ finite differences in both spin channels. The grid boundary is also checked
 for unit conversion and variational potentials. Version 0.14 integrates this
 kernel into the bounded CPU-FP64 spin SCF described in
 [`docs/spin.md`](spin.md). Version 0.15 admits the matched resident-Metal path
-and schema-5 result comparison. Spin checkpoint/restart, PBE, k-point meshes,
-matched benchmarking, and relaxation remain fail-closed.
+and schema-5 result comparison; version 0.16 adds channel-aware CPU/Metal
+checkpoint/restart. PBE, k-point meshes, matched benchmarking, and relaxation
+remain fail-closed.
 
 Regenerate the independent table with:
 

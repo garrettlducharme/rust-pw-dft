@@ -388,6 +388,29 @@ fn current_spin_metal_metrics(
     )
 }
 
+fn accumulated_spin_metrics(
+    baseline: &BTreeMap<String, f64>,
+    contexts: &[Option<crate::metal::HamiltonianContext>; 2],
+) -> BTreeMap<String, f64> {
+    let mut accumulated = baseline.clone();
+    for (name, value) in current_spin_metal_metrics(contexts) {
+        if name == "metal_projector_count"
+            || name == "metal_persistent_buffer_bytes"
+            || name == "metal_spin_channel_context_count"
+        {
+            accumulated.insert(name, value);
+        } else if name == "metal_peak_device_allocated_bytes" {
+            accumulated
+                .entry(name)
+                .and_modify(|prior| *prior = prior.max(value))
+                .or_insert(value);
+        } else {
+            *accumulated.entry(name).or_default() += value;
+        }
+    }
+    accumulated
+}
+
 fn accumulated_kpoint_metrics(
     baseline: &BTreeMap<String, f64>,
     states: &[KPointState],
@@ -714,7 +737,8 @@ fn run_prepared_with_profile(
         );
         let checkpoint_point = checkpoint.k_points.pop().unwrap();
         ensure!(
-            checkpoint_point.reduced == [0.0, 0.0, 0.0]
+            checkpoint_point.spin_channel.is_none()
+                && checkpoint_point.reduced == [0.0, 0.0, 0.0]
                 && checkpoint_point.weight == 1.0
                 && checkpoint_point.g_vector_count == g_vectors.len()
                 && checkpoint_point.band_count == occupied_states,
@@ -726,8 +750,11 @@ fn run_prepared_with_profile(
             "checkpoint iteration is outside the resumable range"
         );
         ensure!(
-            checkpoint.density.len() == hamiltonian.fft().len()
-                && checkpoint.density.iter().all(|value| value.is_finite()),
+            checkpoint.density_channels.len() == 1
+                && checkpoint.density_channels[0].len() == hamiltonian.fft().len()
+                && checkpoint.density_channels[0]
+                    .iter()
+                    .all(|value| value.is_finite()),
             "checkpoint density is invalid"
         );
         ensure!(
@@ -772,7 +799,7 @@ fn run_prepared_with_profile(
             "checkpoint SCF history counters are inconsistent"
         );
         completed_iterations = checkpoint.iteration_completed;
-        density = checkpoint.density;
+        density = checkpoint.density_channels.pop().unwrap();
         previous_energy = Some(checkpoint.previous_energy_ry);
         previous_orbitals = Some(checkpoint_point.orbitals);
         davidson_iterations = checkpoint.davidson_iterations;
@@ -976,10 +1003,11 @@ fn run_prepared_with_profile(
                 run_profile: profile.identifier().into(),
                 iteration_completed: iteration,
                 fft_shape: hamiltonian.fft().shape(),
-                density: density.clone(),
+                density_channels: vec![density.clone()],
                 previous_energy_ry: previous_energy
                     .context("checkpoint requested before a complete SCF iteration")?,
                 k_points: vec![CheckpointKPointState {
+                    spin_channel: None,
                     reduced: [0.0, 0.0, 0.0],
                     weight: 1.0,
                     g_vector_count: g_vectors.len(),
@@ -1133,12 +1161,6 @@ fn run_collinear_gamma_scf(
         profile == ScfRunProfile::Scientific,
         "collinear spin is not yet admitted to matched performance benchmarks"
     );
-    ensure!(
-        control.resume_from.is_none()
-            && control.checkpoint_output.is_none()
-            && control.stop_after_scf_iterations.is_none(),
-        "collinear spin checkpoint/restart is not yet implemented"
-    );
     let magnetization = input
         .magnetization_electrons
         .context("collinear spin input has no magnetization")?;
@@ -1243,11 +1265,6 @@ fn run_collinear_gamma_scf(
         .collect();
     let ewald_ry = ewald_energy_ry(lattice, &input.atoms, &ionic_charges, 0.7)?;
     let mut timings = BTreeMap::new();
-    add_timing(
-        &mut timings,
-        "setup_seconds",
-        setup_started.elapsed().as_secs_f64(),
-    );
 
     let mut previous_orbitals: [Option<Vec<Vec<num_complex::Complex64>>>; 2] = [None, None];
     let mut final_eigenvalues: [Vec<f64>; 2] = std::array::from_fn(|_| Vec::new());
@@ -1265,8 +1282,140 @@ fn run_collinear_gamma_scf(
     let mut history = Vec::new();
     let mut converged = false;
     let mut eigensolver_stop_reason = None;
+    let mut paused = false;
+    let mut prior_elapsed_seconds = 0.0_f64;
+    let mut baseline_backend_metrics = BTreeMap::new();
+    let mut restart_provenance = None;
 
-    for iteration in 1..=input.scf_options.max_iterations {
+    if let Some(path) = &control.resume_from {
+        let loaded = checkpoint::read(path)?;
+        let mut checkpoint = loaded.checkpoint;
+        ensure!(
+            checkpoint.writer_git_revision == current_git_revision,
+            "checkpoint source revision differs ({} != {})",
+            checkpoint.writer_git_revision,
+            current_git_revision
+        );
+        ensure!(
+            checkpoint.input_sha256 == input_hash,
+            "checkpoint input hash differs"
+        );
+        ensure!(
+            checkpoint.pseudopotential_sha256 == *pseudo_hashes,
+            "checkpoint pseudopotential hashes differ"
+        );
+        ensure!(
+            checkpoint.requested_backend == requested_backend,
+            "checkpoint backend differs"
+        );
+        ensure!(
+            checkpoint.precision_policy == precision_policy,
+            "checkpoint precision policy differs"
+        );
+        ensure!(
+            checkpoint.run_profile == profile.identifier(),
+            "checkpoint run profile differs"
+        );
+        ensure!(
+            checkpoint.fft_shape == hamiltonian.fft().shape()
+                && checkpoint.k_points.len() == 2
+                && checkpoint.density_channels.len() == 2,
+            "spin checkpoint channel count or FFT dimensions differ"
+        );
+        ensure!(
+            checkpoint.iteration_completed > 0
+                && checkpoint.iteration_completed < input.scf_options.max_iterations,
+            "checkpoint iteration is outside the resumable range"
+        );
+        ensure!(
+            checkpoint.density_channels.iter().all(|channel| {
+                channel.len() == hamiltonian.fft().len()
+                    && channel
+                        .iter()
+                        .all(|value| value.is_finite() && *value >= -1.0e-12)
+            }),
+            "spin checkpoint density is invalid"
+        );
+        for (channel, checkpoint_point) in checkpoint.k_points.drain(..).enumerate() {
+            ensure!(
+                checkpoint_point.spin_channel == Some(channel)
+                    && checkpoint_point.reduced == [0.0, 0.0, 0.0]
+                    && checkpoint_point.weight == 1.0
+                    && checkpoint_point.g_vector_count == g_vectors.len()
+                    && checkpoint_point.band_count == channel_bands[channel],
+                "spin checkpoint channel identity or basis dimensions differ"
+            );
+            ensure!(
+                checkpoint_point.orbitals.len() == channel_bands[channel]
+                    && checkpoint_point.orbitals.iter().all(|orbital| {
+                        orbital.len() == g_vectors.len()
+                            && orbital
+                                .iter()
+                                .all(|value| value.re.is_finite() && value.im.is_finite())
+                    }),
+                "spin checkpoint orbitals are invalid"
+            );
+            previous_orbitals[channel] = Some(checkpoint_point.orbitals);
+        }
+        ensure!(
+            checkpoint.previous_energy_ry.is_finite()
+                && checkpoint.elapsed_seconds.is_finite()
+                && checkpoint.elapsed_seconds >= 0.0
+                && checkpoint
+                    .timings
+                    .values()
+                    .all(|value| value.is_finite() && *value >= 0.0)
+                && checkpoint
+                    .backend_metrics
+                    .values()
+                    .all(|value| value.is_finite() && *value >= 0.0),
+            "spin checkpoint scalar state is invalid"
+        );
+        validate_scf_history(&checkpoint.history, Some(checkpoint.iteration_completed))
+            .context("spin checkpoint SCF history is inconsistent")?;
+        ensure!(
+            checkpoint
+                .history
+                .iter()
+                .map(|record| record.davidson_iterations)
+                .sum::<usize>()
+                == checkpoint.davidson_iterations
+                && checkpoint
+                    .history
+                    .iter()
+                    .map(|record| record.hamiltonian_applications)
+                    .sum::<usize>()
+                    == checkpoint.hamiltonian_applications,
+            "spin checkpoint SCF history counters are inconsistent"
+        );
+        completed_iterations = checkpoint.iteration_completed;
+        density = [
+            checkpoint.density_channels.remove(0),
+            checkpoint.density_channels.remove(0),
+        ];
+        previous_energy = Some(checkpoint.previous_energy_ry);
+        davidson_iterations = checkpoint.davidson_iterations;
+        hamiltonian_applications = checkpoint.hamiltonian_applications;
+        history = checkpoint.history;
+        timings = checkpoint.timings;
+        prior_elapsed_seconds = checkpoint.elapsed_seconds;
+        baseline_backend_metrics = checkpoint.backend_metrics;
+        restart_provenance = Some(RestartProvenance {
+            checkpoint_sha256: loaded.file_sha256,
+            checkpoint_iteration: checkpoint.iteration_completed,
+            writer_git_revision: checkpoint.writer_git_revision,
+        });
+    }
+    add_timing(
+        &mut timings,
+        "setup_seconds",
+        setup_started.elapsed().as_secs_f64(),
+    );
+
+    for (iterations_this_run, iteration) in
+        (completed_iterations + 1..=input.scf_options.max_iterations).enumerate()
+    {
+        let iterations_this_run = iterations_this_run + 1;
         completed_iterations = iteration;
         let potential_started = Instant::now();
         let potential = hartree_spin_xc_potential(
@@ -1476,6 +1625,55 @@ fn run_collinear_gamma_scf(
             charge_mixing_beta,
             magnetization_mixing_beta,
         )?;
+        let pause_due = control
+            .stop_after_scf_iterations
+            .is_some_and(|limit| iterations_this_run >= limit);
+        let checkpoint_due = control.checkpoint_output.is_some()
+            && (iteration % control.checkpoint_every == 0 || pause_due);
+        if checkpoint_due {
+            let mut checkpoint_points = Vec::with_capacity(2);
+            for channel in 0..2 {
+                checkpoint_points.push(CheckpointKPointState {
+                    spin_channel: Some(channel),
+                    reduced: [0.0, 0.0, 0.0],
+                    weight: 1.0,
+                    g_vector_count: g_vectors.len(),
+                    band_count: channel_bands[channel],
+                    orbitals: previous_orbitals[channel]
+                        .clone()
+                        .context("spin checkpoint requested without channel orbitals")?,
+                });
+            }
+            let checkpoint = ScfCheckpoint {
+                schema_version: CHECKPOINT_SCHEMA_VERSION,
+                writer_git_revision: current_git_revision.into(),
+                input_sha256: input_hash.into(),
+                pseudopotential_sha256: pseudo_hashes.clone(),
+                requested_backend,
+                precision_policy: precision_policy.clone(),
+                run_profile: profile.identifier().into(),
+                iteration_completed: iteration,
+                fft_shape: hamiltonian.fft().shape(),
+                density_channels: density.to_vec(),
+                previous_energy_ry: previous_energy
+                    .context("spin checkpoint requested before a complete SCF iteration")?,
+                k_points: checkpoint_points,
+                davidson_iterations,
+                hamiltonian_applications,
+                history: history.clone(),
+                timings: timings.clone(),
+                elapsed_seconds: prior_elapsed_seconds + total_started.elapsed().as_secs_f64(),
+                backend_metrics: accumulated_spin_metrics(
+                    &baseline_backend_metrics,
+                    &metal_contexts,
+                ),
+            };
+            checkpoint::write_atomic(control.checkpoint_output.as_ref().unwrap(), &checkpoint)?;
+        }
+        if pause_due {
+            paused = true;
+            break;
+        }
     }
 
     let forces_ry_bohr = if converged {
@@ -1511,10 +1709,14 @@ fn run_collinear_gamma_scf(
     };
     timings.insert(
         "total_seconds".into(),
-        total_started.elapsed().as_secs_f64(),
+        prior_elapsed_seconds + total_started.elapsed().as_secs_f64(),
     );
     let stop_reason = if converged {
         None
+    } else if paused {
+        Some(format!(
+            "collinear-spin SCF paused after iteration {completed_iterations}; resume from the written checkpoint"
+        ))
     } else if let Some(reason) = eigensolver_stop_reason {
         Some(format!(
             "{reason}; no scientific acceptance claim is allowed"
@@ -1541,7 +1743,7 @@ fn run_collinear_gamma_scf(
             .copied()
             .fold(0.0_f64, f64::max),
     );
-    for (name, value) in current_spin_metal_metrics(&metal_contexts) {
+    for (name, value) in accumulated_spin_metrics(&baseline_backend_metrics, &metal_contexts) {
         final_terms.insert(name, value);
     }
     let spin = CollinearSpinResult {
@@ -1591,7 +1793,7 @@ fn run_collinear_gamma_scf(
             input_sha256: input_hash.into(),
             pseudopotential_sha256: pseudo_hashes.clone(),
             git_revision: current_git_revision.into(),
-            restart: None,
+            restart: restart_provenance,
         },
         stop_reason,
     };
@@ -1795,14 +1997,18 @@ fn run_kpoint_scf(
             "checkpoint iteration is outside the resumable range"
         );
         ensure!(
-            checkpoint.density.len() == fft.len()
-                && checkpoint.density.iter().all(|value| value.is_finite()),
+            checkpoint.density_channels.len() == 1
+                && checkpoint.density_channels[0].len() == fft.len()
+                && checkpoint.density_channels[0]
+                    .iter()
+                    .all(|value| value.is_finite()),
             "checkpoint density is invalid"
         );
         let checkpoint_points = std::mem::take(&mut checkpoint.k_points);
         for (state, checkpoint_point) in states.iter_mut().zip(checkpoint_points) {
             ensure!(
-                checkpoint_point.reduced == state.point.reduced
+                checkpoint_point.spin_channel.is_none()
+                    && checkpoint_point.reduced == state.point.reduced
                     && checkpoint_point.weight == state.point.weight
                     && checkpoint_point.g_vector_count == state.g_vectors.len()
                     && checkpoint_point.band_count == band_count,
@@ -1852,7 +2058,7 @@ fn run_kpoint_scf(
             "checkpoint SCF history counters are inconsistent"
         );
         completed_iterations = checkpoint.iteration_completed;
-        density = checkpoint.density;
+        density = checkpoint.density_channels.pop().unwrap();
         previous_energy = Some(checkpoint.previous_energy_ry);
         davidson_iterations = checkpoint.davidson_iterations;
         hamiltonian_applications = checkpoint.hamiltonian_applications;
@@ -2131,6 +2337,7 @@ fn run_kpoint_scf(
                 .iter()
                 .map(|state| {
                     Ok(CheckpointKPointState {
+                        spin_channel: None,
                         reduced: state.point.reduced,
                         weight: state.point.weight,
                         g_vector_count: state.g_vectors.len(),
@@ -2152,7 +2359,7 @@ fn run_kpoint_scf(
                 run_profile: profile.identifier().into(),
                 iteration_completed: iteration,
                 fft_shape: fft.shape(),
-                density: density.clone(),
+                density_channels: vec![density.clone()],
                 previous_energy_ry: previous_energy
                     .context("checkpoint requested before a complete SCF iteration")?,
                 k_points: checkpoint_points,
@@ -2544,6 +2751,82 @@ mod checkpoint_tests {
         .unwrap_err();
         assert!(error.to_string().contains("input hash differs"));
 
+        std::fs::remove_file(checkpoint_path).unwrap();
+        std::fs::remove_file(bad_checkpoint_path).unwrap();
+    }
+
+    #[test]
+    #[ignore = "collinear-spin CPU checkpoint fixture; run explicitly in release mode"]
+    fn interrupted_collinear_spin_cpu_scf_resumes_equivalently_and_rejects_channel_mismatch() {
+        let input_path = Path::new("examples/si2-spin.toml");
+        if !Path::new("pseudopotentials/Si.pz-vbc.UPF").exists() {
+            return;
+        }
+        let checkpoint_path = temporary_path("spin-cpu-resume");
+        let bad_checkpoint_path = temporary_path("spin-cpu-bad-resume");
+        let uninterrupted = run(input_path, BackendKind::CpuF64).unwrap();
+        let paused = run_with_control(
+            input_path,
+            BackendKind::CpuF64,
+            &ScfRunControl {
+                checkpoint_output: Some(checkpoint_path.clone()),
+                checkpoint_every: 2,
+                stop_after_scf_iterations: Some(5),
+                ..ScfRunControl::default()
+            },
+        )
+        .unwrap();
+        assert!(!paused.converged);
+        assert_eq!(paused.iterations, 5);
+        assert!(paused.stop_reason.unwrap().contains("paused"));
+
+        let loaded = checkpoint::read(&checkpoint_path).unwrap();
+        assert_eq!(loaded.checkpoint.schema_version, CHECKPOINT_SCHEMA_VERSION);
+        assert_eq!(loaded.checkpoint.density_channels.len(), 2);
+        assert_eq!(loaded.checkpoint.k_points.len(), 2);
+        assert_eq!(loaded.checkpoint.k_points[0].spin_channel, Some(0));
+        assert_eq!(loaded.checkpoint.k_points[1].spin_channel, Some(1));
+        assert_eq!(loaded.checkpoint.k_points[0].band_count, 5);
+        assert_eq!(loaded.checkpoint.k_points[1].band_count, 3);
+
+        let resumed = run_with_control(
+            input_path,
+            BackendKind::CpuF64,
+            &ScfRunControl {
+                resume_from: Some(checkpoint_path.clone()),
+                ..ScfRunControl::default()
+            },
+        )
+        .unwrap();
+        resumed.validate().unwrap();
+        assert!(resumed.converged);
+        assert_eq!(resumed.iterations, uninterrupted.iterations);
+        assert_eq!(resumed.history, uninterrupted.history);
+        assert_eq!(resumed.total_energy_ry, uninterrupted.total_energy_ry);
+        assert_eq!(resumed.energy_terms, uninterrupted.energy_terms);
+        assert_eq!(resumed.spin, uninterrupted.spin);
+        assert_eq!(resumed.forces_ry_bohr, uninterrupted.forces_ry_bohr);
+        let restart = resumed.provenance.restart.as_ref().unwrap();
+        assert_eq!(restart.checkpoint_iteration, 5);
+        assert_eq!(restart.checkpoint_sha256, loaded.file_sha256);
+
+        let mut mismatched = loaded.checkpoint;
+        mismatched.k_points.swap(0, 1);
+        checkpoint::write_atomic(&bad_checkpoint_path, &mismatched).unwrap();
+        let error = run_with_control(
+            input_path,
+            BackendKind::CpuF64,
+            &ScfRunControl {
+                resume_from: Some(bad_checkpoint_path.clone()),
+                ..ScfRunControl::default()
+            },
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("channel identity or basis dimensions differ")
+        );
         std::fs::remove_file(checkpoint_path).unwrap();
         std::fs::remove_file(bad_checkpoint_path).unwrap();
     }
@@ -3062,6 +3345,67 @@ mod tests {
             terms["metal_resident_vector_download_bytes"] as usize,
             expected_download_bytes
         );
+    }
+
+    #[test]
+    #[ignore = "collinear-spin Metal checkpoint fixture; run explicitly in release mode"]
+    fn interrupted_collinear_spin_metal_scf_resumes_equivalently() {
+        let _device_guard = crate::metal::test_device_lock();
+        let input_path = Path::new("examples/si2-spin.toml");
+        if !Path::new("pseudopotentials/Si.pz-vbc.UPF").exists() {
+            return;
+        }
+        let checkpoint_path = std::env::temp_dir().join(format!(
+            "rust-pw-dft-spin-metal-resume-{}.bin",
+            std::process::id()
+        ));
+        let uninterrupted = run(input_path, BackendKind::MetalMixed).unwrap();
+        let paused = run_with_control(
+            input_path,
+            BackendKind::MetalMixed,
+            &ScfRunControl {
+                checkpoint_output: Some(checkpoint_path.clone()),
+                checkpoint_every: 2,
+                stop_after_scf_iterations: Some(5),
+                ..ScfRunControl::default()
+            },
+        )
+        .unwrap();
+        assert!(!paused.converged);
+        assert_eq!(paused.iterations, 5);
+        let loaded = checkpoint::read(&checkpoint_path).unwrap();
+        assert_eq!(loaded.checkpoint.density_channels.len(), 2);
+        assert_eq!(loaded.checkpoint.k_points.len(), 2);
+        assert_eq!(
+            loaded.checkpoint.backend_metrics["metal_spin_channel_context_count"],
+            2.0
+        );
+
+        let resumed = run_with_control(
+            input_path,
+            BackendKind::MetalMixed,
+            &ScfRunControl {
+                resume_from: Some(checkpoint_path.clone()),
+                ..ScfRunControl::default()
+            },
+        )
+        .unwrap();
+        resumed.validate().unwrap();
+        assert!(resumed.converged);
+        assert_eq!(resumed.iterations, uninterrupted.iterations);
+        assert_eq!(resumed.history, uninterrupted.history);
+        assert_eq!(resumed.total_energy_ry, uninterrupted.total_energy_ry);
+        assert_eq!(resumed.spin, uninterrupted.spin);
+        assert_eq!(resumed.forces_ry_bohr, uninterrupted.forces_ry_bohr);
+        let mut resumed_terms = resumed.energy_terms.clone();
+        let mut uninterrupted_terms = uninterrupted.energy_terms.clone();
+        resumed_terms.remove("metal_peak_device_allocated_bytes");
+        uninterrupted_terms.remove("metal_peak_device_allocated_bytes");
+        assert_eq!(resumed_terms, uninterrupted_terms);
+        let restart = resumed.provenance.restart.as_ref().unwrap();
+        assert_eq!(restart.checkpoint_iteration, 5);
+        assert_eq!(restart.checkpoint_sha256, loaded.file_sha256);
+        std::fs::remove_file(checkpoint_path).unwrap();
     }
 
     fn assert_kpoint_metal_matches_cpu(

@@ -10,8 +10,8 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const CHECKPOINT_SCHEMA_VERSION: u32 = 3;
-const MAGIC: &[u8; 8] = b"RPDFTCK3";
+pub const CHECKPOINT_SCHEMA_VERSION: u32 = 4;
+const MAGIC: &[u8; 8] = b"RPDFTCK4";
 const HEADER_BYTES: usize = 8 + 4 + 8 + 32;
 const MAX_CHECKPOINT_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -19,6 +19,7 @@ static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CheckpointKPointState {
+    pub spin_channel: Option<usize>,
     pub reduced: [f64; 3],
     pub weight: f64,
     pub g_vector_count: usize,
@@ -38,7 +39,7 @@ pub struct ScfCheckpoint {
     pub run_profile: String,
     pub iteration_completed: usize,
     pub fft_shape: [usize; 3],
-    pub density: Vec<f64>,
+    pub density_channels: Vec<Vec<f64>>,
     pub previous_energy_ry: f64,
     pub k_points: Vec<CheckpointKPointState>,
     pub davidson_iterations: usize,
@@ -183,9 +184,10 @@ mod tests {
             run_profile: "scientific-v1".into(),
             iteration_completed: 3,
             fft_shape: [4, 4, 4],
-            density: vec![0.25; 64],
+            density_channels: vec![vec![0.25; 64]],
             previous_energy_ry: -1.25,
             k_points: vec![CheckpointKPointState {
+                spin_channel: None,
                 reduced: [0.0, 0.0, 0.0],
                 weight: 1.0,
                 g_vector_count: 7,

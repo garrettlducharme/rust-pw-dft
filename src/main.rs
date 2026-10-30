@@ -202,9 +202,11 @@ struct CheckpointSummary {
     iteration_completed: usize,
     fft_shape: [usize; 3],
     k_point_count: usize,
+    spin_channels: Vec<Option<usize>>,
     g_vector_counts: Vec<usize>,
     band_counts: Vec<usize>,
-    density_values: usize,
+    density_channel_count: usize,
+    density_values: Vec<usize>,
     orbital_counts: Vec<usize>,
     elapsed_seconds: f64,
 }
@@ -652,6 +654,11 @@ fn main() -> Result<()> {
                 iteration_completed: value.iteration_completed,
                 fft_shape: value.fft_shape,
                 k_point_count: value.k_points.len(),
+                spin_channels: value
+                    .k_points
+                    .iter()
+                    .map(|point| point.spin_channel)
+                    .collect(),
                 g_vector_counts: value
                     .k_points
                     .iter()
@@ -662,7 +669,8 @@ fn main() -> Result<()> {
                     .iter()
                     .map(|point| point.band_count)
                     .collect(),
-                density_values: value.density.len(),
+                density_channel_count: value.density_channels.len(),
+                density_values: value.density_channels.iter().map(Vec::len).collect(),
                 orbital_counts: value
                     .k_points
                     .iter()

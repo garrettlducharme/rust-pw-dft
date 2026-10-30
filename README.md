@@ -4,7 +4,10 @@ An educational, fail-closed plane-wave DFT prototype aimed at Apple Silicon.
 It is dual-licensed under MIT or Apache-2.0 and contains no code copied from
 GPL DFT implementations.
 
-Version 0.15 adds two persistent resident Metal Davidson contexts to the
+Version 0.16 adds schema-4, channel-aware CPU/Metal checkpoint and deterministic
+restart for the bounded collinear-spin path, including both mixed densities,
+both orbital blocks, complete history, and cumulative accelerator counters.
+Version 0.15 added two persistent resident Metal Davidson contexts to the
 bounded collinear-spin SCF, separates charge and magnetization mixing for a
 stable mixed-precision trajectory, validates both spin-channel Hamiltonians at
 fixed density, and enforces CPU/QE energy, occupied-eigenvalue, charge,
@@ -13,8 +16,8 @@ results are now supported by the public `compare` command. Version 0.14 added a
 bounded CPU-FP64 collinear-spin SCF: Gamma-only LDA-PZ,
 fixed integer occupations, fixed total magnetization, separate spin-channel
 Davidson solves and density mixing, schema-5 results, analytic forces, and an
-independent QE 7.6 silicon acceptance gate. PBE, spin k-point meshes,
-checkpoint/restart, matched benchmarking, and relaxation remain fail-closed.
+independent QE 7.6 silicon acceptance gate. PBE, spin k-point meshes, matched
+benchmarking, and relaxation remain fail-closed.
 Version 0.13 added the independently Libxc-validated collinear-spin
 LDA-PZ point and grid boundary. Version 0.12 added
 atomic, checksummed fixed-cell relaxation checkpoints,
@@ -94,8 +97,8 @@ machine-readable evidence rather than feature presence alone.
   checkpoint contracts;
 - checksummed binary SCF checkpoints with atomic replacement, strict
   compatibility validation, cumulative timing/counter restoration, compact
-  per-k-point inspection, and deterministic CPU and Metal interruption/resume
-  tests for Gamma and multi-k-point SCFs;
+  per-k-point and spin-channel inspection, and deterministic CPU and Metal
+  interruption/resume tests for Gamma, collinear-spin, and multi-k-point SCFs;
 - complete per-iteration SCF histories with explicit continue/converged/
   eigensolver-failure states, energy and density changes, charge, orbital
   residuals, and per-step Davidson/Hamiltonian work; histories survive resume;
@@ -294,7 +297,7 @@ resynchronizations, and records a transfer-invariant check for every one of its
 
 This accepts only the exact silicon fixture with fixed occupations. The
 per-k-point GPU contexts currently execute sequentially, so this result adds a
-scientific capability, not a performance claim. Schema-3 checkpoint/restart is
+scientific capability, not a performance claim. Schema-4 checkpoint/restart is
 accepted for this CPU and Metal multi-k-point path. Exact-source records are
 [`results/si2-pbe-2x2x2-cpu-scf.json`](results/si2-pbe-2x2x2-cpu-scf.json),
 [`results/si2-pbe-2x2x2-metal-scf.json`](results/si2-pbe-2x2x2-metal-scf.json),
@@ -414,8 +417,8 @@ production SCF, and its normal-iteration
 zero-full-vector-transfer contract is checked at runtime and in portable and
 Apple-GPU tests. The bounded collinear-spin CPU/Metal vertical slice and its
 precision-specific convergence policy are documented in
-[`docs/spin.md`](docs/spin.md). The next spin frontiers are checkpoint/restart,
-a compute-bound performance fixture, and broader magnetic validation. Stress
+[`docs/spin.md`](docs/spin.md). The next spin frontiers are a compute-bound
+performance fixture and broader magnetic validation. Stress
 follows only after those fixed-cell
 boundaries mature, with the same CPU-reference-first acceptance policy. The
 resident buffer contract, dataflow, transfer

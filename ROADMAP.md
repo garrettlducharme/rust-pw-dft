@@ -95,7 +95,7 @@ validation and independent fixtures.
    universal performance claim. A two-atom matched benchmark records a
    deliberate `0.212x` no-go, while the compute-bound sixteen-atom, 24 Ry
    shifted 2x2x2 fixture passes the five-run end-to-end gate at `1.856x` on the
-   Apple M5 Pro. Schema-3 checkpoint/restart now validates and restores every
+   Apple M5 Pro. Schema-4 checkpoint/restart now validates and restores every
    per-k-point orbital block, accumulated history, timings, and Metal counters;
    CPU and Metal interruption-equivalence gates pass.**
 3. Fractional occupations and finite-temperature smearing for metals.
@@ -120,9 +120,12 @@ validation and independent fixtures.
    full-SCF CPU/QE, force, exact repeat-determinism, memory, and transfer-audit
    gates. The Metal path damps magnetization mixing separately and reports its
    measured FP32 density floor instead of claiming the CPU threshold. The
-   schema-5 CLI comparison is spin aware. Polarized PBE, spin k-point meshes,
-   spin checkpoints, matched performance claims, and relaxation remain
-   fail-closed pending dedicated validation.**
+   schema-5 CLI comparison is spin aware. Schema-4 checkpoints now preserve
+   both channel densities and orbital blocks, exact channel identities,
+   history, timings, and cumulative Metal counters; CPU and Metal interruption-
+   equivalence gates pass. Polarized PBE, spin k-point meshes, matched
+   performance claims, and relaxation remain fail-closed pending dedicated
+   validation.**
 5. Analytic norm-conserving forces, finite-difference verification, and fixed-
    cell ionic relaxation. **Local, separable-nonlocal, and Ewald derivatives
    are implemented for Gamma and weighted multi-k-point SCFs. A displaced-Si2

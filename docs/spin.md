@@ -5,7 +5,9 @@ admits a deliberately bounded CPU-FP64 collinear-spin SCF while keeping every
 unsupported path fail-closed. Version 0.15 adds two persistent resident Metal
 spin-channel Davidson contexts, precision-aware charge/magnetization mixing,
 schema-5 CLI comparison, and fixed-density plus complete-SCF accelerator
-gates. `spin_components = 2` therefore enters only the Gamma-point LDA-PZ
+gates. Version 0.16 adds atomic schema-4 CPU/Metal checkpoint and deterministic
+restart for both channel densities and orbital blocks. `spin_components = 2`
+therefore enters only the Gamma-point LDA-PZ
 solver whose orbitals, occupations, density mixing, results, and force assembly
 are explicitly spin resolved.
 
@@ -151,13 +153,13 @@ claim; the tiny open-shell cell is substantially slower on GPU.
 
 ## Remaining fail-closed boundaries
 
-PBE, weighted or generated k-point meshes, fractional occupations,
-checkpoint/restart, matched performance benchmarks, and ionic relaxation
-reject spin-polarized input. Fully polarized fixed-occupation SCFs with an
+PBE, weighted or generated k-point meshes, fractional occupations, matched
+performance benchmarks, and ionic relaxation reject spin-polarized input.
+Fully polarized fixed-occupation SCFs with an
 empty channel are also deferred, even though the point LSDA kernel validates
 its endpoint values.
 
-The next admission projects are spin checkpoint/restart, a compute-bound
-magnetic fixture that can support an honest performance decision, and broader
-magnetic chemistry. Noncollinear magnetism, spin-orbit coupling, constrained
+The next admission projects are a compute-bound magnetic fixture that can
+support an honest performance decision and broader magnetic chemistry.
+Noncollinear magnetism, spin-orbit coupling, constrained
 magnetization, and finite magnetic fields are separate later projects.

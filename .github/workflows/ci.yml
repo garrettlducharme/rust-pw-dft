@@ -54,6 +54,11 @@ jobs:
           cargo test --locked --release
           scf::checkpoint_tests::collinear_spin_cpu_scf_matches_pinned_qe_reference
           -- --ignored --exact
+      - name: Run collinear-spin CPU checkpoint equivalence gate in release mode
+        run: >-
+          cargo test --locked --release
+          scf::checkpoint_tests::interrupted_collinear_spin_cpu_scf_resumes_equivalently_and_rejects_channel_mismatch
+          -- --ignored --exact
       - name: Run displaced-silicon total-energy force-derivative gate in release mode
         run: >-
           cargo test --locked --release
@@ -113,6 +118,11 @@ jobs:
         run: >-
           cargo test --locked --release --features metal
           scf::tests::resident_metal_collinear_spin_matches_cpu_qe_and_is_deterministic
+          -- --ignored --exact
+      - name: Run collinear-spin Metal checkpoint equivalence gate in release mode
+        run: >-
+          cargo test --locked --release --features metal
+          scf::tests::interrupted_collinear_spin_metal_scf_resumes_equivalently
           -- --ignored --exact
       - name: Run fixed-cell Metal relaxation parity gate in release mode
         run: >-
