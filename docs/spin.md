@@ -1,11 +1,10 @@
 # Collinear spin-polarization development
 
-Version 0.13 begins collinear spin, the next ground-state physics expansion
-after the validated spin-unpolarized force and relaxation boundary. It is being
-added in layers so
-that `spin_components = 2` cannot silently enter a solver whose orbitals,
-occupations, density mixing, results, checkpoints, or Metal buffers still
-assume spin degeneracy.
+Version 0.13 introduced the independently validated LSDA kernel. Version 0.14
+admits a deliberately bounded CPU-FP64 collinear-spin SCF while keeping every
+unsupported path fail-closed. `spin_components = 2` therefore enters only the
+Gamma-point LDA-PZ solver whose orbitals, occupations, density mixing, results,
+and force assembly are explicitly spin resolved.
 
 ## Implemented foundation
 
@@ -59,23 +58,71 @@ The oracle generator is
 fixture hash, source version, license, and reproduction command are enforced by
 the fixture manifest.
 
-## Remaining admission gates
+## Accepted CPU vertical slice
 
-This foundation does not yet admit spin-polarized input. Before that happens,
-one coherent CPU-FP64 vertical slice must provide:
+Input schema 3 admits `spin_components = 2` only when all of these conditions
+hold:
 
-1. a versioned spin input contract with total electron and magnetization
-   consistency checks;
-2. separate up/down band counts, occupations, orbitals, densities, and mixing;
-3. a common Hartree potential from total density plus channel-specific XC
-   potentials;
-4. spin-resolved eigenvalues, occupations, charges, magnetic moment, SCF
-   history, result validation, comparison, and checkpoint state;
-5. an independently reproduced magnetic reference calculation and fixed-
-   density operator checks.
+- backend `cpu-f64`;
+- fixed cell and Gamma point;
+- LDA-PZ;
+- fixed occupations with positive integer up/down electron counts;
+- a finite `magnetization_electrons` consistent with the pseudopotential
+  valence count.
 
-Only after the CPU result passes those gates should the Metal path add two
-resident spin-channel eigensolver contexts and prove CPU/Metal parity,
-deterministic restart, and transfer accounting. Noncollinear magnetism,
-spin-orbit coupling, constrained magnetization, and finite magnetic fields are
-separate later projects.
+For example, the accepted silicon fixture requests eight electrons split into
+five up and three down:
+
+```toml
+schema_version = 3
+xc = "lda-pz"
+k_points = "gamma"
+spin_components = 2
+magnetization_electrons = 2.0
+```
+
+Each channel owns its Davidson solve, occupied orbital block, output density,
+and linear-mixing state. The Hartree potential is formed once from
+`rho_up + rho_down`; LSDA supplies separate channel potentials. Small projected
+eigensolves, reductions, total-energy assembly, convergence decisions, and all
+storage remain FP64 on the CPU.
+
+Schema-5 results leave the spin-degenerate top-level band arrays empty and
+instead report `spin.up` and `spin.down`, each with its electron count,
+k-points, eigenvalues, occupations, and residuals. Validation integrates the
+occupations independently, reconstructs total charge and magnetization, and
+rejects ambiguous or inconsistent records. Analytic local, nonlocal, and Ewald
+forces use the total local density and both occupied spin-channel orbital sets.
+
+## Independent full-SCF validation
+
+[`examples/si2-spin.toml`](../examples/si2-spin.toml) and
+[`fixtures/qe/si2-spin-reference.in`](../fixtures/qe/si2-spin-reference.in)
+define the same two-atom silicon cell, 12 Ry cutoff, LDA-PZ functional,
+norm-conserving `Si.pz-vbc.UPF`, fixed magnetization of two electrons, fixed
+occupations, and Gamma point. The reference was run with QE 7.6 source commit
+`9f93ddec427d2b9a45bb72d828c6d324f62fcabd` and normalized from its
+full-precision XML into result schema 5.
+
+The accepted energies are `-14.426337119974042 Ry` for Rust and
+`-14.426337128492126 Ry` for QE, an error of about `0.000058 meV/atom`.
+Occupied spin-channel eigenvalues are required to agree within 5 meV, total
+energy within 2 meV/atom, charge and magnetization within `1e-8` electrons,
+and Cartesian forces within `1e-4 Ry/bohr`. The release-mode ignored test
+enforces all of those gates, while the fixture manifest pins every relevant
+hash and provenance field.
+
+## Remaining fail-closed boundaries
+
+The Metal backend, PBE, weighted or generated k-point meshes, fractional
+occupations, checkpoint/restart, generic result comparison, matched
+performance benchmarks, and ionic relaxation reject spin-polarized input.
+Fully polarized fixed-occupation SCFs with an empty channel are also deferred,
+even though the point LSDA kernel validates its endpoint values.
+
+The next admission project is two resident Metal spin-channel eigensolver
+contexts with CPU/Metal fixed-density and full-SCF parity, deterministic
+transfer accounting, and no silent CPU fallback. Spin checkpoint/restart and
+broader magnetic fixtures follow. Noncollinear magnetism, spin-orbit coupling,
+constrained magnetization, and finite magnetic fields are separate later
+projects.

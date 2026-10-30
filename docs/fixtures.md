@@ -154,9 +154,10 @@ up/down density derivatives.
 The native LSDA kernel is required to match this table, reduce to the existing
 unpolarized LDA-PZ implementation at equal spin densities, and pass separate
 finite differences in both spin channels. The grid boundary is also checked
-for unit conversion and variational potentials. This validates the XC
-foundation only: spin-polarized SCF input remains rejected until the orbital,
-occupation, density, result, checkpoint, and Metal paths all support it.
+for unit conversion and variational potentials. Version 0.14 integrates this
+kernel into the bounded CPU-FP64 spin SCF described in
+[`docs/spin.md`](spin.md); unsupported spin checkpoint, Metal, PBE, k-point,
+comparison, and relaxation paths remain fail-closed.
 
 Regenerate the independent table with:
 
@@ -165,6 +166,30 @@ clang tools/libxc_lsda_reference.c -I/opt/homebrew/include \
   -L/opt/homebrew/lib -lxc -o /tmp/libxc_lsda_reference
 /tmp/libxc_lsda_reference
 ```
+
+## Collinear-spin silicon reference
+
+`examples/si2-spin.toml` and `fixtures/qe/si2-spin-reference.in` use the same
+two-atom silicon primitive cell, 12 Ry cutoff, LDA-PZ functional,
+`Si.pz-vbc.UPF`, Gamma point, fixed occupations, and two-electron total
+magnetization. QE 7.6 converged the independent reference in 53 iterations.
+`results/qe-si2-spin-reference.json` preserves its full-precision energy,
+separate up/down eigenvalues and occupations, channel charges, magnetization,
+energy decomposition, and forces in schema 5.
+
+Normalize a reproduced run with:
+
+```sh
+python3 tools/normalize_qe_xml.py \
+  qe-si2-spin-reference-tmp/si2-spin-reference.save/data-file-schema.xml \
+  qe-si2-spin-reference.out fixtures/qe/si2-spin-reference.in \
+  pseudopotentials/Si.pz-vbc.UPF results/qe-si2-spin-reference.json \
+  --qe-revision 9f93ddec427d2b9a45bb72d828c6d324f62fcabd --element Si
+```
+
+The release-mode scientific test requires total energy within 2 meV/atom,
+occupied eigenvalues within 5 meV, charge and magnetization within `1e-8`
+electrons, and maximum Cartesian force difference within `1e-4 Ry/bohr`.
 
 ## Multi-species MgO reference
 

@@ -1,0 +1,31 @@
+schema_version = 3
+cutoff_ry = 12.0
+xc = "lda-pz"
+k_points = "gamma"
+spin_components = 2
+magnetization_electrons = 2.0
+pseudopotentials = { Si = "../pseudopotentials/Si.pz-vbc.UPF" }
+
+[cell]
+lattice_bohr = [
+  [0.0, 5.125, 5.125],
+  [5.125, 0.0, 5.125],
+  [5.125, 5.125, 0.0],
+]
+fixed = true
+
+[[atoms]]
+element = "Si"
+fractional = [0.0, 0.0, 0.0]
+
+[[atoms]]
+element = "Si"
+fractional = [0.25, 0.25, 0.25]
+
+[scf_options]
+max_iterations = 120
+energy_tolerance_ry = 1.0e-8
+density_tolerance = 1.0e-8
+orbital_residual_tolerance = 1.0e-8
+mixing_beta = 0.3
+seed = 99400983

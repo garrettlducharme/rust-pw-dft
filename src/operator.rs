@@ -1144,6 +1144,15 @@ pub struct ElectronicPotential {
     pub electron_count: f64,
 }
 
+#[derive(Debug, Clone)]
+pub struct SpinElectronicPotential {
+    pub real_ry: [Vec<f64>; 2],
+    pub hartree_energy_ry: f64,
+    pub xc_energy_ry: f64,
+    pub integral_rho_vxc_ry: f64,
+    pub electron_count: f64,
+}
+
 pub fn density_from_orbitals(
     fft: &Fft3d,
     g_vectors: &[GVector],
@@ -1496,12 +1505,11 @@ pub fn ewald_forces_ry_bohr(
     Ok(forces)
 }
 
-pub fn hartree_xc_potential(
+fn hartree_potential_ry(
     fft: &Fft3d,
     lattice: &Lattice,
     density: &[f64],
-    functional: XcFunctional,
-) -> Result<ElectronicPotential> {
+) -> Result<(Vec<f64>, f64, f64)> {
     ensure!(
         density.len() == fft.len(),
         "density has the wrong grid size"
@@ -1545,12 +1553,61 @@ pub fn hartree_xc_potential(
         }
     }
     fft.inverse(&mut vh_g)?;
+    let real_ry = vh_g
+        .into_iter()
+        .map(|value| value.re * grid_points)
+        .collect();
+    Ok((real_ry, hartree_energy_ry, electron_count))
+}
+
+pub fn hartree_xc_potential(
+    fft: &Fft3d,
+    lattice: &Lattice,
+    density: &[f64],
+    functional: XcFunctional,
+) -> Result<ElectronicPotential> {
+    let (hartree_real_ry, hartree_energy_ry, electron_count) =
+        hartree_potential_ry(fft, lattice, density)?;
     let xc = functional.evaluate_unpolarized(fft, lattice, density)?;
     let mut real_ry = Vec::with_capacity(fft.len());
-    for (vh, v_xc_ry) in vh_g.into_iter().zip(&xc.potential_ry) {
-        real_ry.push(vh.re * grid_points + v_xc_ry);
+    for (hartree, v_xc_ry) in hartree_real_ry.into_iter().zip(&xc.potential_ry) {
+        real_ry.push(hartree + v_xc_ry);
     }
     Ok(ElectronicPotential {
+        real_ry,
+        hartree_energy_ry,
+        xc_energy_ry: xc.energy_ry,
+        integral_rho_vxc_ry: xc.integral_rho_vxc_ry,
+        electron_count,
+    })
+}
+
+pub fn hartree_spin_xc_potential(
+    fft: &Fft3d,
+    lattice: &Lattice,
+    density: [&[f64]; 2],
+    functional: XcFunctional,
+) -> Result<SpinElectronicPotential> {
+    ensure!(
+        density.iter().all(|channel| channel.len() == fft.len()),
+        "spin density has the wrong grid size"
+    );
+    let total_density: Vec<_> = density[0]
+        .iter()
+        .zip(density[1])
+        .map(|(&up, &down)| up + down)
+        .collect();
+    let (hartree_real_ry, hartree_energy_ry, electron_count) =
+        hartree_potential_ry(fft, lattice, &total_density)?;
+    let xc = functional.evaluate_collinear(fft, lattice, density)?;
+    let real_ry = std::array::from_fn(|channel| {
+        hartree_real_ry
+            .iter()
+            .zip(&xc.potential_ry[channel])
+            .map(|(&hartree, &xc)| hartree + xc)
+            .collect()
+    });
+    Ok(SpinElectronicPotential {
         real_ry,
         hartree_energy_ry,
         xc_energy_ry: xc.energy_ry,
@@ -2327,6 +2384,36 @@ mod tests {
             hartree_xc_potential(&fft, &lattice, &density, XcFunctional::LdaPz).unwrap();
         assert!((potential.electron_count - 2.0).abs() < 1.0e-12);
         assert!(potential.hartree_energy_ry.abs() < 1.0e-14);
+    }
+
+    #[test]
+    fn equal_spin_hartree_xc_reduces_to_unpolarized_lda() {
+        let lattice = Lattice::new([[5.0, 0.0, 0.0], [0.0, 5.0, 0.0], [0.0, 0.0, 5.0]]).unwrap();
+        let fft = Fft3d::new([5, 5, 5]).unwrap();
+        let density = vec![2.0 / lattice.volume; fft.len()];
+        let half_density: Vec<_> = density.iter().map(|value| 0.5 * value).collect();
+        let unpolarized =
+            hartree_xc_potential(&fft, &lattice, &density, XcFunctional::LdaPz).unwrap();
+        let spin = hartree_spin_xc_potential(
+            &fft,
+            &lattice,
+            [&half_density, &half_density],
+            XcFunctional::LdaPz,
+        )
+        .unwrap();
+
+        assert!((spin.electron_count - unpolarized.electron_count).abs() < 1.0e-12);
+        assert!((spin.hartree_energy_ry - unpolarized.hartree_energy_ry).abs() < 1.0e-14);
+        assert!((spin.xc_energy_ry - unpolarized.xc_energy_ry).abs() < 1.0e-14);
+        assert!((spin.integral_rho_vxc_ry - unpolarized.integral_rho_vxc_ry).abs() < 1.0e-14);
+        for channel in &spin.real_ry {
+            assert!(
+                channel
+                    .iter()
+                    .zip(&unpolarized.real_ry)
+                    .all(|(left, right)| (left - right).abs() < 1.0e-14)
+            );
+        }
     }
 
     #[test]

@@ -281,6 +281,10 @@ fn compare_results(result: &ScfResult, reference: &ScfResult) -> Result<Comparis
         result.converged && reference.converged,
         "comparison requires two converged SCF results"
     );
+    ensure!(
+        result.spin.is_none() && reference.spin.is_none(),
+        "spin-resolved result comparison is not yet implemented"
+    );
     let energy = result
         .total_energy_ry
         .context("result has no total energy")?;

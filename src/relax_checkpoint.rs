@@ -85,6 +85,7 @@ struct SimulationInputWire {
     k_points: KPointSamplingWire,
     occupations: OccupationWire,
     spin_components: u8,
+    magnetization_electrons: Option<f64>,
 }
 
 impl From<&SimulationInput> for SimulationInputWire {
@@ -130,6 +131,7 @@ impl From<&SimulationInput> for SimulationInputWire {
             k_points,
             occupations,
             spin_components: input.spin_components,
+            magnetization_electrons: input.magnetization_electrons,
         }
     }
 }
@@ -177,6 +179,7 @@ impl SimulationInputWire {
             k_points,
             occupations,
             spin_components: self.spin_components,
+            magnetization_electrons: self.magnetization_electrons,
         }
     }
 }

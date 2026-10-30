@@ -8,13 +8,14 @@ use crate::kpoints::{KPoint, OccupationScheme, assign_occupations};
 use crate::lattice::Lattice;
 use crate::operator::{
     CpuHamiltonian, accumulate_density_from_orbitals, atomic_starting_density,
-    density_from_orbitals, ewald_energy_ry, ewald_forces_ry_bohr, hartree_xc_potential,
+    density_from_orbitals, ewald_energy_ry, ewald_forces_ry_bohr, hartree_spin_xc_potential,
+    hartree_xc_potential,
 };
 use crate::provenance::{git_revision, sha256, sha256_bytes};
 use crate::pseudo::NormConservingPseudo;
 use crate::result::{
-    KPointResult, Provenance, RESULT_SCHEMA_VERSION, RestartProvenance, ScfIterationRecord,
-    ScfIterationStatus, ScfResult, validate_scf_history,
+    CollinearSpinResult, KPointResult, Provenance, RESULT_SCHEMA_VERSION, RestartProvenance,
+    ScfIterationRecord, ScfIterationStatus, ScfResult, SpinChannelResult, validate_scf_history,
 };
 use anyhow::{Context, Result, ensure};
 use std::collections::BTreeMap;
@@ -142,6 +143,21 @@ fn relative_density_residual(input: &[f64], output: &[f64]) -> f64 {
         .map(|(a, b)| (a - b).powi(2))
         .sum::<f64>();
     let reference = output.iter().map(|value| value * value).sum::<f64>();
+    (difference / reference.max(f64::MIN_POSITIVE)).sqrt()
+}
+
+fn relative_spin_density_residual(input: &[Vec<f64>; 2], output: &[Vec<f64>; 2]) -> f64 {
+    let difference = input
+        .iter()
+        .flatten()
+        .zip(output.iter().flatten())
+        .map(|(a, b)| (a - b).powi(2))
+        .sum::<f64>();
+    let reference = output
+        .iter()
+        .flatten()
+        .map(|value| value * value)
+        .sum::<f64>();
     (difference / reference.max(f64::MIN_POSITIVE)).sqrt()
 }
 
@@ -471,6 +487,21 @@ fn run_prepared_with_profile(
         .iter()
         .map(|atom| pseudos[&atom.element].valence_charge)
         .sum::<f64>();
+    if input.spin_components == 2 {
+        return run_collinear_gamma_scf(
+            input,
+            input_hash,
+            &current_git_revision,
+            &lattice,
+            &pseudos,
+            &pseudo_hashes,
+            electron_count,
+            requested_backend,
+            profile,
+            control,
+            total_started,
+        );
+    }
     if !gamma_fixed {
         return run_kpoint_scf(
             input,
@@ -1011,6 +1042,7 @@ fn run_prepared_with_profile(
             occupations,
             residuals: final_residuals.clone(),
         }],
+        spin: None,
         history,
         history_complete: true,
         timings,
@@ -1026,6 +1058,413 @@ fn run_prepared_with_profile(
         },
         stop_reason,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_collinear_gamma_scf(
+    input: &SimulationInput,
+    input_hash: &str,
+    current_git_revision: &str,
+    lattice: &Lattice,
+    pseudos: &BTreeMap<String, NormConservingPseudo>,
+    pseudo_hashes: &BTreeMap<String, String>,
+    electron_count: f64,
+    requested_backend: BackendKind,
+    profile: ScfRunProfile,
+    control: &ScfRunControl,
+    total_started: Instant,
+) -> Result<ScfResult> {
+    ensure!(
+        requested_backend == BackendKind::CpuF64,
+        "collinear spin is not yet implemented by the Metal backend"
+    );
+    ensure!(
+        profile == ScfRunProfile::Scientific,
+        "collinear spin is not yet admitted to matched performance benchmarks"
+    );
+    ensure!(
+        control.resume_from.is_none()
+            && control.checkpoint_output.is_none()
+            && control.stop_after_scf_iterations.is_none(),
+        "collinear spin checkpoint/restart is not yet implemented"
+    );
+    let magnetization = input
+        .magnetization_electrons
+        .context("collinear spin input has no magnetization")?;
+    ensure!(
+        magnetization.abs() <= electron_count + 1.0e-12,
+        "requested magnetization exceeds the total electron count"
+    );
+    let channel_electrons_f64 = [
+        0.5 * (electron_count + magnetization),
+        0.5 * (electron_count - magnetization),
+    ];
+    ensure!(
+        channel_electrons_f64
+            .iter()
+            .all(|count| { *count > 0.0 && (*count - count.round()).abs() <= 1.0e-12 }),
+        "fixed collinear occupations require positive integer up/down electron counts"
+    );
+    let channel_bands = channel_electrons_f64.map(|count| count.round() as usize);
+    let g_vectors = lattice.enumerate_g_vectors(input.cutoff_ry);
+    ensure!(
+        channel_bands
+            .iter()
+            .all(|&count| count > 0 && count <= g_vectors.len()),
+        "invalid collinear spin band count"
+    );
+
+    let setup_started = Instant::now();
+    let hamiltonian =
+        CpuHamiltonian::new(lattice, &g_vectors, &input.atoms, pseudos, input.cutoff_ry)?;
+    let initial_total_density = atomic_starting_density(
+        hamiltonian.fft(),
+        lattice,
+        &input.atoms,
+        pseudos,
+        input.cutoff_ry,
+        electron_count,
+    )?;
+    let mut density = std::array::from_fn(|channel| {
+        initial_total_density
+            .iter()
+            .map(|value| value * channel_electrons_f64[channel] / electron_count)
+            .collect::<Vec<_>>()
+    });
+    let occupations = channel_bands.map(|count| vec![1.0; count]);
+    let ionic_charges: Vec<_> = input
+        .atoms
+        .iter()
+        .map(|atom| pseudos[&atom.element].valence_charge)
+        .collect();
+    let ewald_ry = ewald_energy_ry(lattice, &input.atoms, &ionic_charges, 0.7)?;
+    let eigensolver_tolerance = input.scf_options.orbital_residual_tolerance.min(1.0e-10);
+    let scf_orbital_tolerance = input.scf_options.orbital_residual_tolerance;
+    let scf_energy_tolerance = input.scf_options.energy_tolerance_ry;
+    let scf_density_tolerance = input.scf_options.density_tolerance;
+    let mut timings = BTreeMap::new();
+    add_timing(
+        &mut timings,
+        "setup_seconds",
+        setup_started.elapsed().as_secs_f64(),
+    );
+
+    let mut previous_orbitals: [Option<Vec<Vec<num_complex::Complex64>>>; 2] = [None, None];
+    let mut final_eigenvalues: [Vec<f64>; 2] = std::array::from_fn(|_| Vec::new());
+    let mut final_residuals: [Vec<f64>; 2] = std::array::from_fn(|_| Vec::new());
+    let mut final_channel_charges = channel_electrons_f64;
+    let mut final_output_density: Option<[Vec<f64>; 2]> = None;
+    let mut final_energy = None;
+    let mut final_terms = BTreeMap::new();
+    let mut previous_energy = None;
+    let mut final_density_residual = f64::INFINITY;
+    let mut final_energy_change = f64::INFINITY;
+    let mut completed_iterations = 0_usize;
+    let mut davidson_iterations = 0_usize;
+    let mut hamiltonian_applications = 0_usize;
+    let mut history = Vec::new();
+    let mut converged = false;
+    let mut eigensolver_stop_reason = None;
+
+    for iteration in 1..=input.scf_options.max_iterations {
+        completed_iterations = iteration;
+        let potential_started = Instant::now();
+        let potential = hartree_spin_xc_potential(
+            hamiltonian.fft(),
+            lattice,
+            [&density[0], &density[1]],
+            input.xc,
+        )?;
+        add_timing(
+            &mut timings,
+            "potential_seconds",
+            potential_started.elapsed().as_secs_f64(),
+        );
+
+        let eigensolve_started = Instant::now();
+        let mut channel_results = Vec::with_capacity(2);
+        for channel in 0..2 {
+            let roots = channel_bands[channel];
+            let options = DavidsonOptions {
+                roots,
+                residual_tolerance: eigensolver_tolerance,
+                max_iterations: 80,
+                max_subspace: (roots * 8).max(roots + 4).min(g_vectors.len()),
+            };
+            channel_results.push(block_davidson_batched(
+                hamiltonian.kinetic_ry(),
+                previous_orbitals[channel].as_deref(),
+                &options,
+                |orbitals| {
+                    orbitals
+                        .iter()
+                        .map(|orbital| hamiltonian.apply_fft(orbital, &potential.real_ry[channel]))
+                        .collect()
+                },
+            )?);
+        }
+        add_timing(
+            &mut timings,
+            "eigensolve_seconds",
+            eigensolve_started.elapsed().as_secs_f64(),
+        );
+        let iteration_davidson: usize =
+            channel_results.iter().map(|result| result.iterations).sum();
+        let iteration_applications: usize = channel_results
+            .iter()
+            .map(|result| result.hamiltonian_applications)
+            .sum();
+        davidson_iterations += iteration_davidson;
+        hamiltonian_applications += iteration_applications;
+        let satisfies_orbital_contract = channel_results.iter().all(|result| {
+            result
+                .residual_norms
+                .iter()
+                .all(|residual| *residual <= scf_orbital_tolerance)
+        });
+        if channel_results.iter().any(|result| !result.converged) && !satisfies_orbital_contract {
+            for (channel, result) in channel_results.into_iter().enumerate() {
+                final_eigenvalues[channel] = result.eigenvalues;
+                final_residuals[channel] = result.residual_norms;
+            }
+            let maximum_residual = final_residuals
+                .iter()
+                .flatten()
+                .copied()
+                .fold(0.0_f64, f64::max);
+            eigensolver_stop_reason = Some(format!(
+                "spin-channel block Davidson did not converge (maximum residual {maximum_residual:.3e} Ry)"
+            ));
+            history.push(ScfIterationRecord {
+                iteration,
+                status: ScfIterationStatus::EigensolverNotConverged,
+                total_energy_ry: None,
+                energy_change_ry: None,
+                density_residual: None,
+                maximum_orbital_residual_ry: maximum_residual,
+                electron_count: None,
+                highest_occupied_eigenvalue_ry: final_eigenvalues
+                    .iter()
+                    .filter_map(|values| values.last().copied())
+                    .max_by(f64::total_cmp),
+                davidson_iterations: iteration_davidson,
+                hamiltonian_applications: iteration_applications,
+            });
+            break;
+        }
+
+        let mut output_density: [Vec<f64>; 2] = std::array::from_fn(|_| Vec::new());
+        let density_started = Instant::now();
+        for (channel, result) in channel_results.into_iter().enumerate() {
+            final_eigenvalues[channel] = result.eigenvalues;
+            final_residuals[channel] = result.residual_norms;
+            output_density[channel] = density_from_orbitals(
+                hamiltonian.fft(),
+                &g_vectors,
+                &result.eigenvectors,
+                &occupations[channel],
+                lattice.volume,
+            )?;
+            previous_orbitals[channel] = Some(result.eigenvectors);
+            final_channel_charges[channel] = output_density[channel].iter().sum::<f64>()
+                * lattice.volume
+                / output_density[channel].len() as f64;
+        }
+        add_timing(
+            &mut timings,
+            "density_seconds",
+            density_started.elapsed().as_secs_f64(),
+        );
+
+        final_density_residual = relative_spin_density_residual(&density, &output_density);
+        let final_charge = final_channel_charges.iter().sum::<f64>();
+        let actual_magnetization = final_channel_charges[0] - final_channel_charges[1];
+        let band_energy_ry: f64 = final_eigenvalues.iter().flatten().sum();
+        let total_energy_ry = band_energy_ry - potential.hartree_energy_ry + potential.xc_energy_ry
+            - potential.integral_rho_vxc_ry
+            + ewald_ry;
+        let iteration_energy_change =
+            previous_energy.map(|previous: f64| (total_energy_ry - previous).abs());
+        final_energy_change = iteration_energy_change.unwrap_or(f64::INFINITY);
+        previous_energy = Some(total_energy_ry);
+        final_energy = Some(total_energy_ry);
+        let maximum_orbital_residual = final_residuals
+            .iter()
+            .flatten()
+            .copied()
+            .fold(0.0_f64, f64::max);
+        final_terms = BTreeMap::from([
+            ("band_energy_ry".into(), band_energy_ry),
+            ("hartree_ry".into(), potential.hartree_energy_ry),
+            ("xc_ry".into(), potential.xc_energy_ry),
+            ("integral_rho_vxc_ry".into(), potential.integral_rho_vxc_ry),
+            ("ewald_ry".into(), ewald_ry),
+            ("density_residual".into(), final_density_residual),
+            ("density_tolerance".into(), scf_density_tolerance),
+            ("energy_change_ry".into(), final_energy_change),
+            ("energy_tolerance_ry".into(), scf_energy_tolerance),
+            ("eigensolver_tolerance_ry".into(), eigensolver_tolerance),
+            (
+                "orbital_residual_tolerance_ry".into(),
+                scf_orbital_tolerance,
+            ),
+            ("electron_count_up".into(), final_channel_charges[0]),
+            ("electron_count_down".into(), final_channel_charges[1]),
+            ("magnetization_electrons".into(), actual_magnetization),
+        ]);
+        if iteration_energy_change.is_none() {
+            final_terms.remove("energy_change_ry");
+        }
+        let iteration_converged = final_density_residual <= scf_density_tolerance
+            && final_energy_change <= scf_energy_tolerance
+            && maximum_orbital_residual <= scf_orbital_tolerance
+            && (final_charge - electron_count).abs() <= 1.0e-8
+            && (actual_magnetization - magnetization).abs() <= 1.0e-8;
+        history.push(ScfIterationRecord {
+            iteration,
+            status: if iteration_converged {
+                ScfIterationStatus::Converged
+            } else {
+                ScfIterationStatus::Continue
+            },
+            total_energy_ry: Some(total_energy_ry),
+            energy_change_ry: iteration_energy_change,
+            density_residual: Some(final_density_residual),
+            maximum_orbital_residual_ry: maximum_orbital_residual,
+            electron_count: Some(final_charge),
+            highest_occupied_eigenvalue_ry: final_eigenvalues
+                .iter()
+                .filter_map(|values| values.last().copied())
+                .max_by(f64::total_cmp),
+            davidson_iterations: iteration_davidson,
+            hamiltonian_applications: iteration_applications,
+        });
+        if iteration_converged {
+            final_output_density = Some(output_density);
+            converged = true;
+            break;
+        }
+        let beta = input.scf_options.mixing_beta;
+        for channel in 0..2 {
+            for (current, output) in density[channel].iter_mut().zip(&output_density[channel]) {
+                *current = (1.0 - beta) * *current + beta * output;
+            }
+        }
+    }
+
+    let forces_ry_bohr = if converged {
+        let force_started = Instant::now();
+        let output_density = final_output_density
+            .as_ref()
+            .context("converged spin SCF has no final density")?;
+        let total_density: Vec<_> = output_density[0]
+            .iter()
+            .zip(&output_density[1])
+            .map(|(&up, &down)| up + down)
+            .collect();
+        let mut forces = hamiltonian.local_ionic_forces_ry_bohr(&total_density)?;
+        for channel in 0..2 {
+            let nonlocal = hamiltonian.nonlocal_ionic_forces_ry_bohr(
+                previous_orbitals[channel]
+                    .as_deref()
+                    .context("converged spin SCF has no final orbitals")?,
+                &occupations[channel],
+            )?;
+            accumulate_forces(&mut forces, &nonlocal, 1.0)?;
+        }
+        let ewald = ewald_forces_ry_bohr(lattice, &input.atoms, &ionic_charges, 0.7)?;
+        accumulate_forces(&mut forces, &ewald, 1.0)?;
+        add_timing(
+            &mut timings,
+            "forces_seconds",
+            force_started.elapsed().as_secs_f64(),
+        );
+        Some(forces)
+    } else {
+        None
+    };
+    timings.insert(
+        "total_seconds".into(),
+        total_started.elapsed().as_secs_f64(),
+    );
+    let stop_reason = if converged {
+        None
+    } else if let Some(reason) = eigensolver_stop_reason {
+        Some(format!(
+            "{reason}; no scientific acceptance claim is allowed"
+        ))
+    } else {
+        Some(format!(
+            "CPU collinear-spin SCF did not converge in {} iterations (density residual {:.3e}, energy change {:.3e} Ry); no scientific acceptance claim is allowed",
+            input.scf_options.max_iterations, final_density_residual, final_energy_change
+        ))
+    };
+    final_terms.insert("davidson_iterations".into(), davidson_iterations as f64);
+    final_terms.insert(
+        "hamiltonian_applications".into(),
+        hamiltonian_applications as f64,
+    );
+    final_terms.insert(
+        "maximum_orbital_residual_ry".into(),
+        final_residuals
+            .iter()
+            .flatten()
+            .copied()
+            .fold(0.0_f64, f64::max),
+    );
+    let spin = CollinearSpinResult {
+        magnetization_electrons: final_channel_charges[0] - final_channel_charges[1],
+        up: SpinChannelResult {
+            electron_count: final_channel_charges[0],
+            k_points: vec![KPointResult {
+                reduced: [0.0; 3],
+                weight: 1.0,
+                eigenvalues_ry: final_eigenvalues[0].clone(),
+                occupations: occupations[0].clone(),
+                residuals: final_residuals[0].clone(),
+            }],
+        },
+        down: SpinChannelResult {
+            electron_count: final_channel_charges[1],
+            k_points: vec![KPointResult {
+                reduced: [0.0; 3],
+                weight: 1.0,
+                eigenvalues_ry: final_eigenvalues[1].clone(),
+                occupations: occupations[1].clone(),
+                residuals: final_residuals[1].clone(),
+            }],
+        },
+    };
+    let result = ScfResult {
+        schema_version: RESULT_SCHEMA_VERSION,
+        converged,
+        iterations: completed_iterations,
+        atom_count: input.atoms.len(),
+        total_energy_ry: final_energy,
+        energy_terms: final_terms,
+        eigenvalues_ry: Vec::new(),
+        electron_count: Some(final_channel_charges.iter().sum()),
+        residuals: Vec::new(),
+        forces_ry_bohr,
+        k_points: Vec::new(),
+        spin: Some(spin),
+        history,
+        history_complete: true,
+        timings,
+        provenance: Provenance {
+            requested_backend,
+            actual_backend: BackendKind::CpuF64,
+            actual_device: "Apple CPU (rustfft/f64 + two-channel block-Davidson/faer-f64)".into(),
+            precision_policy: PrecisionPolicy::cpu_f64(),
+            input_sha256: input_hash.into(),
+            pseudopotential_sha256: pseudo_hashes.clone(),
+            git_revision: current_git_revision.into(),
+            restart: None,
+        },
+        stop_reason,
+    };
+    result.validate()?;
+    Ok(result)
 }
 
 struct KPointState {
@@ -1730,6 +2169,7 @@ fn run_kpoint_scf(
         residuals: final_residuals,
         forces_ry_bohr,
         k_points: k_point_results,
+        spin: None,
         history,
         history_complete: true,
         timings,
@@ -2064,6 +2504,64 @@ mod checkpoint_tests {
         assert!(eigenvalue_error_mev <= 5.0, "{eigenvalue_error_mev:e}");
         assert!(force_error_ry_bohr <= 1.0e-4, "{force_error_ry_bohr:e}");
         assert!((result.electron_count.unwrap() - reference.electron_count.unwrap()).abs() <= 1e-8);
+    }
+
+    #[test]
+    #[ignore = "collinear-spin CPU scientific fixture; run explicitly in release mode"]
+    fn collinear_spin_cpu_scf_matches_pinned_qe_reference() {
+        let input_path = Path::new("examples/si2-spin.toml");
+        if !Path::new("pseudopotentials/Si.pz-vbc.UPF").exists() {
+            return;
+        }
+        let result = run(input_path, BackendKind::CpuF64).unwrap();
+        result.validate().unwrap();
+        assert!(result.converged);
+
+        let reference: ScfResult = serde_json::from_str(
+            &std::fs::read_to_string("results/qe-si2-spin-reference.json").unwrap(),
+        )
+        .unwrap();
+        reference.validate().unwrap();
+        let energy_error_mev_atom =
+            (result.total_energy_ry.unwrap() - reference.total_energy_ry.unwrap()).abs()
+                * 13_605.693_122_994
+                / result.atom_count as f64;
+        assert!(energy_error_mev_atom <= 2.0, "{energy_error_mev_atom:e}");
+
+        let actual_spin = result.spin.as_ref().unwrap();
+        let expected_spin = reference.spin.as_ref().unwrap();
+        let mut occupied_eigenvalue_error_mev = 0.0_f64;
+        for (actual, expected) in [
+            (&actual_spin.up, &expected_spin.up),
+            (&actual_spin.down, &expected_spin.down),
+        ] {
+            assert_eq!(actual.k_points.len(), expected.k_points.len());
+            for (actual_point, expected_point) in actual.k_points.iter().zip(&expected.k_points) {
+                for ((actual_eigenvalue, expected_eigenvalue), occupation) in actual_point
+                    .eigenvalues_ry
+                    .iter()
+                    .zip(&expected_point.eigenvalues_ry)
+                    .zip(&expected_point.occupations)
+                {
+                    if *occupation > 1.0e-8 {
+                        occupied_eigenvalue_error_mev = occupied_eigenvalue_error_mev.max(
+                            (actual_eigenvalue - expected_eigenvalue).abs() * 13_605.693_122_994,
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            occupied_eigenvalue_error_mev <= 5.0,
+            "{occupied_eigenvalue_error_mev:e}"
+        );
+        assert!((result.electron_count.unwrap() - reference.electron_count.unwrap()).abs() <= 1e-8);
+        assert!(
+            (actual_spin.magnetization_electrons - expected_spin.magnetization_electrons).abs()
+                <= 1e-8
+        );
+        let force_error_ry_bohr = maximum_force_difference(&result, &reference);
+        assert!(force_error_ry_bohr <= 1.0e-4, "{force_error_ry_bohr:e}");
     }
 
     #[test]

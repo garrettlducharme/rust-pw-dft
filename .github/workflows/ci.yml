@@ -49,6 +49,11 @@ jobs:
       - name: Check QE normalization tool syntax
         run: python3 -m py_compile tools/normalize_qe_xml.py
       - run: cargo test --locked
+      - name: Run collinear-spin silicon CPU scientific gate in release mode
+        run: >-
+          cargo test --locked --release
+          scf::checkpoint_tests::collinear_spin_cpu_scf_matches_pinned_qe_reference
+          -- --ignored --exact
       - name: Run displaced-silicon total-energy force-derivative gate in release mode
         run: >-
           cargo test --locked --release

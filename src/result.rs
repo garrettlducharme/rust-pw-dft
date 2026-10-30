@@ -3,7 +3,7 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub const RESULT_SCHEMA_VERSION: u32 = 4;
+pub const RESULT_SCHEMA_VERSION: u32 = 5;
 const MINIMUM_RESULT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -14,6 +14,21 @@ pub struct KPointResult {
     pub eigenvalues_ry: Vec<f64>,
     pub occupations: Vec<f64>,
     pub residuals: Vec<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpinChannelResult {
+    pub electron_count: f64,
+    pub k_points: Vec<KPointResult>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CollinearSpinResult {
+    pub magnetization_electrons: f64,
+    pub up: SpinChannelResult,
+    pub down: SpinChannelResult,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -95,12 +110,93 @@ pub struct ScfResult {
     /// and deserialize to an empty vector.
     #[serde(default)]
     pub k_points: Vec<KPointResult>,
+    /// Spin-resolved scientific data. Schema-5 results use this field instead
+    /// of the ambiguous spin-degenerate top-level eigenvalue and k-point arrays.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spin: Option<CollinearSpinResult>,
     pub history: Vec<ScfIterationRecord>,
     pub history_complete: bool,
     pub timings: BTreeMap<String, f64>,
     pub provenance: Provenance,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<String>,
+}
+
+fn validate_spin_channel(channel: &SpinChannelResult) -> Result<()> {
+    ensure!(
+        channel.electron_count.is_finite() && channel.electron_count >= 0.0,
+        "spin-channel electron count is invalid"
+    );
+    ensure!(
+        !channel.k_points.is_empty(),
+        "spin-channel k-point data is empty"
+    );
+    let weight_sum: f64 = channel.k_points.iter().map(|point| point.weight).sum();
+    ensure!(
+        (weight_sum - 1.0).abs() <= 1.0e-12,
+        "spin-channel k-point weights do not sum to one"
+    );
+    for point in &channel.k_points {
+        ensure!(
+            point.reduced.iter().all(|value| value.is_finite())
+                && point.weight.is_finite()
+                && point.weight > 0.0
+                && point.eigenvalues_ry.len() == point.occupations.len()
+                && (point.residuals.is_empty()
+                    || point.eigenvalues_ry.len() == point.residuals.len())
+                && point.eigenvalues_ry.iter().all(|value| value.is_finite())
+                && point
+                    .occupations
+                    .iter()
+                    .all(|value| value.is_finite() && (0.0..=1.0).contains(value))
+                && point
+                    .residuals
+                    .iter()
+                    .all(|value| value.is_finite() && *value >= 0.0),
+            "spin-channel result contains invalid per-k-point data"
+        );
+    }
+    let integrated: f64 = channel
+        .k_points
+        .iter()
+        .map(|point| point.weight * point.occupations.iter().sum::<f64>())
+        .sum();
+    ensure!(
+        (integrated - channel.electron_count).abs() <= 1.0e-8,
+        "spin-channel occupations disagree with its electron count"
+    );
+    Ok(())
+}
+
+fn validate_spin_result(spin: &CollinearSpinResult, total_electrons: Option<f64>) -> Result<()> {
+    validate_spin_channel(&spin.up)?;
+    validate_spin_channel(&spin.down)?;
+    ensure!(
+        spin.up.k_points.len() == spin.down.k_points.len()
+            && spin
+                .up
+                .k_points
+                .iter()
+                .zip(&spin.down.k_points)
+                .all(|(up, down)| up.reduced == down.reduced
+                    && (up.weight - down.weight).abs() <= 1.0e-15),
+        "spin channels use different k-point sets"
+    );
+    ensure!(
+        spin.magnetization_electrons.is_finite()
+            && (spin.magnetization_electrons - (spin.up.electron_count - spin.down.electron_count))
+                .abs()
+                <= 1.0e-8,
+        "spin magnetization disagrees with channel electron counts"
+    );
+    ensure!(
+        total_electrons.is_some_and(|total| {
+            total.is_finite()
+                && (total - spin.up.electron_count - spin.down.electron_count).abs() <= 1.0e-8
+        }),
+        "total electron count disagrees with spin channels"
+    );
+    Ok(())
 }
 
 impl ScfResult {
@@ -112,7 +208,22 @@ impl ScfResult {
             MINIMUM_RESULT_SCHEMA_VERSION,
             RESULT_SCHEMA_VERSION
         );
-        if self.schema_version == 2 {
+        if self.schema_version < 5 {
+            ensure!(
+                self.spin.is_none(),
+                "result schemas before 5 cannot contain spin-resolved data"
+            );
+        }
+        if let Some(spin) = &self.spin {
+            ensure!(
+                self.schema_version == 5
+                    && self.k_points.is_empty()
+                    && self.eigenvalues_ry.is_empty()
+                    && self.residuals.is_empty(),
+                "spin-resolved results require schema 5 and unambiguous channel arrays"
+            );
+            validate_spin_result(spin, self.electron_count)?;
+        } else if self.schema_version == 2 {
             ensure!(
                 self.k_points.is_empty(),
                 "schema-2 results cannot contain per-k-point data"
@@ -283,6 +394,7 @@ mod tests {
                 occupations: vec![2.0],
                 residuals: vec![0.1],
             }],
+            spin: None,
             history: vec![ScfIterationRecord {
                 iteration: 1,
                 status: ScfIterationStatus::EigensolverNotConverged,
@@ -355,5 +467,47 @@ mod tests {
         );
         result.forces_ry_bohr = Some(vec![[0.1, -0.2, 0.3]]);
         result.validate().unwrap();
+    }
+
+    #[test]
+    fn schema_five_spin_channels_are_unambiguous_and_charge_conserving() {
+        let mut result = failed_result();
+        result.eigenvalues_ry.clear();
+        result.residuals.clear();
+        result.k_points.clear();
+        result.electron_count = Some(3.0);
+        result.spin = Some(CollinearSpinResult {
+            magnetization_electrons: 1.0,
+            up: SpinChannelResult {
+                electron_count: 2.0,
+                k_points: vec![KPointResult {
+                    reduced: [0.0; 3],
+                    weight: 1.0,
+                    eigenvalues_ry: vec![-0.5, -0.1],
+                    occupations: vec![1.0, 1.0],
+                    residuals: vec![1.0e-10, 2.0e-10],
+                }],
+            },
+            down: SpinChannelResult {
+                electron_count: 1.0,
+                k_points: vec![KPointResult {
+                    reduced: [0.0; 3],
+                    weight: 1.0,
+                    eigenvalues_ry: vec![-0.4],
+                    occupations: vec![1.0],
+                    residuals: vec![3.0e-10],
+                }],
+            },
+        });
+        result.validate().unwrap();
+
+        result.spin.as_mut().unwrap().magnetization_electrons = 0.5;
+        assert!(
+            result
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("spin magnetization disagrees")
+        );
     }
 }

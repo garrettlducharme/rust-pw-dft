@@ -1,0 +1,110 @@
+{
+  "schema_version": 5,
+  "converged": true,
+  "iterations": 53,
+  "atom_count": 2,
+  "total_energy_ry": -14.426337128492126,
+  "energy_terms": {
+    "band_energy_ry": 2.28806548158172,
+    "hartree_ry": 1.4245272852768838,
+    "integral_rho_vxc_ry": -6.52412412157413,
+    "xc_ry": -4.99668268676072,
+    "ewald_ry": -16.817320732175787
+  },
+  "eigenvalues_ry": [],
+  "electron_count": 8.0,
+  "residuals": [],
+  "k_points": [],
+  "history": [],
+  "history_complete": false,
+  "timings": {
+    "wall_seconds": 1.031997919082642
+  },
+  "provenance": {
+    "requested_backend": "cpu-f64",
+    "actual_backend": "cpu-f64",
+    "actual_device": "Quantum ESPRESSO 7.6 CPU reference",
+    "precision_policy": {
+      "storage": "complex-f64",
+      "reductions": "f64",
+      "eigensolve": "f64",
+      "energy": "f64"
+    },
+    "input_sha256": "9a02bb763c9b50a6e66188a9e7a3c34ba927f6a37ccb8dfcfaf95c46211bbbf1",
+    "pseudopotential_sha256": {
+      "Si": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d"
+    },
+    "git_revision": "9f93ddec427d2b9a45bb72d828c6d324f62fcabd"
+  },
+  "spin": {
+    "magnetization_electrons": 2.0,
+    "up": {
+      "electron_count": 5.0,
+      "k_points": [
+        {
+          "reduced": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "weight": 1.0,
+          "residuals": [],
+          "eigenvalues_ry": [
+            -0.4229411803240574,
+            0.446534211083137,
+            0.4696603345877444,
+            0.4696608263469802,
+            0.6138044485150435
+          ],
+          "occupations": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      ]
+    },
+    "down": {
+      "electron_count": 3.0,
+      "k_points": [
+        {
+          "reduced": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "weight": 1.0,
+          "residuals": [],
+          "eigenvalues_ry": [
+            -0.347211319465837,
+            0.529278817600261,
+            0.5292793432384486,
+            0.5670766032724172,
+            0.696285221854457
+          ],
+          "occupations": [
+            1.0,
+            1.0,
+            1.0,
+            0.0,
+            0.0
+          ]
+        }
+      ]
+    }
+  },
+  "forces_ry_bohr": [
+    [
+      -1.3995037933603214e-07,
+      -1.448729686953062e-06,
+      -2.806492765304836e-07
+    ],
+    [
+      1.3995037933603214e-07,
+      1.448729686953062e-06,
+      2.806492765304836e-07
+    ]
+  ]
+}

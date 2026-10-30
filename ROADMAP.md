@@ -108,11 +108,16 @@ validation and independent fixtures.
    audit gates against CPU. Denser-mesh physical convergence and a modern
    production pseudopotential remain pending.**
 4. Collinear spin polarization. **The two-density LDA-PZ point and grid
-   boundary is implemented and agrees with an independent seven-point Libxc
-   7.1.2 polarized oracle, separate up/down finite differences, and the exact
-   unpolarized limit. Polarized PBE and production spin input remain fail-
-   closed while spin-resolved occupations, orbitals, mixing, results,
-   checkpoints, CPU SCF validation, and resident Metal parity are built.**
+   boundary agrees with an independent seven-point Libxc 7.1.2 polarized
+   oracle, separate up/down finite differences, and the exact unpolarized
+   limit. A bounded CPU-FP64 vertical slice now accepts schema-3 Gamma-only
+   LDA-PZ inputs with fixed integer up/down occupations and fixed total
+   magnetization. It uses separate Davidson solves and density mixing, a common
+   Hartree potential, channel-specific XC potentials, schema-5 spin results,
+   and analytic forces. The pinned two-atom silicon calculation agrees with QE
+   7.6 within the 2 meV/atom energy and 5 meV occupied-eigenvalue gates.
+   Polarized PBE, k-point meshes, spin checkpoints, result comparison,
+   relaxation, and Metal remain fail-closed pending dedicated validation.**
 5. Analytic norm-conserving forces, finite-difference verification, and fixed-
    cell ionic relaxation. **Local, separable-nonlocal, and Ewald derivatives
    are implemented for Gamma and weighted multi-k-point SCFs. A displaced-Si2

@@ -557,6 +557,10 @@ pub fn relax_with_control(
     input.validate()?;
     options.validate()?;
     control.validate()?;
+    ensure!(
+        input.spin_components == 1,
+        "collinear-spin ionic relaxation is not yet implemented"
+    );
     ensure!(input.cell.fixed, "ionic relaxation requires a fixed cell");
     let lattice = Lattice::new(input.cell.lattice_bohr)?;
     let initial_input_hash = input_sha256(input)?;
@@ -900,6 +904,19 @@ mod tests {
             ..RelaxationControl::default()
         };
         assert!(control.validate().is_err());
+
+        let spin_input =
+            SimulationInput::from_path(std::path::Path::new("examples/si2-spin.toml")).unwrap();
+        assert!(
+            relax(
+                &spin_input,
+                BackendKind::CpuF64,
+                &RelaxationOptions::default()
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("collinear-spin ionic relaxation")
+        );
     }
 
     fn checkpoint_resume_options() -> RelaxationOptions {
