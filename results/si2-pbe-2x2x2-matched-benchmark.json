@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "accepted_for_performance_claim": false,
+  "convergence_profile": "matched-metal-compatible-v1",
+  "repetitions": 5,
+  "cpu": {
+    "schema_version": 1,
+    "accepted_for_performance_claim": false,
+    "requested_backend": "cpu-f64",
+    "actual_backend": "cpu-f64",
+    "converged": true,
+    "iterations": 44,
+    "repetitions": 5,
+    "min_seconds": 0.493915375,
+    "median_seconds": 0.810850708,
+    "max_seconds": 0.837499083,
+    "provenance": {
+      "requested_backend": "cpu-f64",
+      "actual_backend": "cpu-f64",
+      "actual_device": "Apple CPU (rustfft/f64 + per-k block-Davidson/faer-f64)",
+      "precision_policy": {
+        "storage": "complex-f64",
+        "reductions": "f64",
+        "eigensolve": "f64",
+        "energy": "f64"
+      },
+      "input_sha256": "69ca1b7f1f21476039e9ea77a7349d68fe22c795282f737a63c33e4ca2ae9d61",
+      "pseudopotential_sha256": {
+        "Si": "481a5fae1167fd712d4e8e2e4df33f8bfc1e7d2abbc0565290d39fbba9dccb41"
+      },
+      "git_revision": "8046f934ae9c2f1300337155e571c67fe87d1249"
+    },
+    "stop_reason": null
+  },
+  "metal": {
+    "schema_version": 1,
+    "accepted_for_performance_claim": false,
+    "requested_backend": "metal-mixed",
+    "actual_backend": "metal-mixed",
+    "converged": true,
+    "iterations": 44,
+    "repetitions": 5,
+    "min_seconds": 3.526674209,
+    "median_seconds": 3.8184428329999998,
+    "max_seconds": 4.035140291,
+    "provenance": {
+      "requested_backend": "metal-mixed",
+      "actual_backend": "metal-mixed",
+      "actual_device": "Apple M5 Pro (one persistent MPSGraph Hamiltonian and resident GPU Davidson context per irreducible k point)",
+      "precision_policy": {
+        "storage": "resident-complex-f32-metal-wavefunctions",
+        "reductions": "complex-f32-metal-partials+complex-f64-cpu-final",
+        "eigensolve": "projected-f64-cpu",
+        "energy": "f64-cpu"
+      },
+      "input_sha256": "69ca1b7f1f21476039e9ea77a7349d68fe22c795282f737a63c33e4ca2ae9d61",
+      "pseudopotential_sha256": {
+        "Si": "481a5fae1167fd712d4e8e2e4df33f8bfc1e7d2abbc0565290d39fbba9dccb41"
+      },
+      "git_revision": "8046f934ae9c2f1300337155e571c67fe87d1249"
+    },
+    "stop_reason": null
+  },
+  "scientific_comparison": {
+    "schema_version": 3,
+    "accepted": true,
+    "total_energy_error_mev_atom": 0.005318902583649823,
+    "total_energy_tolerance_mev_atom": 1.0,
+    "maximum_occupied_eigenvalue_error_mev": 0.002316509774961148,
+    "occupied_eigenvalue_tolerance_mev": 5.0,
+    "maximum_occupation_error": 0.0,
+    "occupation_tolerance": 0.00001,
+    "electron_count_error": 4.796163466380676e-14,
+    "electron_count_tolerance": 0.00001,
+    "k_point_count": 4
+  },
+  "median_speedup": 0.21235114507736302,
+  "stop_reason": "matched benchmark failed: converged CPU/Metal=true/true, scientific acceptance=true, median speedup=0.212x (required 1.20x)"
+}

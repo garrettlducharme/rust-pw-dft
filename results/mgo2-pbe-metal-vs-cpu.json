@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "accepted": true,
+  "total_energy_error_mev_atom": 0.02033905210538926,
+  "maximum_occupied_eigenvalue_error_mev": 0.00733244988475306,
+  "electron_count_error": 3.0020430585864233e-13
+}

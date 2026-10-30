@@ -1,0 +1,40 @@
+&CONTROL
+  calculation = 'scf'
+  prefix = 'si2-spin-reference'
+  restart_mode = 'from_scratch'
+  pseudo_dir = './pseudopotentials'
+  outdir = '/private/tmp/qe-si2-spin-reference'
+  tprnfor = .true.
+  tstress = .false.
+/
+&SYSTEM
+  ibrav = 0
+  nat = 2
+  ntyp = 1
+  ecutwfc = 12.0
+  ecutrho = 48.0
+  input_dft = 'pz'
+  occupations = 'fixed'
+  nspin = 2
+  tot_magnetization = 2.0
+  starting_magnetization(1) = 0.25
+  nosym = .true.
+  noinv = .true.
+/
+&ELECTRONS
+  conv_thr = 1.0d-10
+  electron_maxstep = 160
+  mixing_mode = 'plain'
+  mixing_beta = 0.3
+  diagonalization = 'david'
+/
+ATOMIC_SPECIES
+Si 28.0855 Si.pz-vbc.UPF
+CELL_PARAMETERS bohr
+0.0000000000 5.1250000000 5.1250000000
+5.1250000000 0.0000000000 5.1250000000
+5.1250000000 5.1250000000 0.0000000000
+ATOMIC_POSITIONS crystal
+Si 0.0000000000 0.0000000000 0.0000000000
+Si 0.2500000000 0.2500000000 0.2500000000
+K_POINTS gamma

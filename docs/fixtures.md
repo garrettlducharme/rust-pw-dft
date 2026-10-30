@@ -11,7 +11,7 @@ rust-pw-dft verify-fixtures
 The verifier rejects unknown manifest fields, unsupported schema versions,
 duplicate identifiers, missing provenance, malformed hashes, absolute paths,
 parent-directory traversal, missing files, and checksum mismatches. CI runs it
-after downloading the two intentionally untracked fixtures.
+after downloading the five intentionally untracked fixtures.
 
 ## Silicon pseudopotential
 
@@ -29,6 +29,14 @@ pinned by QE 7.6. Its SHA-256 is
 The UPF declares CC-BY-SA-4.0 and identifies the Schlipf-Gygi
 norm-conserving library and ONCVPSP generator. The project records that license
 and source but still avoids redistributing the file.
+
+The LDA silicon performance fixtures use the same pinned legacy file. The
+Gamma-point `si16.toml` input measures the original resident-Hamiltonian
+crossover. `si16-lda-2x2x2.toml` expands that cell to a shifted mesh and a
+24 Ry cutoff so each of its four irreducible-point contexts is compute-bound.
+Its five-run report is a performance fixture, not an independent physical
+reference: scientific parity is measured against the CPU-FP64 backend, while
+the smaller Si2 k-point workload remains the independently QE-validated case.
 
 ## Independent QE result
 
@@ -53,6 +61,33 @@ marked incomplete because QE's iteration log was not embedded in the original
 normalized artifact; native `rust-pw-dft` results require a complete structured
 history.
 
+### Displaced-silicon force reference
+
+[`fixtures/qe/si2-displaced-force-reference.in`](../fixtures/qe/si2-displaced-force-reference.in)
+moves the second silicon atom by `0.05 bohr` along Cartesian x and requests QE
+forces. This prevents a symmetry-zero force from satisfying the validation.
+The pinned QE 7.6 XML records forces in Hartree/bohr; the normalizer converts
+them to the schema-4 Ry/bohr convention and requires exactly three finite
+components per atom. The resulting independent artifact is
+[`results/qe-si2-displaced-force-reference.json`](../results/qe-si2-displaced-force-reference.json).
+
+Regenerate it with:
+
+```sh
+python3 tools/normalize_qe_xml.py \
+  qe-si2-displaced-force-reference-tmp/si2-displaced-force-reference.save/data-file-schema.xml \
+  qe-si2-displaced-force-reference.out \
+  fixtures/qe/si2-displaced-force-reference.in \
+  pseudopotentials/Si.pz-vbc.UPF \
+  results/qe-si2-displaced-force-reference.json \
+  --qe-revision 9f93ddec427d2b9a45bb72d828c6d324f62fcabd
+```
+
+The accepted CPU result differs from QE by `5.17e-6 Ry/bohr` in its largest
+force component. A separate five-SCF central-difference gate checks both atoms
+at the displaced geometry; its maximum analytic-versus-energy-derivative error
+is `9.23e-9 Ry/bohr`.
+
 The accepted PBE reference uses the tracked, byte-identical
 [`fixtures/qe/si2-pbe-reference.in`](../fixtures/qe/si2-pbe-reference.in), QE
 7.6 source commit `9f93ddec427d2b9a45bb72d828c6d324f62fcabd`, and the pinned ONCV PBE
@@ -67,6 +102,22 @@ python3 tools/normalize_qe_xml.py \
   qe-si2-pbe-reference.out fixtures/qe/si2-pbe-reference.in \
   pseudopotentials/Si_ONCV_PBE-1.0.upf results/qe-pbe-reference.json \
   --qe-revision 9f93ddec427d2b9a45bb72d828c6d324f62fcabd
+```
+
+The accepted multi-k-point PBE reference uses the shifted 2x2x2 mesh in
+[`fixtures/qe/si2-pbe-2x2x2-reference.in`](../fixtures/qe/si2-pbe-2x2x2-reference.in).
+The normalizer converts QE Cartesian reciprocal coordinates to reduced crystal
+coordinates, normalizes weights and occupations to the project convention, and
+combines only numerically verified time-reversal pairs:
+
+```sh
+python3 tools/normalize_qe_xml.py \
+  qe-si2-pbe-2x2x2-reference-tmp/si2-pbe-2x2x2-reference.save/data-file-schema.xml \
+  qe-si2-pbe-2x2x2-reference.out fixtures/qe/si2-pbe-2x2x2-reference.in \
+  pseudopotentials/Si_ONCV_PBE-1.0.upf \
+  results/qe-si2-pbe-2x2x2-reference.json \
+  --qe-revision 9f93ddec427d2b9a45bb72d828c6d324f62fcabd \
+  --reduce-time-reversal
 ```
 
 ## Independent Libxc PBE point table
@@ -91,3 +142,126 @@ clang tools/libxc_xc_reference.c -I/opt/homebrew/include \
 
 The generator is project code under MIT/Apache-2.0. The recorded Libxc-derived
 reference data is identified as MPL-2.0 in the manifest.
+
+## Independent Libxc collinear LDA-PZ point table
+
+`fixtures/xc/libxc-7.1.2-lda-pz-polarized.json` records spin-polarized Slater
+exchange plus Perdew-Zunger correlation from Libxc 7.1.2. Its seven points
+cover the unpolarized limit, several partial polarizations, and both fully
+polarized endpoints. Each point records energy per electron and independent
+up/down density derivatives.
+
+The native LSDA kernel is required to match this table, reduce to the existing
+unpolarized LDA-PZ implementation at equal spin densities, and pass separate
+finite differences in both spin channels. The grid boundary is also checked
+for unit conversion and variational potentials. Version 0.14 integrates this
+kernel into the bounded CPU-FP64 spin SCF described in
+[`docs/spin.md`](spin.md). Version 0.15 admits the matched resident-Metal path
+and schema-5 result comparison; version 0.16 adds channel-aware CPU/Metal
+checkpoint/restart. PBE, k-point meshes, matched benchmarking, and relaxation
+remain fail-closed.
+
+Regenerate the independent table with:
+
+```sh
+clang tools/libxc_lsda_reference.c -I/opt/homebrew/include \
+  -L/opt/homebrew/lib -lxc -o /tmp/libxc_lsda_reference
+/tmp/libxc_lsda_reference
+```
+
+## Collinear-spin silicon reference
+
+`examples/si2-spin.toml` and `fixtures/qe/si2-spin-reference.in` use the same
+two-atom silicon primitive cell, 12 Ry cutoff, LDA-PZ functional,
+`Si.pz-vbc.UPF`, Gamma point, fixed occupations, and two-electron total
+magnetization. QE 7.6 converged the independent reference in 53 iterations.
+`results/qe-si2-spin-reference.json` preserves its full-precision energy,
+separate up/down eigenvalues and occupations, channel charges, magnetization,
+energy decomposition, and forces in schema 5.
+
+Normalize a reproduced run with:
+
+```sh
+python3 tools/normalize_qe_xml.py \
+  qe-si2-spin-reference-tmp/si2-spin-reference.save/data-file-schema.xml \
+  qe-si2-spin-reference.out fixtures/qe/si2-spin-reference.in \
+  pseudopotentials/Si.pz-vbc.UPF results/qe-si2-spin-reference.json \
+  --qe-revision 9f93ddec427d2b9a45bb72d828c6d324f62fcabd --element Si
+```
+
+The release-mode scientific test requires total energy within 2 meV/atom,
+occupied eigenvalues within 5 meV, charge and magnetization within `1e-8`
+electrons, and maximum Cartesian force difference within `1e-4 Ry/bohr`.
+
+Version 0.15 records the accepted native runs in
+`results/si2-spin-cpu-scf.json` and `results/si2-spin-metal-scf.json`.
+Schema-5 comparisons against QE and CPU are tracked in
+`results/si2-spin-cpu-vs-qe.json`, `results/si2-spin-metal-vs-qe.json`, and
+`results/si2-spin-metal-vs-cpu.json`. On the Apple M5 Pro validation host, the
+Metal result differs from CPU by `0.00876 meV/atom` in total energy and
+`0.00988 meV` at most across occupied eigenvalues; its direct QE errors are
+`0.00870 meV/atom` and `0.01170 meV`. The largest Metal/CPU force-component
+difference is `3.91e-5 Ry/bohr`. These are scientific accuracy and residency
+records, not a performance claim; this tiny fixture is substantially slower on
+the GPU.
+
+## Multi-species MgO reference
+
+The first chemical-transfer fixture uses the ten-electron Mg and six-electron
+O ONCV PBE files from `d3q` commit
+`6e5f97816af439702196c248ec2ad0092c561b89`, the revision pinned by QE 7.6.
+The upstream files do not state a separate data license, so the project records
+`NOASSERTION` and does not redistribute them.
+
+[`fixtures/qe/mgo2-pbe-reference.in`](../fixtures/qe/mgo2-pbe-reference.in)
+and [`examples/mgo2-pbe.toml`](../examples/mgo2-pbe.toml) use the same
+two-atom rock-salt primitive cell, 100 Ry wavefunction cutoff, PBE functional,
+fixed occupations, Gamma point, disabled symmetry, and `0.2` linear-mixing
+factor. The reference converged with QE 7.6 source commit
+`9f93ddec427d2b9a45bb72d828c6d324f62fcabd`.
+
+Normalize its full-precision XML with both pseudopotential identities:
+
+```sh
+python3 tools/normalize_qe_xml.py \
+  qe-mgo2-pbe-reference-tmp/mgo2-pbe-gamma-reference.save/data-file-schema.xml \
+  qe-mgo2-pbe-reference.out fixtures/qe/mgo2-pbe-reference.in \
+  results/qe-mgo2-pbe-reference.json \
+  --qe-revision 9f93ddec427d2b9a45bb72d828c6d324f62fcabd \
+  --pseudo Mg=pseudopotentials/Mg_ONCV_PBE-1.0.UPF \
+  --pseudo O=pseudopotentials/O_ONCV_PBE-1.0.UPF
+```
+
+The UPF reciprocal transform follows the standard QE convention: truncate
+large-radius cancellation noise beyond 10 bohr and force an odd Simpson mesh.
+This convention is covered by the independent total-energy and eigenvalue
+comparison rather than hidden as an empirical energy correction.
+
+## Metallic aluminum reference
+
+The first fractional-occupation fixture uses the non-relativistic three-electron
+`Al.pz-vbc.UPF` from QE's original legacy pseudopotential table. The upstream
+table labels this collection as not recommended and kept for reference. The
+project therefore uses it only to validate numerics, records the upstream data
+license as `NOASSERTION`, does not redistribute it, and makes no production
+pseudopotential claim.
+
+[`fixtures/qe/al1-lda-4x4x4-reference.in`](../fixtures/qe/al1-lda-4x4x4-reference.in)
+and [`examples/al1-lda-4x4x4.toml`](../examples/al1-lda-4x4x4.toml) use the
+same one-atom fcc cell, 12 Ry cutoff, shifted 4x4x4 mesh, LDA-PZ functional,
+0.02 Ry Fermi-Dirac smearing, and 0.2 linear mixing. Normalize the clean QE
+7.6 XML with verified time-reversal averaging:
+
+```sh
+python3 tools/normalize_qe_xml.py \
+  qe-al1-lda-4x4x4-reference-tmp/al1-lda-4x4x4-reference.save/data-file-schema.xml \
+  qe-al1-lda-4x4x4-reference.out fixtures/qe/al1-lda-4x4x4-reference.in \
+  pseudopotentials/Al.pz-vbc.UPF \
+  results/qe-al1-lda-4x4x4-reference.json \
+  --qe-revision 9f93ddec427d2b9a45bb72d828c6d324f62fcabd \
+  --element Al --reduce-time-reversal
+```
+
+The normalizer rejects missing time-reversal partners, band-count mismatches,
+pair eigenvalue differences above `1e-5 Ry`, or occupation differences above
+`1e-8`. It records the observed maxima and uses weight-aware pair averages.

@@ -81,6 +81,14 @@ fn attribute<'a>(tag: &'a str, name: &str) -> Result<&'a str> {
     Ok(value[..end].trim())
 }
 
+fn boolean_attribute(tag: &str, name: &str) -> Result<bool> {
+    match attribute(tag, name)?.to_ascii_lowercase().as_str() {
+        "t" | "true" | ".true." | "1" => Ok(true),
+        "f" | "false" | ".false." | "0" => Ok(false),
+        value => anyhow::bail!("attribute {name} has invalid boolean value {value:?}"),
+    }
+}
+
 fn tagged_body<'a>(text: &'a str, name: &str) -> Result<&'a str> {
     let marker = format!("<{name}");
     let start = text
@@ -292,16 +300,15 @@ impl NormConservingPseudo {
             "only norm-conserving UPF v2 pseudopotentials are supported"
         );
         ensure!(
-            attribute(header, "is_ultrasoft")?.eq_ignore_ascii_case("F")
-                && attribute(header, "is_paw")?.eq_ignore_ascii_case("F"),
+            !boolean_attribute(header, "is_ultrasoft")? && !boolean_attribute(header, "is_paw")?,
             "ultrasoft and PAW UPF v2 pseudopotentials are unsupported"
         );
         ensure!(
-            attribute(header, "core_correction")?.eq_ignore_ascii_case("F"),
+            !boolean_attribute(header, "core_correction")?,
             "nonlinear core corrections are unsupported"
         );
         ensure!(
-            attribute(header, "has_so")?.eq_ignore_ascii_case("F"),
+            !boolean_attribute(header, "has_so")?,
             "spin-orbit UPF v2 pseudopotentials are unsupported"
         );
         let relativistic = attribute(header, "relativistic")?;
@@ -311,11 +318,16 @@ impl NormConservingPseudo {
                 || relativistic.eq_ignore_ascii_case("nonrelativistic"),
             "fully relativistic UPF v2 pseudopotentials are unsupported"
         );
-        let functional = attribute(header, "functional")?.to_string();
-        ensure!(
-            functional.eq_ignore_ascii_case("PZ") || functional.eq_ignore_ascii_case("PBE"),
-            "only PZ LDA and PBE pseudopotentials are supported"
-        );
+        let raw_functional = attribute(header, "functional")?;
+        let functional = raw_functional
+            .split_whitespace()
+            .find_map(|token| {
+                ["PZ", "PBE"]
+                    .into_iter()
+                    .find(|candidate| token.eq_ignore_ascii_case(candidate))
+            })
+            .context("only PZ LDA and PBE pseudopotentials are supported")?
+            .to_string();
         let element = attribute(header, "element")?.to_string();
         ensure!(!element.is_empty(), "UPF v2 element is empty");
         let valence_charge: f64 = attribute(header, "z_valence")?.parse()?;
@@ -447,8 +459,8 @@ mod tests {
         let text = r#"
 <UPF version="2.0.1">
 <PP_HEADER element="Si" pseudo_type="NC" relativistic="scalar"
- is_ultrasoft="F" is_paw="F" core_correction="F" has_so="F"
- functional="PZ" z_valence="4.0" mesh_size="3" number_of_proj="1"/>
+ is_ultrasoft="false" is_paw="0" core_correction=".false." has_so="F"
+ functional="SLA PZ NOGX NOGC" z_valence="4.0" mesh_size="3" number_of_proj="1"/>
 <PP_MESH>
 <PP_R>0.0 0.5 1.0</PP_R>
 <PP_RAB>0.25 0.5 0.5</PP_RAB>
@@ -503,6 +515,16 @@ mod tests {
 
     #[test]
     fn parses_pinned_upf_v2_and_rejects_out_of_scope_v2_when_available() {
+        let aluminum_path = Path::new("pseudopotentials/Al.pz-vbc.UPF");
+        if aluminum_path.exists() {
+            let pseudo = NormConservingPseudo::from_upf(aluminum_path).unwrap();
+            assert_eq!(pseudo.element, "Al");
+            assert_eq!(pseudo.functional, "PZ");
+            assert_eq!(pseudo.valence_charge, 3.0);
+            assert_eq!(pseudo.radial_grid.len(), 171);
+            assert_eq!(pseudo.projectors.len(), 2);
+        }
+
         let lda_path =
             Path::new("../dft studies/checkouts/q-e-7.6/EPW/examples/gan/pp/N_ONCV_LDA-1.0.upf");
         if lda_path.exists() {

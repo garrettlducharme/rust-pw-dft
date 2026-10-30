@@ -4,11 +4,42 @@ An educational, fail-closed plane-wave DFT prototype aimed at Apple Silicon.
 It is dual-licensed under MIT or Apache-2.0 and contains no code copied from
 GPL DFT implementations.
 
-Version 0.4 adds a native variational PBE implementation, strict PBE UPF
-admission, and independently validated CPU and Metal PBE silicon SCFs. Version
-0.3 added complete SCF convergence histories and a CI-enforced scientific-
-fixture provenance manifest; version 0.2 introduced atomic, checksummed
-CPU/Metal restart checkpoints.
+Version 0.16 adds schema-4, channel-aware CPU/Metal checkpoint and deterministic
+restart for the bounded collinear-spin path, including both mixed densities,
+both orbital blocks, complete history, and cumulative accelerator counters.
+Version 0.15 added two persistent resident Metal Davidson contexts to the
+bounded collinear-spin SCF, separates charge and magnetization mixing for a
+stable mixed-precision trajectory, validates both spin-channel Hamiltonians at
+fixed density, and enforces CPU/QE energy, occupied-eigenvalue, charge,
+magnetization, force, determinism, memory, and transfer gates. Schema-5 spin
+results are now supported by the public `compare` command. Version 0.14 added a
+bounded CPU-FP64 collinear-spin SCF: Gamma-only LDA-PZ,
+fixed integer occupations, fixed total magnetization, separate spin-channel
+Davidson solves and density mixing, schema-5 results, analytic forces, and an
+independent QE 7.6 silicon acceptance gate. PBE, spin k-point meshes, matched
+benchmarking, and relaxation remain fail-closed.
+Version 0.13 added the independently Libxc-validated collinear-spin
+LDA-PZ point and grid boundary. Version 0.12 added
+atomic, checksummed fixed-cell relaxation checkpoints,
+strict source/input/pseudopotential/backend/optimizer compatibility checks,
+compact inspection, and bit-exact CPU/Metal interruption-equivalence gates.
+Version 0.11 added fail-closed fixed-cell ionic relaxation with conjugate-gradient
+directions, Armijo backtracking, complete per-geometry provenance, and matched
+CPU/Metal displaced-silicon acceptance gates. Version 0.10 added schema-4 analytic norm-conserving forces to converged CPU and
+Metal results, independently validates a displaced silicon force against QE
+7.6 and total-energy finite differences, and makes force parity part of the
+comparison contract. Version 0.9 added schema-3 CPU/Metal checkpoint and
+deterministic restart for Gamma and multi-k-point SCFs. Version 0.8 extended the resident Metal Davidson
+path across independently weighted k points and validated complete silicon and
+metallic aluminum Apple-GPU SCFs. Version 0.7 added an independently validated
+CPU-FP64 metallic aluminum SCF, including global Fermi-Dirac occupations and
+free-energy terms. Version 0.6
+added Monkhorst-Pack and explicit k-point sampling, time-reversal reduction,
+and an independently validated 2x2x2 silicon PBE SCF. Version 0.5 added true
+multi-species norm-conserving operators and validated CPU and Metal PBE MgO
+SCFs. Earlier releases added native variational PBE, complete SCF convergence
+histories, a CI-enforced scientific-fixture provenance manifest, and atomic
+checksummed CPU/Metal restart checkpoints.
 
 The path from the validated silicon prototype to a research-ready Mac package
 is tracked in [`ROADMAP.md`](ROADMAP.md). Claims are tied to committed,
@@ -16,12 +47,26 @@ machine-readable evidence rather than feature presence alone.
 
 ## Implemented
 
-- strict fixed-cell, spinless, Gamma-only LDA-PZ or PBE silicon input contract;
+- strict fixed-cell, spin-unpolarized LDA-PZ or PBE multi-species input
+  contract, plus a schema-3 CPU/Metal Gamma-point LDA-PZ collinear-spin
+  contract with fixed integer channel occupations and magnetization;
+- versioned Gamma, Monkhorst-Pack, and explicit weighted k-point inputs with
+  deterministic reciprocal-cell canonicalization and optional time-reversal
+  reduction; CPU FP64 and resident mixed-precision Metal support complete
+  multi-k-point SCFs with one persistent GPU context per irreducible point;
+- fixed closed-shell and Fermi-Dirac occupations with a globally solved chemical
+  potential, charge-conserving Brillouin-zone weights, explicit entropy/free-
+  energy terms, and configurable extra bands;
 - direct/reciprocal lattice construction and cutoff-safe G-vector enumeration;
 - FP64 multidimensional CPU FFT with Parseval and round-trip tests;
 - LDA-PZ exchange-correlation energy and potential;
 - a typed, fail-closed grid-level exchange-correlation boundary with analytic
   potential-versus-energy-derivative tests, ready for semilocal gradient terms;
+- an independently Libxc-validated collinear-spin LDA-PZ point and grid
+  boundary with two variational spin potentials, integrated into CPU-FP64 and
+  resident mixed-precision Metal two-channel SCFs with a common Hartree
+  potential, separate Davidson contexts, charge/magnetization mixing,
+  schema-5 spin results, and a matched QE 7.6 Si2 reference;
 - a native unpolarized PBE functional whose point energy and derivatives match
   a pinned Libxc 7.1.2 oracle and whose spectral grid potential passes a
   whole-functional finite-difference test; a pinned ONCV UPF and independent
@@ -29,12 +74,31 @@ machine-readable evidence rather than feature presence alone.
 - strict parser for QE's legacy `Si.pz-vbc.UPF` and scalar/non-relativistic
   norm-conserving UPF v2 PZ/PBE files, including local potential, radial mesh,
   separable projectors, and `Dij`;
+- species-resolved local potentials, nonlocal projector couplings, atomic
+  starting densities, valence counts, and mixed-charge Ewald sums;
+- analytic Cartesian local-pseudopotential, separable-nonlocal, and Ewald
+  forces in Ry/bohr; converged Gamma and weighted multi-k-point CPU/Metal SCFs
+  aggregate them into fail-closed schema-4 unpolarized or schema-5 spin
+  results, while unconverged results are forbidden from carrying scientific
+  forces;
+- fixed-cell ionic relaxation with Cartesian displacement limits, reciprocal-
+  lattice coordinate updates, rigid-translation projection of search
+  directions, raw-force convergence checks, conjugate-gradient updates,
+  backtracking line searches, and a versioned history of every accepted
+  geometry and SCF evaluation;
+- atomic, checksummed relaxation checkpoints that preserve optimizer state and
+  floating-point geometry exactly, reject incompatible source/input/pseudo/
+  backend/options, support compact inspection, and resume with cumulative
+  histories, timings, and SCF counts;
+- QE-compatible numerical UPF radial transforms that discard cancellation-noisy
+  tails beyond 10 bohr and use an odd Simpson mesh;
 - explicit provenance and precision policy in JSON results;
 - required version identifiers for input, result, comparison, benchmark, and
   checkpoint contracts;
 - checksummed binary SCF checkpoints with atomic replacement, strict
   compatibility validation, cumulative timing/counter restoration, compact
-  inspection, and deterministic CPU and Metal interruption/resume tests;
+  per-k-point and spin-channel inspection, and deterministic CPU and Metal
+  interruption/resume tests for Gamma, collinear-spin, and multi-k-point SCFs;
 - complete per-iteration SCF histories with explicit continue/converged/
   eigensolver-failure states, energy and density changes, charge, orbital
   residuals, and per-step Davidson/Hamiltonian work; histories survive resume;
@@ -99,6 +163,60 @@ For the pinned two-atom silicon LDA case, the CPU solver converges to
 The result is in `results/cpu-scf.json` and the normalized QE reference is in
 `results/qe-reference.json`.
 
+## Accepted analytic-force result
+
+The displaced-Si2 fixture moves one atom by `0.05 bohr` along Cartesian x so
+the force is nonzero and cannot pass by crystal symmetry. Both atomic force
+components agree with central total-energy derivatives within
+`9.23e-9 Ry/bohr`. Against full-precision forces from the pinned QE 7.6 XML,
+the maximum component error is `5.17e-6 Ry/bohr` (about
+`1.33e-4 eV/angstrom`). The same schema-4 comparison reports
+`0.0000583 meV/atom` total-energy error, `0.000152 meV` maximum occupied-
+eigenvalue error, and `4.35e-14` electrons.
+
+On the same nonzero-force fixture, resident Metal differs from CPU by
+`1.38e-7 Ry/bohr` in the largest force component, `0.00900 meV/atom` in total
+energy, `0.00262 meV` in the worst occupied eigenvalue, and `5.77e-14`
+electrons.
+
+This accepts fixed-cell Hellmann-Feynman forces only for the published
+norm-conserving fixtures. Fixed-cell relaxation is separately accepted only
+for displaced Si2; stress, variable cells, ultrasoft, and PAW forces remain
+unsupported. The independent artifacts are
+[`fixtures/qe/si2-displaced-force-reference.in`](fixtures/qe/si2-displaced-force-reference.in)
+and
+[`results/qe-si2-displaced-force-reference.json`](results/qe-si2-displaced-force-reference.json).
+Units, implemented terms, mixed-precision behavior, validation layers, and the
+known raw net-force residue are documented in [`docs/forces.md`](docs/forces.md).
+The exact native outputs and accepted comparisons are
+[`results/si2-displaced-cpu-scf.json`](results/si2-displaced-cpu-scf.json),
+[`results/si2-displaced-cpu-vs-qe.json`](results/si2-displaced-cpu-vs-qe.json),
+[`results/si2-displaced-metal-scf.json`](results/si2-displaced-metal-scf.json),
+and
+[`results/si2-displaced-metal-vs-cpu.json`](results/si2-displaced-metal-vs-cpu.json).
+
+## Accepted fixed-cell relaxation
+
+Starting from the same `0.05 bohr` displaced silicon fixture, both CPU and
+resident Metal relaxations recover the ideal relative fractional coordinate
+`[0.25, 0.25, 0.25]` after one accepted ionic step and three SCF evaluations.
+CPU finishes at `6.11e-6 Ry/bohr` raw maximum force and Metal at
+`6.17e-6 Ry/bohr`; corresponding final fractional-coordinate components differ
+by less than `1.3e-8`. The optimizer reports raw forces and uses raw-force
+convergence even though rigid translation is removed from the search direction.
+
+Version 0.12 also proves bit-exact interruption equivalence for CPU and Metal:
+a deliberately multi-step relaxation paused after its first accepted step and
+resumed to the same accepted history, final energy, forces, hashes, and total
+SCF count as the uninterrupted run. Mismatched inputs and optimizer options are
+rejected before another SCF is started.
+
+This accepts only the exact fixed-cell Si2 fixture. Constraints, stress,
+variable-cell optimization, molecular dynamics, ultrasoft,
+and PAW remain unsupported. The algorithm, output schema, convergence rules,
+and source-linked artifacts are documented in
+[`docs/relaxation.md`](docs/relaxation.md).
+
 ## Metal result and boundary
 
 The latest two-atom resident Metal SCF converges to `-14.5294700206 Ry`.
@@ -140,6 +258,108 @@ establish chemical transferability. The exact-source records are
 [`results/si2-pbe-metal-scf.json`](results/si2-pbe-metal-scf.json), and their
 committed CPU/QE and Metal/CPU comparison reports.
 
+## Accepted multi-species MgO result
+
+The pinned two-atom rock-salt MgO workload uses 100 Ry PBE with ten-electron
+Mg and six-electron O ONCV pseudopotentials. CPU FP64 differs from the matched
+QE 7.6 result by `0.0426 meV/atom`, `0.0103 meV` for the worst occupied
+eigenvalue, and `4.2e-13` electrons. The resident Metal result differs from CPU
+by `0.0203 meV/atom`, `0.00734 meV` for occupied eigenvalues, and `3.0e-13`
+electrons, with zero projection resynchronizations.
+
+This closes one binary-insulator transfer test. It does not establish broad
+oxide chemistry, oxide-force transferability, stress, or pseudopotential transferability. The
+matched five-warm-run performance gate is intentionally
+retained as a negative result: CPU min/median/max were
+`2.821/2.843/2.865 s`, Metal was `3.592/3.619/3.699 s`, and the `0.786x`
+speedup fails the required `1.20x`. MgO therefore extends scientific scope but
+does not add a performance claim. Exact-source evidence is in
+[`results/mgo2-pbe-cpu-scf.json`](results/mgo2-pbe-cpu-scf.json),
+[`results/mgo2-pbe-metal-scf.json`](results/mgo2-pbe-metal-scf.json), and
+[`results/mgo2-pbe-matched-benchmark.json`](results/mgo2-pbe-matched-benchmark.json).
+
+## Accepted k-point result
+
+The shifted 2x2x2 silicon PBE fixture reduces eight points to four exact
+time-reversal representatives. The CPU solver converges in 50 SCF iterations
+to `-15.7186708554 Ry`. Against full-precision QE 7.6 XML it differs by
+`0.00226 meV/atom`; the maximum occupied per-k-point eigenvalue error is
+`0.06568 meV`, the occupation error is zero, and the charge error is
+`1.9e-14` electrons. The release-mode CI test compares coordinates, weights,
+occupied eigenvalues, occupations, charge, and total energy.
+
+The resident Metal calculation converges in 44 SCF iterations. Relative to the
+accepted CPU result, its errors are `0.00532 meV/atom`, `0.00467 meV` for the
+worst occupied eigenvalue, zero occupation error, and `4.9e-14` electrons. It
+uses four persistent per-k-point contexts, performs zero projection
+resynchronizations, and records a transfer-invariant check for every one of its
+479 resident Davidson iterations.
+
+This accepts only the exact silicon fixture with fixed occupations. The
+per-k-point GPU contexts currently execute sequentially, so this result adds a
+scientific capability, not a performance claim. Schema-4 checkpoint/restart is
+accepted for this CPU and Metal multi-k-point path. Exact-source records are
+[`results/si2-pbe-2x2x2-cpu-scf.json`](results/si2-pbe-2x2x2-cpu-scf.json),
+[`results/si2-pbe-2x2x2-metal-scf.json`](results/si2-pbe-2x2x2-metal-scf.json),
+[`results/qe-si2-pbe-2x2x2-reference.json`](results/qe-si2-pbe-2x2x2-reference.json),
+[`results/si2-pbe-2x2x2-cpu-vs-qe.json`](results/si2-pbe-2x2x2-cpu-vs-qe.json),
+and
+[`results/si2-pbe-2x2x2-metal-vs-cpu.json`](results/si2-pbe-2x2x2-metal-vs-cpu.json).
+The five-run matched benchmark records CPU min/median/max times of
+`0.494/0.811/0.837 s` and Metal times of `3.527/3.818/4.035 s`, a `0.212x`
+speedup that explicitly fails the `1.20x` gate. The report is
+[`results/si2-pbe-2x2x2-matched-benchmark.json`](results/si2-pbe-2x2x2-matched-benchmark.json).
+
+The compute-bound sixteen-atom, 24 Ry version of the same shifted mesh shows
+the opposite regime. Five warmed matched runs measured CPU min/median/max
+times of `73.525/73.600/73.632 s` and Metal times of
+`39.573/39.659/39.686 s`, a `1.856x` median speedup. Both backends converged in
+42 SCF iterations under the same policy; Metal/CPU errors were
+`0.00227 meV/atom`, `0.00502 meV` for the worst occupied eigenvalue, zero for
+occupations, and `1.01e-12` electrons. This accepts a performance claim only
+for [`examples/si16-lda-2x2x2.toml`](examples/si16-lda-2x2x2.toml) on the
+Apple M5 Pro. It also makes the crossover explicit: GPU residency helps once
+the per-k-point Hamiltonian is large enough, but does not erase launch and
+context overhead for tiny cells. The authoritative report is
+[`results/si16-lda-2x2x2-matched-benchmark.json`](results/si16-lda-2x2x2-matched-benchmark.json).
+The input schema and conventions are documented in
+[`docs/kpoints.md`](docs/kpoints.md).
+
+## Accepted metallic aluminum result
+
+The one-atom fcc aluminum fixture uses a shifted 4x4x4 mesh, 0.02 Ry
+Fermi-Dirac smearing, six bands, and the official legacy QE `Al.pz-vbc.UPF`
+LDA-PZ norm-conserving pseudopotential. The full 64-point mesh reduces to 32
+time-reversal representatives. CPU FP64 converges in 74 iterations to a Mermin
+free energy of `-4.1855171980 Ry`, with chemical potential `0.6135522910 Ry`
+and dimensionless entropy `0.4209874149`.
+
+Against clean QE 7.6 XML, the free-energy error is `0.00210 meV/atom`, the
+maximum occupied eigenvalue error is `0.00174 meV`, the maximum absolute
+occupation error is `7.13e-7`, and the charge error is `4.4e-16` electrons.
+The release-mode CI gate also requires a nonzero entropy, a negative `-TS`
+correction, a reported chemical potential, and at least one fractional
+occupation. Exact-source evidence is
+[`results/al1-lda-4x4x4-cpu-scf.json`](results/al1-lda-4x4x4-cpu-scf.json),
+[`results/al1-lda-4x4x4-metal-scf.json`](results/al1-lda-4x4x4-metal-scf.json),
+[`results/qe-al1-lda-4x4x4-reference.json`](results/qe-al1-lda-4x4x4-reference.json),
+and
+[`results/al1-lda-4x4x4-cpu-vs-qe.json`](results/al1-lda-4x4x4-cpu-vs-qe.json),
+plus
+[`results/al1-lda-4x4x4-metal-vs-cpu.json`](results/al1-lda-4x4x4-metal-vs-cpu.json).
+
+The resident Metal aluminum SCF converges in 67 iterations. Relative to CPU,
+its free-energy error is `0.00446 meV/atom`, its maximum occupied-eigenvalue
+error is `0.00368 meV`, its maximum occupation error is `4.21e-6`, and its
+charge error is `4.4e-16` electrons. All 32 irreducible-point contexts report
+zero projection resynchronizations. As for silicon, this sequential first
+implementation is an accuracy milestone rather than a speed claim.
+
+The pseudopotential comes from QE's original legacy table, which QE itself
+keeps for reference rather than recommends for new research. This result
+validates the solver's metallic numerical path for the exact fixture; it is not
+a recommendation of that pseudopotential or a converged materials prediction.
+
 ## Commands
 
 First download and verify the external QE 7.6 fixture as described in
@@ -152,12 +372,29 @@ cargo test
 cargo test --features metal
 cargo run -- run examples/si2.toml --backend cpu --output result.json
 cargo run --release -- compare results/cpu-scf.json results/qe-reference.json
+cargo run --release -- run examples/si2-displaced.toml --backend cpu --output result-force.json
+cargo run --release -- compare result-force.json results/qe-si2-displaced-force-reference.json
+cargo run --release -- relax examples/si2-displaced.toml --backend cpu --output relaxation.json --max-steps 12 --force-tolerance-ry-bohr 1e-4 --initial-step-bohr 0.05 --maximum-step-bohr 0.15
 cargo run --release -- run examples/si2-pbe.toml --backend cpu --output result-pbe.json
+cargo run --release -- run examples/si2-spin.toml --backend cpu --output result-spin.json
+cargo run --release --features metal -- run examples/si2-spin.toml --backend metal --output result-spin-metal.json
+cargo run --release -- compare result-spin-metal.json results/qe-si2-spin-reference.json
 cargo run --release -- compare result-pbe.json results/qe-pbe-reference.json
+cargo run --release -- run examples/si2-pbe-2x2x2.toml --backend cpu --output result-kmesh.json
+cargo run --release --features metal -- run examples/si2-pbe-2x2x2.toml --backend metal --output result-kmesh-metal.json
+cargo run --release -- compare result-kmesh.json results/qe-si2-pbe-2x2x2-reference.json
+cargo run --release -- run examples/al1-lda-4x4x4.toml --backend cpu --output result-al.json
+cargo run --release --features metal -- run examples/al1-lda-4x4x4.toml --backend metal --output result-al-metal.json
+cargo run --release -- compare result-al.json results/qe-al1-lda-4x4x4-reference.json
+cargo run --release -- run examples/mgo2-pbe.toml --backend cpu --output result-mgo.json
+cargo run --release -- compare result-mgo.json results/qe-mgo2-pbe-reference.json
+cargo run --release --features metal -- run examples/mgo2-pbe.toml --backend metal --output result-mgo-metal.json
 cargo run --release --features metal -- run examples/si2.toml --backend metal --output result-metal.json
 cargo run --release --features metal -- bench-compare examples/si16.toml --repetitions 5 --output benchmark-comparison.json
+cargo run --release --features metal -- bench-compare examples/si16-lda-2x2x2.toml --repetitions 5 --output kpoint-benchmark-comparison.json
 cargo run --release -- verify-fixtures
 cargo run --release --features metal -- run examples/si16.toml --backend metal --output paused.json --checkpoint si16.chk --stop-after 10
+cargo run --release --features metal -- run examples/si2-pbe-2x2x2.toml --backend metal --output paused-kmesh.json --checkpoint kmesh.chk --stop-after 10
 cargo run --release -- inspect-checkpoint si16.chk
 cargo run --release --features metal -- resume examples/si16.toml si16.chk --backend metal --output resumed.json
 ```
@@ -171,13 +408,19 @@ Fixture provenance and reproduction commands are documented in
 [`docs/fixtures.md`](docs/fixtures.md); [`fixtures/manifest.toml`](fixtures/manifest.toml)
 is the machine-readable authority.
 
-The LDA and PBE Si2 CPU scientific milestones and resident Metal accuracy
+The unpolarized LDA/PBE Si2, collinear-spin LDA Si2, displaced-Si2 force, PBE
+MgO, PBE Si2 2x2x2, and metallic Al CPU scientific milestones and the
+applicable resident Metal accuracy
 milestones are accepted. The LDA Si16 transfer and matched-performance
-milestones are also accepted. The stateful driver is
-integrated into production SCF, and its normal-iteration
+milestones are also accepted. The stateful driver is integrated into
+production SCF, and its normal-iteration
 zero-full-vector-transfer contract is checked at runtime and in portable and
-Apple-GPU tests. Phase 2 now focuses on versioned schemas, checkpoints,
-reproducible fixture manifests, and stronger validation infrastructure before
-the physics scope expands. The resident buffer contract, dataflow, transfer
+Apple-GPU tests. The bounded collinear-spin CPU/Metal vertical slice and its
+precision-specific convergence policy are documented in
+[`docs/spin.md`](docs/spin.md). The next spin frontiers are a compute-bound
+performance fixture and broader magnetic validation. Stress
+follows only after those fixed-cell
+boundaries mature, with the same CPU-reference-first acceptance policy. The
+resident buffer contract, dataflow, transfer
 accounting, and fail-closed gates are specified in
 [`docs/resident-davidson.md`](docs/resident-davidson.md).

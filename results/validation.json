@@ -1,27 +1,35 @@
 {
-  "schema_version": 11,
-  "source_revision": "6d0d13bef5e4c16792f3d284bef68572727b54e0",
+  "schema_version": 17,
+  "source_revision": "e361cf28f2597532bf212584d65859ae1f7061ea",
   "tests": {
-    "cpu_passed": 35,
-    "metal_feature_passed": 40,
+    "cpu_passed": 46,
+    "cpu_release_scientific_passed": 4,
+    "cpu_debug_ignored_release_scientific": 4,
+    "metal_feature_passed": 51,
+    "metal_release_scientific_passed": 4,
+    "metal_debug_ignored_release_scientific": 8,
     "failed": 0,
     "clippy_all_targets_metal_feature": "passed"
   },
   "schemas": {
-    "input": 1,
-    "result": 2,
-    "comparison": 1,
+    "input": 2,
+    "result": 3,
+    "comparison": 3,
     "benchmark": 1,
-    "checkpoint": 2,
+    "checkpoint": 3,
     "fixture_manifest": 1,
-    "validation_manifest": 11
+    "validation_manifest": 17
   },
   "input_and_pseudopotential": {
     "legacy_si_upf": "accepted",
     "strict_norm_conserving_upf_v2_pz": "accepted",
-    "strict_norm_conserving_upf_v2_pbe": "accepted for the pinned Si ONCV workload",
+    "strict_norm_conserving_upf_v2_pbe": "accepted for the pinned Si and MgO ONCV workloads",
     "lda_pinned_sha256": "d75dd6b0be0aa10587fc95900cfd6ba7314d461a8276a81df34f009d0bfc075d",
     "pbe_pinned_sha256": "481a5fae1167fd712d4e8e2e4df33f8bfc1e7d2abbc0565290d39fbba9dccb41",
+    "al_lda_pinned_sha256": "4eab06b63f87f07ede2d5a193e6d993a09107167fd6b8647afa807342501d6e5",
+    "mg_pbe_pinned_sha256": "7d19fe11bd630b5e4092c8fa884d11d76731386fd36ea0cdd999d723a6330e80",
+    "o_pbe_pinned_sha256": "374452e85db23c51d33c3f69a541d6be6a74c6eed080a0545b06ac697c8b7cad",
+    "multi_species_exact_map_and_mixed_charge_ewald": "accepted for pinned MgO",
     "ultrasoft_paw_core_correction_spin_orbit_other_functionals": "fail-closed"
   },
   "cpu": {
@@ -50,6 +58,55 @@
       "energy_tolerance_ry": 1e-8,
       "independent_point_oracle": "Libxc 7.1.2 GGA_X_PBE plus GGA_C_PBE",
       "grid_variational_derivative_gate": "passed"
+    },
+    "si2_pbe_2x2x2_scf": {
+      "accepted": true,
+      "iterations": 50,
+      "irreducible_k_point_count": 4,
+      "total_energy_ry": -15.718670855395422,
+      "qe_total_energy_ry": -15.718671187554541,
+      "energy_error_mev_atom": 0.0022596275136768543,
+      "maximum_occupied_eigenvalue_error_mev": 0.06567775929454168,
+      "maximum_occupation_error": 0.0,
+      "electron_count_error": 1.865174681370263e-14,
+      "maximum_orbital_residual_ry": 8.723390610325756e-11,
+      "density_residual": 8.163236909772678e-9,
+      "energy_tolerance_ry": 1e-8,
+      "time_reversal_reduction": "8 full mesh points reduced to 4 representatives"
+    },
+    "mgo2_pbe_scf": {
+      "accepted": true,
+      "iterations": 73,
+      "total_energy_ry": -140.0636294972698,
+      "qe_total_energy_ry": -140.0636357580474,
+      "energy_error_mev_atom": 0.04259110943732343,
+      "maximum_occupied_eigenvalue_error_mev": 0.010291371660836995,
+      "electron_count_error": 4.156675004196586e-13,
+      "maximum_orbital_residual_ry": 1.049403717911528e-10,
+      "energy_tolerance_ry": 1e-8,
+      "radial_transform": "QE-compatible 10 bohr tail cutoff and odd Simpson mesh",
+      "multi_species_hamiltonian_hermiticity": "passed",
+      "mixed_charge_ewald_eta_invariance": "passed"
+    },
+    "al1_lda_4x4x4_fermi_dirac_scf": {
+      "accepted": true,
+      "iterations": 74,
+      "full_k_point_count": 64,
+      "irreducible_k_point_count": 32,
+      "band_count_per_k_point": 6,
+      "smearing_ry": 0.02,
+      "total_energy_ry": -4.185517198042083,
+      "qe_total_energy_ry": -4.185517352607298,
+      "energy_error_mev_atom": 0.002102966880729972,
+      "maximum_occupied_eigenvalue_error_mev": 0.0017443825038299208,
+      "maximum_occupation_error": 7.125562074272729e-7,
+      "electron_count_error": 4.440892098500626e-16,
+      "chemical_potential_ry": 0.6135522909665372,
+      "smearing_entropy": 0.4209874148887849,
+      "smearing_free_energy_correction_ry": -0.008419748297775698,
+      "maximum_orbital_residual_ry": 8.61456528187146e-11,
+      "density_residual": 8.436154319961822e-9,
+      "pseudopotential_scope": "legacy QE table fixture for numerical validation only; not a production recommendation"
     }
   },
   "metal": {
@@ -103,6 +160,70 @@
       "full_vector_upload_bytes": 5330176,
       "full_vector_download_bytes": 254176
     },
+    "mgo2_pbe_scf": {
+      "accepted": true,
+      "iterations": 66,
+      "total_energy_ry": -140.0636265074843,
+      "cpu_energy_error_mev_atom": 0.02033905210538926,
+      "maximum_occupied_eigenvalue_error_mev": 0.00733244988475306,
+      "electron_count_error": 3.0020430585864233e-13,
+      "maximum_orbital_residual_ry": 9.283103509697915e-6,
+      "energy_tolerance_ry": 5e-7,
+      "density_tolerance": 5e-8,
+      "projector_count": 16,
+      "persistent_buffer_bytes": 37393408,
+      "peak_device_allocated_bytes": 58032128,
+      "resident_driver_iterations": 190,
+      "resident_projection_calls": 190,
+      "resident_projection_resyncs": 0,
+      "resident_transfer_invariant_checks": 190,
+      "resident_restarts": 1,
+      "full_vector_upload_bytes": 205983360,
+      "full_vector_download_bytes": 8908416
+    },
+    "si2_pbe_2x2x2_scf": {
+      "accepted": true,
+      "iterations": 44,
+      "irreducible_k_point_count": 4,
+      "total_energy_ry": -15.718670073390879,
+      "cpu_energy_error_mev_atom": 0.005319856903648235,
+      "maximum_occupied_eigenvalue_error_mev": 0.004673742548299874,
+      "maximum_occupation_error": 0.0,
+      "electron_count_error": 4.884981308350689E-14,
+      "maximum_orbital_residual_ry": 0.000007762467229805904,
+      "density_residual": 3.808663773496674E-8,
+      "persistent_context_count": 4,
+      "persistent_buffer_bytes": 9179776,
+      "peak_device_allocated_bytes": 14565376,
+      "resident_driver_iterations": 479,
+      "resident_projection_resyncs": 0,
+      "resident_transfer_invariant_checks": 479,
+      "full_vector_upload_bytes": 33903232,
+      "full_vector_download_bytes": 1057408
+    },
+    "al1_lda_4x4x4_fermi_dirac_scf": {
+      "accepted": true,
+      "iterations": 67,
+      "irreducible_k_point_count": 32,
+      "total_energy_ry": -4.185517525629624,
+      "cpu_energy_error_mev_atom": 0.004457055555034639,
+      "maximum_occupied_eigenvalue_error_mev": 0.003676249445758386,
+      "maximum_occupation_error": 0.000004211687018584875,
+      "electron_count_error": 4.440892098500626E-16,
+      "chemical_potential_ry": 0.6135521814952787,
+      "smearing_entropy": 0.4209873709309704,
+      "smearing_free_energy_correction_ry": -0.008419747418619408,
+      "maximum_orbital_residual_ry": 0.000009220172509663973,
+      "density_residual": 4.7500997628429273E-8,
+      "persistent_context_count": 32,
+      "persistent_buffer_bytes": 71600640,
+      "peak_device_allocated_bytes": 80101376,
+      "resident_driver_iterations": 4110,
+      "resident_projection_resyncs": 0,
+      "resident_transfer_invariant_checks": 4110,
+      "full_vector_upload_bytes": 354991728,
+      "full_vector_download_bytes": 7663728
+    },
     "behavior": "fail-closed; no CPU Hamiltonian fallback"
   },
   "performance": {
@@ -137,10 +258,109 @@
     "resident_scientific_run_peak_device_allocated_bytes": 143884288,
     "project_memory_limit_bytes": 12884901888,
     "production_claim_accepted": true,
-    "claim_scope": "the pinned Gamma-point LDA norm-conserving Si16 workload on Apple M5 Pro"
+    "claim_scope": "the pinned Gamma-point LDA norm-conserving Si16 workload on Apple M5 Pro",
+    "mgo2_pbe_matched": {
+      "accepted_for_performance_claim": false,
+      "convergence_profile": "matched-metal-compatible-v1",
+      "cold_processes": 1,
+      "warmed_repetitions": 5,
+      "cpu_seconds": {
+        "min": 2.821346375,
+        "median": 2.8430945420000002,
+        "max": 2.864696417,
+        "scf_iterations": 65
+      },
+      "metal_seconds": {
+        "min": 3.591845208,
+        "median": 3.6190895,
+        "max": 3.6992625,
+        "scf_iterations": 66
+      },
+      "median_speedup": 0.7855828218672128,
+      "numeric_1_20x_gate_passed": false,
+      "scientific_parity": {
+        "accepted": true,
+        "energy_error_mev_atom": 0.02033874700141165,
+        "maximum_occupied_eigenvalue_error_mev": 0.006890532452285178,
+        "electron_count_error": 5.5067062021407764e-14
+      },
+      "decision": "scientific transfer accepted; no MgO performance claim"
+    },
+    "si2_pbe_2x2x2_matched": {
+      "accepted_for_performance_claim": false,
+      "convergence_profile": "matched-metal-compatible-v1",
+      "warmed_repetitions": 5,
+      "cpu_seconds": {
+        "min": 0.493915375,
+        "median": 0.810850708,
+        "max": 0.837499083,
+        "scf_iterations": 44
+      },
+      "metal_seconds": {
+        "min": 3.526674209,
+        "median": 3.8184428329999998,
+        "max": 4.035140291,
+        "scf_iterations": 44
+      },
+      "median_speedup": 0.21235114507736302,
+      "numeric_1_20x_gate_passed": false,
+      "scientific_parity": {
+        "accepted": true,
+        "energy_error_mev_atom": 0.005318902583649823,
+        "maximum_occupied_eigenvalue_error_mev": 0.002316509774961148,
+        "maximum_occupation_error": 0.0,
+        "electron_count_error": 4.796163466380676E-14
+      },
+      "decision": "scientific multi-k-point Metal execution accepted; sequential per-k-point scheduling rejects a performance claim"
+    },
+    "si16_lda_2x2x2_matched": {
+      "accepted_for_performance_claim": true,
+      "workload": "examples/si16-lda-2x2x2.toml",
+      "cutoff_ry": 24.0,
+      "full_k_point_count": 8,
+      "irreducible_k_point_count": 4,
+      "convergence_profile": "matched-metal-compatible-v1",
+      "cold_processes": 1,
+      "warmed_repetitions": 5,
+      "cpu_seconds": {
+        "min": 73.524654708,
+        "median": 73.600367959,
+        "max": 73.632232917,
+        "scf_iterations": 42
+      },
+      "metal_seconds": {
+        "min": 39.5733915,
+        "median": 39.659455792,
+        "max": 39.685812,
+        "scf_iterations": 42
+      },
+      "median_speedup": 1.8558088226174414,
+      "numeric_1_20x_gate_passed": true,
+      "scientific_parity": {
+        "accepted": true,
+        "energy_error_mev_atom": 0.0022654857203135066,
+        "maximum_occupied_eigenvalue_error_mev": 0.005018877655870096,
+        "maximum_occupation_error": 0.0,
+        "electron_count_error": 1.0089706847793423E-12
+      },
+      "strict_scientific_run": {
+        "cpu_iterations": 47,
+        "metal_iterations": 42,
+        "metal_energy_error_mev_atom": 0.0022650767881762144,
+        "metal_maximum_occupied_eigenvalue_error_mev": 0.007011495050538483,
+        "metal_electron_count_error": 1.8616219676914625E-12,
+        "metal_persistent_context_count": 4,
+        "metal_persistent_buffer_bytes": 1145038144,
+        "metal_peak_device_allocated_bytes": 1302495232,
+        "metal_resident_driver_iterations": 629,
+        "metal_resident_projection_resyncs": 0,
+        "metal_resident_transfer_invariant_checks": 629
+      },
+      "claim_scope": "the pinned sixteen-atom 24 Ry shifted 2x2x2 LDA silicon workload on Apple M5 Pro"
+    }
   },
   "checkpoint_restart": {
-    "binary_schema_version": 2,
+    "binary_schema_version": 3,
     "atomic_same_filesystem_replace": true,
     "payload_sha256_verified": true,
     "tamper_detection": "passed",
@@ -155,11 +375,29 @@
       "maximum_energy_difference_ry": 1e-10,
       "maximum_eigenvalue_difference_ry": 1e-9,
       "cumulative_full_vector_transfer_counts_equal": true
+    },
+    "cpu_si2_pbe_2x2x2": {
+      "irreducible_k_point_count": 4,
+      "same_final_scf_iteration": true,
+      "complete_history_equal": true,
+      "maximum_energy_difference_ry": 1e-13,
+      "maximum_per_k_eigenvalue_difference_ry": 1e-13,
+      "tampered_k_point_coordinate_rejected": true
+    },
+    "metal_si2_pbe_2x2x2": {
+      "irreducible_k_point_count": 4,
+      "same_final_scf_iteration": true,
+      "complete_history_equal_within_precision_policy": true,
+      "maximum_energy_difference_ry": 1e-9,
+      "maximum_per_k_eigenvalue_difference_ry": 1e-8,
+      "cumulative_full_vector_transfer_counts_equal": true,
+      "cumulative_projection_resynchronizations_equal": true
     }
   },
   "structured_diagnostics": {
-    "result_schema_version": 2,
+    "result_schema_version": 3,
     "history_survives_checkpoint_resume": true,
+    "multi_k_point_history_survives_checkpoint_resume": true,
     "validated_fields": [
       "status",
       "total_energy_ry",
@@ -174,15 +412,23 @@
     "si2_cpu_history_records": 49,
     "si2_metal_history_records": 45,
     "si2_pbe_cpu_history_records": 54,
+    "si2_pbe_2x2x2_cpu_history_records": 50,
+    "al1_lda_4x4x4_cpu_history_records": 74,
+    "si2_pbe_2x2x2_metal_history_records": 44,
+    "al1_lda_4x4x4_metal_history_records": 67,
     "si2_pbe_metal_history_records": 47,
     "si16_cpu_history_records": 47,
     "si16_metal_history_records": 52,
+    "si16_lda_2x2x2_cpu_history_records": 47,
+    "si16_lda_2x2x2_metal_history_records": 42,
+    "mgo2_cpu_history_records": 73,
+    "mgo2_metal_history_records": 66,
     "native_histories_complete": true,
     "independent_qe_history_complete": false
   },
   "fixture_provenance": {
     "manifest_schema_version": 1,
-    "verified_fixture_count": 10,
+    "verified_fixture_count": 23,
     "ci_enforced": true,
     "path_traversal_rejected": true,
     "tamper_detection": "passed",
@@ -191,16 +437,19 @@
   },
   "go_no_go": {
     "cpu_educational_solver": "go",
-    "persistent_metal_operator": "go for the pinned silicon workloads",
-    "gpu_cross_gram_davidson_integration": "go for the pinned silicon workloads",
-    "resident_projection_journal": "go for the pinned silicon workloads",
-    "gpu_direct_residual_norms": "go for the pinned silicon workloads",
-    "gpu_resident_basis_and_updates": "go for the pinned silicon workloads",
+    "persistent_metal_operator": "go for the pinned silicon and MgO workloads",
+    "gpu_cross_gram_davidson_integration": "go for the pinned silicon and MgO workloads",
+    "resident_projection_journal": "go for the pinned silicon and MgO workloads",
+    "gpu_direct_residual_norms": "go for the pinned silicon and MgO workloads",
+    "gpu_resident_basis_and_updates": "go for the pinned silicon and MgO workloads",
     "phase_1_resident_eigensolver": "go; scientific and matched performance gates passed",
-    "phase_2_checkpoint_restart": "go for the current CPU and Metal SCF state boundary",
+    "phase_2_checkpoint_restart": "go for Gamma and multi-k-point CPU/Metal SCF state boundaries; schema 3 validates every ordered k-point identity, basis, orbital block, history, timing, and cumulative backend counter",
     "phase_2_structured_diagnostics": "go for native SCF iteration histories",
     "phase_2_fixture_manifest": "go; hashes and provenance are enforced in CI",
     "phase_3_pbe_silicon": "go for the pinned Si2 ONCV workload; point, grid, CPU/QE, and Metal/CPU gates passed",
-    "production_science_or_scope_expansion": "no-go beyond the explicitly validated silicon workloads until multiple elements, k-points, occupations, and forces have independent fixtures"
+    "phase_3_multi_species_mgo": "go for the pinned MgO ONCV workload; multi-species CPU/QE and Metal/CPU gates passed, while its 0.786x matched benchmark rejects a performance claim",
+    "phase_3_k_points": "go for the pinned shifted 2x2x2 Si2 PBE workload; CPU passes QE 7.6 and resident Metal passes CPU accuracy and transfer gates. Performance is workload-dependent: Si2 rejects a claim at 0.212x while the compute-bound sixteen-atom 24 Ry fixture passes at 1.856x",
+    "phase_3_fermi_dirac_occupations": "go for the pinned fcc Al LDA-PZ 4x4x4 workload; CPU passes QE 7.6 and resident Metal passes CPU free-energy, occupied-eigenvalue, occupation, charge, and transfer gates",
+    "production_science_or_scope_expansion": "no-go beyond the explicitly validated silicon, MgO, and aluminum workloads until forces, spin, denser-mesh convergence, and broader chemistry have independent fixtures"
   }
 }

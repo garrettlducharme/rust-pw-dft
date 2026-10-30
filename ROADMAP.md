@@ -52,7 +52,8 @@ Build the machinery required to add physics without weakening evidence.
   validation-manifest schemas; **implemented at the format level**
 - add binary checkpoints with hashes, compatibility checks, atomic writes,
   compact inspection, and CPU/Metal interruption equivalence tests;
-  **implemented for the current SCF state boundary**
+  **implemented for both the SCF state boundary and fixed-cell ionic
+  relaxation optimizer state**
 - provide a fixture manifest that records licenses, origins, download hashes,
   redistribution policy, and independent reference commands; **implemented
   and enforced in CI**
@@ -79,13 +80,64 @@ validation and independent fixtures.
    whole-functional finite-difference test. A pinned ONCV PBE UPF now passes
    strict parsing, and the Si2 CPU and Metal full-SCF comparisons pass their
    independent QE and mixed-precision gates. PBE is accepted only for that
-   explicitly validated silicon workload.**
+   explicitly validated silicon workload. Multi-species local/nonlocal
+   operators, starting densities, electron counts, and Ewald sums now pass a
+   matched 100 Ry MgO CPU/QE and Metal/CPU gate; this admits one binary oxide,
+   not broad chemical transferability.**
 2. Monkhorst-Pack and explicit k-point lists, weights, time-reversal handling,
-   and band/density accumulation.
+   and band/density accumulation. **CPU FP64 is implemented and accepted for a
+   shifted 2x2x2 Si2 PBE fixture against QE 7.6. Per-k-point coordinates,
+   weights, occupied eigenvalues, occupations, charge, and total energy pass a
+   release-mode CI gate. Resident mixed-precision Metal is accepted against the
+   CPU result for the same fixture, with one persistent GPU context per
+   irreducible point, zero projection resynchronizations, and explicit transfer
+   accounting. The contexts currently run sequentially and do not establish a
+   universal performance claim. A two-atom matched benchmark records a
+   deliberate `0.212x` no-go, while the compute-bound sixteen-atom, 24 Ry
+   shifted 2x2x2 fixture passes the five-run end-to-end gate at `1.856x` on the
+   Apple M5 Pro. Schema-4 checkpoint/restart now validates and restores every
+   per-k-point orbital block, accumulated history, timings, and Metal counters;
+   CPU and Metal interruption-equivalence gates pass.**
 3. Fractional occupations and finite-temperature smearing for metals.
-4. Collinear spin polarization.
+   **Global Fermi-Dirac chemical-potential solving, entropy/free-energy terms,
+   extra-band allocation, and charge-conservation tests are implemented on CPU.
+   A shifted 4x4x4 fcc Al LDA-PZ free-energy calculation passes independent QE
+   7.6 total-energy, occupied-eigenvalue, occupation, and charge gates. This
+   accepts only that exact CPU fixture. The corresponding resident Metal SCF
+   passes free-energy, occupied-eigenvalue, occupation, charge, and transfer-
+   audit gates against CPU. Denser-mesh physical convergence and a modern
+   production pseudopotential remain pending.**
+4. Collinear spin polarization. **The two-density LDA-PZ point and grid
+   boundary agrees with an independent seven-point Libxc 7.1.2 polarized
+   oracle, separate up/down finite differences, and the exact unpolarized
+   limit. A bounded CPU-FP64 vertical slice now accepts schema-3 Gamma-only
+   LDA-PZ inputs with fixed integer up/down occupations and fixed total
+   magnetization. It uses separate Davidson solves and density mixing, a common
+   Hartree potential, channel-specific XC potentials, schema-5 spin results,
+   and analytic forces. The pinned two-atom silicon calculation agrees with QE
+   7.6 within the 2 meV/atom energy and 5 meV occupied-eigenvalue gates. Two
+   persistent Metal spin-channel contexts now pass fixed-density operator,
+   full-SCF CPU/QE, force, exact repeat-determinism, memory, and transfer-audit
+   gates. The Metal path damps magnetization mixing separately and reports its
+   measured FP32 density floor instead of claiming the CPU threshold. The
+   schema-5 CLI comparison is spin aware. Schema-4 checkpoints now preserve
+   both channel densities and orbital blocks, exact channel identities,
+   history, timings, and cumulative Metal counters; CPU and Metal interruption-
+   equivalence gates pass. Polarized PBE, spin k-point meshes, matched
+   performance claims, and relaxation remain fail-closed pending dedicated
+   validation.**
 5. Analytic norm-conserving forces, finite-difference verification, and fixed-
-   cell ionic relaxation.
+   cell ionic relaxation. **Local, separable-nonlocal, and Ewald derivatives
+   are implemented for Gamma and weighted multi-k-point SCFs. A displaced-Si2
+   CPU result agrees with both total-energy finite differences and an
+   independent QE 7.6 force reference; CPU/Metal force parity passes for LDA,
+   PBE, multi-k silicon, and metallic aluminum fixtures. A fail-closed fixed-
+   cell conjugate-gradient/Armijo relaxation now recovers the displaced-Si2
+   minimum on CPU and Metal with complete per-geometry provenance. Atomic,
+   checksummed relaxation checkpoint/restart preserves the geometry, force,
+   conjugate-gradient direction, step proposal, histories, counters, and timing;
+   CPU and Metal interruption-equivalence gates pass bit-exactly. Constraints
+   and broader chemical force/relaxation validation remain pending.**
 6. Stress and variable-cell relaxation only after force validation is mature.
 
 Each feature must pass CPU FP64 first. Metal acceptance then requires a
@@ -96,7 +148,8 @@ norm-conserving pseudopotentials.
 
 ## Phase 4 — usability for independent researchers
 
-- stable CLI with `run`, `resume`, `inspect`, `compare`, and `bench` workflows;
+- stable CLI with `run`, `resume`, `relax`, `relax-resume`, checkpoint
+  inspection, `compare`, and `bench` workflows;
 - actionable convergence diagnostics and conservative presets;
 - documented units, coordinate conventions, FFT/cutoff behavior, and precision
   implications;

@@ -1908,6 +1908,19 @@ pub use imp::{
     device_name, fft_roundtrip,
 };
 
+// MPSGraph and command-buffer failures can contaminate other simultaneously
+// executing GPU tests in the same process. Keep scientific Metal tests
+// deterministic while still allowing all CPU tests to run in parallel.
+#[cfg(all(test, feature = "metal", target_os = "macos"))]
+static TEST_DEVICE_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(all(test, feature = "metal", target_os = "macos"))]
+pub(crate) fn test_device_lock() -> std::sync::MutexGuard<'static, ()> {
+    TEST_DEVICE_MUTEX
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[cfg(all(test, feature = "metal", target_os = "macos"))]
 mod tests {
     use super::*;
@@ -1916,6 +1929,7 @@ mod tests {
 
     #[test]
     fn metal_fft_roundtrip_reports_error() {
+        let _device_guard = test_device_lock();
         let shape = [11, 9, 7];
         let input: Vec<_> = (0..shape.iter().product())
             .map(|i| Complex32::new((i as f32 * 0.17).sin(), (i as f32 * 0.23).cos()))
@@ -1934,6 +1948,7 @@ mod tests {
 
     #[test]
     fn metal_local_fft_chain_matches_cpu_reference() {
+        let _device_guard = test_device_lock();
         let shape = [7, 6, 5];
         let batch = 3;
         let grid_points = shape.iter().product::<usize>();
@@ -1985,6 +2000,7 @@ mod tests {
 
     #[test]
     fn metal_dense_complex_operator_matches_cpu_reference() {
+        let _device_guard = test_device_lock();
         let dimension = 5;
         let batch = 3;
         let values: Vec<_> = (0..dimension * batch)

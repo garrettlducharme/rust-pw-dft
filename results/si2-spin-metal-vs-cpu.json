@@ -1,0 +1,19 @@
+{
+  "schema_version": 5,
+  "accepted": true,
+  "total_energy_error_mev_atom": 0.008759917773523088,
+  "total_energy_tolerance_mev_atom": 1.0,
+  "maximum_occupied_eigenvalue_error_mev": 0.00987617698586172,
+  "occupied_eigenvalue_tolerance_mev": 5.0,
+  "maximum_occupation_error": 0.0,
+  "occupation_tolerance": 0.00001,
+  "electron_count_error": 7.105427357601002e-15,
+  "electron_count_tolerance": 0.00001,
+  "spin_comparison_performed": true,
+  "magnetization_error_electrons": 2.353672812205332e-14,
+  "magnetization_tolerance_electrons": 0.00001,
+  "force_comparison_performed": true,
+  "maximum_force_error_ry_bohr": 0.00003906238684174669,
+  "force_tolerance_ry_bohr": 0.0005,
+  "k_point_count": 1
+}

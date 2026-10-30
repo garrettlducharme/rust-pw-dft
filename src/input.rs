@@ -1,11 +1,12 @@
+use crate::kpoints::{KPointSamplingInput, OccupationScheme};
 use crate::xc::XcFunctional;
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub const INPUT_SCHEMA_VERSION: u32 = 1;
+pub const INPUT_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -18,10 +19,14 @@ pub struct SimulationInput {
     pub xc: XcFunctional,
     #[serde(default)]
     pub scf_options: ScfOptions,
-    #[serde(default = "gamma_point")]
-    pub k_points: String,
+    #[serde(default)]
+    pub k_points: KPointSamplingInput,
+    #[serde(default)]
+    pub occupations: OccupationScheme,
     #[serde(default = "one")]
     pub spin_components: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub magnetization_electrons: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,9 +75,6 @@ impl Default for ScfOptions {
     }
 }
 
-fn gamma_point() -> String {
-    "gamma".into()
-}
 const fn one() -> u8 {
     1
 }
@@ -116,20 +118,48 @@ impl SimulationInput {
 
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            self.schema_version == INPUT_SCHEMA_VERSION,
-            "unsupported input schema_version {}; expected {}",
+            (1..=INPUT_SCHEMA_VERSION).contains(&self.schema_version),
+            "unsupported input schema_version {}; expected 1 through {}",
             self.schema_version,
             INPUT_SCHEMA_VERSION
         );
         ensure!(self.cell.fixed, "cell relaxation is unsupported");
+        self.k_points.resolve()?;
+        self.occupations.validate()?;
+        if self.schema_version == 1 {
+            ensure!(
+                self.k_points.is_legacy_gamma() && self.occupations == OccupationScheme::Fixed,
+                "input schema 1 supports only legacy Gamma-point fixed occupations"
+            );
+        }
         ensure!(
-            self.k_points.eq_ignore_ascii_case("gamma"),
-            "only Gamma-point calculations are supported"
+            matches!(self.spin_components, 1 | 2),
+            "spin_components must be 1 or 2"
         );
-        ensure!(
-            self.spin_components == 1,
-            "spin-polarized calculations are unsupported"
-        );
+        if self.spin_components == 1 {
+            ensure!(
+                self.magnetization_electrons.is_none(),
+                "magnetization_electrons requires spin_components = 2"
+            );
+        } else {
+            ensure!(
+                self.schema_version >= 3,
+                "collinear spin requires input schema 3"
+            );
+            ensure!(
+                self.xc == XcFunctional::LdaPz,
+                "collinear spin currently supports only lda-pz"
+            );
+            ensure!(
+                self.k_points.is_legacy_gamma() && self.occupations == OccupationScheme::Fixed,
+                "collinear spin currently requires Gamma-point fixed occupations"
+            );
+            ensure!(
+                self.magnetization_electrons
+                    .is_some_and(|value| value.is_finite()),
+                "collinear spin requires a finite magnetization_electrons"
+            );
+        }
         ensure!(
             self.cutoff_ry.is_finite() && self.cutoff_ry > 0.0,
             "cutoff_ry must be positive and finite"
@@ -144,10 +174,12 @@ impl SimulationInput {
                 && self.scf_options.mixing_beta > 0.0,
             "mixing_beta must be in (0, 1]"
         );
+        let mut used_elements = BTreeSet::new();
         for atom in &self.atoms {
-            if atom.element != "Si" {
-                bail!("only silicon is supported; found {}", atom.element);
-            }
+            ensure!(
+                !atom.element.trim().is_empty() && atom.element == atom.element.trim(),
+                "atom element labels must be nonempty and have no surrounding whitespace"
+            );
             ensure!(
                 self.pseudopotentials.contains_key(&atom.element),
                 "no pseudopotential was supplied for {}",
@@ -157,7 +189,14 @@ impl SimulationInput {
                 atom.fractional.iter().all(|x| x.is_finite()),
                 "atom coordinates must be finite"
             );
+            used_elements.insert(atom.element.as_str());
         }
+        ensure!(
+            self.pseudopotentials
+                .keys()
+                .all(|element| used_elements.contains(element.as_str())),
+            "pseudopotential map contains an element absent from the atom list"
+        );
         Ok(())
     }
 }
@@ -195,16 +234,43 @@ lattice_bohr = [[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]]
 "#;
         assert!(toml::from_str::<SimulationInput>(missing).is_err());
 
-        let mut unsupported = missing.replacen("cutoff_ry", "schema_version = 2\ncutoff_ry", 1);
+        let mut unsupported = missing.replacen("cutoff_ry", "schema_version = 4\ncutoff_ry", 1);
         let parsed: SimulationInput = toml::from_str(&unsupported).unwrap();
         assert!(parsed.validate().is_err());
-        unsupported = unsupported.replacen("schema_version = 2", "schema_version = 1", 1);
+        unsupported = unsupported.replacen("schema_version = 4", "schema_version = 3", 1);
         assert!(
             toml::from_str::<SimulationInput>(&unsupported)
                 .unwrap()
                 .validate()
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn schema_three_admits_only_bounded_collinear_lda_contract() {
+        let source = r#"
+cutoff_ry = 20.0
+schema_version = 3
+xc = "lda-pz"
+spin_components = 2
+magnetization_electrons = 1.0
+pseudopotentials = { Al = "Al.UPF" }
+atoms = [{ element = "Al", fractional = [0.0, 0.0, 0.0] }]
+[cell]
+lattice_bohr = [[15.0,0.0,0.0],[0.0,15.0,0.0],[0.0,0.0,15.0]]
+"#;
+        let input: SimulationInput = toml::from_str(source).unwrap();
+        input.validate().unwrap();
+
+        let mut missing_magnetization = input.clone();
+        missing_magnetization.magnetization_electrons = None;
+        assert!(missing_magnetization.validate().is_err());
+        let mut pbe = input.clone();
+        pbe.xc = XcFunctional::Pbe;
+        assert!(pbe.validate().is_err());
+        let mut unpolarized = input;
+        unpolarized.spin_components = 1;
+        assert!(unpolarized.validate().is_err());
     }
 
     #[test]
@@ -222,9 +288,9 @@ lattice_bohr = [[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]]
         )
         .unwrap();
 
-        input.k_points = "2x2x2".into();
+        input.k_points = KPointSamplingInput::Legacy("2x2x2".into());
         assert!(input.validate().is_err());
-        input.k_points = "gamma".into();
+        input.k_points = KPointSamplingInput::Legacy("gamma".into());
         input.spin_components = 2;
         assert!(input.validate().is_err());
         input.spin_components = 1;
@@ -232,6 +298,11 @@ lattice_bohr = [[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]]
         assert!(input.validate().is_err());
         input.cell.fixed = true;
         input.atoms[0].element = "Al".into();
+        assert!(input.validate().is_err());
+        input.pseudopotentials.insert("Al".into(), "Al.UPF".into());
+        input.pseudopotentials.remove("Si");
+        assert!(input.validate().is_ok());
+        input.pseudopotentials.insert("O".into(), "O.UPF".into());
         assert!(input.validate().is_err());
     }
 
@@ -250,5 +321,56 @@ lattice_bohr = [[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]]
         assert_eq!(parsed.xc, XcFunctional::Pbe);
         let error = toml::from_str::<SimulationInput>(&pbe.replace("pbe", "scan")).unwrap_err();
         assert!(error.to_string().contains("unknown variant `scan`"));
+    }
+
+    #[test]
+    fn admits_exact_multi_species_pseudopotential_map() {
+        let input: SimulationInput = toml::from_str(
+            r#"
+cutoff_ry = 100.0
+schema_version = 1
+xc = "pbe"
+pseudopotentials = { Mg = "Mg.UPF", O = "O.UPF" }
+atoms = [
+  { element = "Mg", fractional = [0.0, 0.0, 0.0] },
+  { element = "O", fractional = [0.5, 0.5, 0.5] },
+]
+[cell]
+lattice_bohr = [[0.0,4.0,4.0],[4.0,0.0,4.0],[4.0,4.0,0.0]]
+"#,
+        )
+        .unwrap();
+        input.validate().unwrap();
+    }
+
+    #[test]
+    fn schema_two_accepts_weighted_k_points_and_smearing() {
+        let input: SimulationInput = toml::from_str(
+            r#"
+cutoff_ry = 30.0
+schema_version = 2
+xc = "pbe"
+pseudopotentials = { Al = "Al.UPF" }
+atoms = [{ element = "Al", fractional = [0.0, 0.0, 0.0] }]
+
+[k_points]
+kind = "monkhorst-pack"
+grid = [2, 2, 2]
+shift = [0.5, 0.5, 0.5]
+reduce_time_reversal = true
+
+[occupations]
+kind = "fermi-dirac"
+smearing_ry = 0.01
+extra_bands = 4
+
+[cell]
+lattice_bohr = [[7.5,0.0,0.0],[0.0,7.5,0.0],[0.0,0.0,7.5]]
+"#,
+        )
+        .unwrap();
+        input.validate().unwrap();
+        assert_eq!(input.k_points.resolve().unwrap().len(), 4);
+        assert_eq!(input.occupations.band_count(3.0).unwrap(), 6);
     }
 }

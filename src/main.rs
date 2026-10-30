@@ -3,14 +3,19 @@ use clap::{Parser, Subcommand, ValueEnum};
 use rust_pw_dft::backend::BackendKind;
 use rust_pw_dft::checkpoint;
 use rust_pw_dft::fixtures;
-use rust_pw_dft::result::{Provenance, ScfResult};
+use rust_pw_dft::input::SimulationInput;
+use rust_pw_dft::relax::{
+    RelaxationControl, RelaxationOptions, RelaxationResult, relax_with_control,
+};
+use rust_pw_dft::relax_checkpoint;
+use rust_pw_dft::result::{Provenance, ScfResult, SpinChannelResult};
 use rust_pw_dft::scf::{ScfRunControl, run_matched_benchmark, run_with_control};
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-const COMPARISON_SCHEMA_VERSION: u32 = 1;
+const COMPARISON_SCHEMA_VERSION: u32 = 5;
 const BENCHMARK_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Parser)]
@@ -49,7 +54,45 @@ enum Command {
         #[arg(long)]
         stop_after: Option<usize>,
     },
+    Relax {
+        input: PathBuf,
+        #[arg(long, value_enum)]
+        backend: BackendArg,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long, default_value_t = 40)]
+        max_steps: usize,
+        #[arg(long, default_value_t = 1.0e-4)]
+        force_tolerance_ry_bohr: f64,
+        #[arg(long, default_value_t = 0.1)]
+        initial_step_bohr: f64,
+        #[arg(long, default_value_t = 0.3)]
+        maximum_step_bohr: f64,
+        #[arg(long)]
+        checkpoint: Option<PathBuf>,
+        #[arg(long, default_value_t = 1)]
+        checkpoint_every: usize,
+        #[arg(long)]
+        stop_after: Option<usize>,
+    },
+    RelaxResume {
+        input: PathBuf,
+        checkpoint: PathBuf,
+        #[arg(long, value_enum)]
+        backend: BackendArg,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        checkpoint_output: Option<PathBuf>,
+        #[arg(long, default_value_t = 1)]
+        checkpoint_every: usize,
+        #[arg(long)]
+        stop_after: Option<usize>,
+    },
     InspectCheckpoint {
+        checkpoint: PathBuf,
+    },
+    InspectRelaxationCheckpoint {
         checkpoint: PathBuf,
     },
     VerifyFixtures {
@@ -61,6 +104,8 @@ enum Command {
     Compare {
         result: PathBuf,
         reference: PathBuf,
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
     Bench {
         input: PathBuf,
@@ -99,8 +144,20 @@ struct Comparison {
     schema_version: u32,
     accepted: bool,
     total_energy_error_mev_atom: f64,
+    total_energy_tolerance_mev_atom: f64,
     maximum_occupied_eigenvalue_error_mev: f64,
+    occupied_eigenvalue_tolerance_mev: f64,
+    maximum_occupation_error: f64,
+    occupation_tolerance: f64,
     electron_count_error: f64,
+    electron_count_tolerance: f64,
+    spin_comparison_performed: bool,
+    magnetization_error_electrons: Option<f64>,
+    magnetization_tolerance_electrons: Option<f64>,
+    force_comparison_performed: bool,
+    maximum_force_error_ry_bohr: Option<f64>,
+    force_tolerance_ry_bohr: Option<f64>,
+    k_point_count: usize,
 }
 
 #[derive(Serialize)]
@@ -144,11 +201,31 @@ struct CheckpointSummary {
     run_profile: String,
     iteration_completed: usize,
     fft_shape: [usize; 3],
-    g_vector_count: usize,
-    occupied_states: usize,
-    density_values: usize,
-    orbital_count: usize,
+    k_point_count: usize,
+    spin_channels: Vec<Option<usize>>,
+    g_vector_counts: Vec<usize>,
+    band_counts: Vec<usize>,
+    density_channel_count: usize,
+    density_values: Vec<usize>,
+    orbital_counts: Vec<usize>,
     elapsed_seconds: f64,
+}
+
+#[derive(Serialize)]
+struct RelaxationCheckpointSummary {
+    schema_version: u32,
+    file_sha256: String,
+    writer_git_revision: String,
+    initial_input_sha256: String,
+    pseudopotential_sha256: std::collections::BTreeMap<String, String>,
+    requested_backend: BackendKind,
+    accepted_steps: usize,
+    atom_count: usize,
+    total_scf_evaluations: usize,
+    elapsed_seconds: f64,
+    current_total_energy_ry: Option<f64>,
+    current_maximum_force_norm_ry_bohr: f64,
+    options: RelaxationOptions,
 }
 
 fn read_result(path: &Path) -> Result<ScfResult> {
@@ -179,16 +256,85 @@ fn write_result(path: &Path, result: &ScfResult) -> Result<()> {
     Ok(())
 }
 
+fn write_relaxation_result(path: &Path, result: &RelaxationResult) -> Result<()> {
+    result.validate()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, serde_json::to_vec_pretty(result)?)?;
+    println!(
+        "actual backend: {:?}; device: {}",
+        result.final_scf.provenance.actual_backend, result.final_scf.provenance.actual_device
+    );
+    if !result.converged {
+        bail!(
+            "ionic relaxation did not converge: {}",
+            result.stop_reason.as_deref().unwrap_or("unknown reason")
+        );
+    }
+    Ok(())
+}
+
 fn compare(result_path: &Path, reference_path: &Path) -> Result<Comparison> {
     let result = read_result(result_path)?;
     let reference = read_result(reference_path)?;
     compare_results(&result, &reference)
 }
 
+fn compare_spin_channel(
+    actual: &SpinChannelResult,
+    expected: &SpinChannelResult,
+) -> Result<(f64, f64)> {
+    ensure!(
+        actual.k_points.len() == expected.k_points.len(),
+        "spin-channel k-point counts differ"
+    );
+    let mut maximum_eigenvalue_error = 0.0_f64;
+    let mut maximum_occupation_error = 0.0_f64;
+    for (actual_point, expected_point) in actual.k_points.iter().zip(&expected.k_points) {
+        ensure!(
+            actual_point
+                .reduced
+                .iter()
+                .zip(expected_point.reduced)
+                .all(|(&left, right)| (left - right).abs() <= 1.0e-10)
+                && (actual_point.weight - expected_point.weight).abs() <= 1.0e-12,
+            "spin-channel k-point coordinates or weights differ"
+        );
+        let bands = actual_point
+            .occupations
+            .len()
+            .max(expected_point.occupations.len());
+        for band in 0..bands {
+            let actual_occupation = actual_point.occupations.get(band).copied().unwrap_or(0.0);
+            let expected_occupation = expected_point.occupations.get(band).copied().unwrap_or(0.0);
+            maximum_occupation_error =
+                maximum_occupation_error.max((actual_occupation - expected_occupation).abs());
+            if actual_occupation > 1.0e-8 || expected_occupation > 1.0e-8 {
+                let actual_eigenvalue = actual_point
+                    .eigenvalues_ry
+                    .get(band)
+                    .context("actual spin result omits an occupied band")?;
+                let expected_eigenvalue = expected_point
+                    .eigenvalues_ry
+                    .get(band)
+                    .context("reference spin result omits an occupied band")?;
+                maximum_eigenvalue_error =
+                    maximum_eigenvalue_error.max((actual_eigenvalue - expected_eigenvalue).abs());
+            }
+        }
+    }
+    Ok((maximum_eigenvalue_error, maximum_occupation_error))
+}
+
 fn compare_results(result: &ScfResult, reference: &ScfResult) -> Result<Comparison> {
     ensure!(
         result.converged && reference.converged,
         "comparison requires two converged SCF results"
+    );
+    ensure!(
+        result.spin.is_some() == reference.spin.is_some(),
+        "comparison requires either two spin-resolved or two spin-unpolarized results"
     );
     let energy = result
         .total_energy_ry
@@ -197,19 +343,91 @@ fn compare_results(result: &ScfResult, reference: &ScfResult) -> Result<Comparis
         .total_energy_ry
         .context("reference has no total energy")?;
     ensure!(
-        result.eigenvalues_ry.len() == reference.eigenvalues_ry.len(),
-        "eigenvalue counts differ"
-    );
-    ensure!(
         result.atom_count > 0 && result.atom_count == reference.atom_count,
         "comparison requires matching nonzero atom counts"
     );
-    let max_eigen_ry = result
-        .eigenvalues_ry
-        .iter()
-        .zip(&reference.eigenvalues_ry)
-        .map(|(a, b)| (a - b).abs())
-        .fold(0.0_f64, f64::max);
+    let (max_eigen_ry, maximum_occupation_error, k_point_count, magnetization_error) =
+        if let (Some(actual_spin), Some(expected_spin)) = (&result.spin, &reference.spin) {
+            ensure!(
+                actual_spin.up.k_points.len() == actual_spin.down.k_points.len(),
+                "spin channels use different k-point counts"
+            );
+            let (up_eigenvalue_error, up_occupation_error) =
+                compare_spin_channel(&actual_spin.up, &expected_spin.up)?;
+            let (down_eigenvalue_error, down_occupation_error) =
+                compare_spin_channel(&actual_spin.down, &expected_spin.down)?;
+            (
+                up_eigenvalue_error.max(down_eigenvalue_error),
+                up_occupation_error.max(down_occupation_error),
+                actual_spin.up.k_points.len(),
+                Some(
+                    (actual_spin.magnetization_electrons - expected_spin.magnetization_electrons)
+                        .abs(),
+                ),
+            )
+        } else if !result.k_points.is_empty() && !reference.k_points.is_empty() {
+            ensure!(
+                result.k_points.len() == reference.k_points.len(),
+                "k-point counts differ"
+            );
+            let mut maximum_eigenvalue_error = 0.0_f64;
+            let mut maximum_occupation_error = 0.0_f64;
+            for (actual, expected) in result.k_points.iter().zip(&reference.k_points) {
+                ensure!(
+                    actual
+                        .reduced
+                        .iter()
+                        .zip(expected.reduced)
+                        .all(|(&a, b)| (a - b).abs() <= 1.0e-10)
+                        && (actual.weight - expected.weight).abs() <= 1.0e-12,
+                    "k-point coordinates or weights differ"
+                );
+                ensure!(
+                    actual.eigenvalues_ry.len() == expected.eigenvalues_ry.len()
+                        && actual.occupations.len() == expected.occupations.len(),
+                    "per-k-point band counts differ"
+                );
+                for (
+                    ((&actual_eigenvalue, &expected_eigenvalue), &actual_occupation),
+                    &expected_occupation,
+                ) in actual
+                    .eigenvalues_ry
+                    .iter()
+                    .zip(&expected.eigenvalues_ry)
+                    .zip(&actual.occupations)
+                    .zip(&expected.occupations)
+                {
+                    maximum_occupation_error = maximum_occupation_error
+                        .max((actual_occupation - expected_occupation).abs());
+                    if actual_occupation > 1.0e-8 || expected_occupation > 1.0e-8 {
+                        maximum_eigenvalue_error = maximum_eigenvalue_error
+                            .max((actual_eigenvalue - expected_eigenvalue).abs());
+                    }
+                }
+            }
+            (
+                maximum_eigenvalue_error,
+                maximum_occupation_error,
+                result.k_points.len(),
+                None,
+            )
+        } else {
+            ensure!(
+                result.eigenvalues_ry.len() == reference.eigenvalues_ry.len(),
+                "eigenvalue counts differ"
+            );
+            (
+                result
+                    .eigenvalues_ry
+                    .iter()
+                    .zip(&reference.eigenvalues_ry)
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0_f64, f64::max),
+                0.0,
+                1,
+                None,
+            )
+        };
     let electron_error = (result
         .electron_count
         .context("result has no electron count")?
@@ -217,24 +435,69 @@ fn compare_results(result: &ScfResult, reference: &ScfResult) -> Result<Comparis
             .electron_count
             .context("reference has no electron count")?)
     .abs();
+    let maximum_force_error_ry_bohr = match (&result.forces_ry_bohr, &reference.forces_ry_bohr) {
+        (Some(actual), Some(expected)) => {
+            ensure!(
+                actual.len() == expected.len() && actual.len() == result.atom_count,
+                "force counts differ"
+            );
+            Some(
+                actual
+                    .iter()
+                    .flatten()
+                    .zip(expected.iter().flatten())
+                    .map(|(&left, &right)| (left - right).abs())
+                    .fold(0.0_f64, f64::max),
+            )
+        }
+        _ => None,
+    };
     // 1 Ry = 13.605693122994 eV.
     let energy_mev =
         (energy - reference_energy).abs() * 13_605.693_122_994 / result.atom_count as f64;
     let eigen_mev = max_eigen_ry * 13_605.693_122_994;
-    let (energy_tolerance_mev_atom, electron_tolerance) =
+    let (energy_tolerance_mev_atom, occupation_tolerance, electron_tolerance) =
         if result.provenance.actual_backend == BackendKind::MetalMixed {
-            (1.0, 1.0e-5)
+            (1.0, 1.0e-5, 1.0e-5)
         } else {
-            (2.0, 1.0e-8)
+            (2.0, 1.0e-6, 1.0e-8)
         };
+    let occupied_eigenvalue_tolerance_mev = 5.0;
+    let magnetization_tolerance = magnetization_error.map(|_| electron_tolerance);
+    let force_tolerance_ry_bohr = maximum_force_error_ry_bohr.map(|_| {
+        if result.provenance.actual_backend == BackendKind::MetalMixed {
+            5.0e-4
+        } else {
+            1.0e-4
+        }
+    });
     Ok(Comparison {
         schema_version: COMPARISON_SCHEMA_VERSION,
         accepted: energy_mev <= energy_tolerance_mev_atom
-            && eigen_mev <= 5.0
-            && electron_error <= electron_tolerance,
+            && eigen_mev <= occupied_eigenvalue_tolerance_mev
+            && maximum_occupation_error <= occupation_tolerance
+            && electron_error <= electron_tolerance
+            && magnetization_error
+                .zip(magnetization_tolerance)
+                .is_none_or(|(error, tolerance)| error <= tolerance)
+            && maximum_force_error_ry_bohr
+                .zip(force_tolerance_ry_bohr)
+                .is_none_or(|(error, tolerance)| error <= tolerance),
         total_energy_error_mev_atom: energy_mev,
+        total_energy_tolerance_mev_atom: energy_tolerance_mev_atom,
         maximum_occupied_eigenvalue_error_mev: eigen_mev,
+        occupied_eigenvalue_tolerance_mev,
+        maximum_occupation_error,
+        occupation_tolerance,
         electron_count_error: electron_error,
+        electron_count_tolerance: electron_tolerance,
+        spin_comparison_performed: magnetization_error.is_some(),
+        magnetization_error_electrons: magnetization_error,
+        magnetization_tolerance_electrons: magnetization_tolerance,
+        force_comparison_performed: maximum_force_error_ry_bohr.is_some(),
+        maximum_force_error_ry_bohr,
+        force_tolerance_ry_bohr,
+        k_point_count,
     })
 }
 
@@ -326,6 +589,56 @@ fn main() -> Result<()> {
             let result = run_with_control(&input, backend.into(), &control)?;
             write_result(&output, &result)?;
         }
+        Command::Relax {
+            input,
+            backend,
+            output,
+            max_steps,
+            force_tolerance_ry_bohr,
+            initial_step_bohr,
+            maximum_step_bohr,
+            checkpoint,
+            checkpoint_every,
+            stop_after,
+        } => {
+            let input = SimulationInput::from_path(&input)?;
+            let options = RelaxationOptions {
+                max_steps,
+                force_tolerance_ry_bohr,
+                initial_step_bohr,
+                maximum_step_bohr,
+                ..RelaxationOptions::default()
+            };
+            let control = RelaxationControl {
+                checkpoint_output: checkpoint,
+                checkpoint_every,
+                stop_after_accepted_steps: stop_after,
+                ..RelaxationControl::default()
+            };
+            let result = relax_with_control(&input, backend.into(), &options, &control)?;
+            write_relaxation_result(&output, &result)?;
+        }
+        Command::RelaxResume {
+            input,
+            checkpoint: checkpoint_path,
+            backend,
+            output,
+            checkpoint_output,
+            checkpoint_every,
+            stop_after,
+        } => {
+            let input = SimulationInput::from_path(&input)?;
+            let loaded = relax_checkpoint::read(&checkpoint_path)?;
+            let options = loaded.checkpoint.options;
+            let control = RelaxationControl {
+                resume_from: Some(checkpoint_path.clone()),
+                checkpoint_output: Some(checkpoint_output.unwrap_or(checkpoint_path)),
+                checkpoint_every,
+                stop_after_accepted_steps: stop_after,
+            };
+            let result = relax_with_control(&input, backend.into(), &options, &control)?;
+            write_relaxation_result(&output, &result)?;
+        }
         Command::InspectCheckpoint { checkpoint: path } => {
             let loaded = checkpoint::read(&path)?;
             let value = loaded.checkpoint;
@@ -340,11 +653,58 @@ fn main() -> Result<()> {
                 run_profile: value.run_profile,
                 iteration_completed: value.iteration_completed,
                 fft_shape: value.fft_shape,
-                g_vector_count: value.g_vector_count,
-                occupied_states: value.occupied_states,
-                density_values: value.density.len(),
-                orbital_count: value.orbitals.len(),
+                k_point_count: value.k_points.len(),
+                spin_channels: value
+                    .k_points
+                    .iter()
+                    .map(|point| point.spin_channel)
+                    .collect(),
+                g_vector_counts: value
+                    .k_points
+                    .iter()
+                    .map(|point| point.g_vector_count)
+                    .collect(),
+                band_counts: value
+                    .k_points
+                    .iter()
+                    .map(|point| point.band_count)
+                    .collect(),
+                density_channel_count: value.density_channels.len(),
+                density_values: value.density_channels.iter().map(Vec::len).collect(),
+                orbital_counts: value
+                    .k_points
+                    .iter()
+                    .map(|point| point.orbitals.len())
+                    .collect(),
                 elapsed_seconds: value.elapsed_seconds,
+            };
+            println!("{}", serde_json::to_string_pretty(&summary)?);
+        }
+        Command::InspectRelaxationCheckpoint { checkpoint: path } => {
+            let loaded = relax_checkpoint::read(&path)?;
+            let value = loaded.checkpoint;
+            let current_maximum_force_norm_ry_bohr = value
+                .current_scf
+                .forces_ry_bohr
+                .as_ref()
+                .context("relaxation checkpoint current SCF has no forces")?
+                .iter()
+                .map(|force| force.iter().map(|value| value * value).sum::<f64>().sqrt())
+                .fold(0.0_f64, f64::max);
+            let summary = RelaxationCheckpointSummary {
+                schema_version: value.schema_version,
+                file_sha256: loaded.file_sha256,
+                writer_git_revision: value.writer_git_revision,
+                initial_input_sha256: value.initial_input_sha256,
+                pseudopotential_sha256: value.pseudopotential_sha256,
+                requested_backend: value.requested_backend,
+                accepted_steps: value.accepted_steps,
+                atom_count: value.current_input.atoms.len(),
+                total_scf_evaluations: value.total_scf_evaluations,
+                elapsed_seconds: value.elapsed_seconds,
+                current_total_energy_ry: value.current_scf.total_energy_ry,
+                current_maximum_force_norm_ry_bohr,
+                options: value.options,
             };
             println!("{}", serde_json::to_string_pretty(&summary)?);
         }
@@ -355,10 +715,18 @@ fn main() -> Result<()> {
             "{}",
             serde_json::to_string_pretty(&fixtures::verify_manifest(&manifest, &repository_root)?)?
         ),
-        Command::Compare { result, reference } => println!(
-            "{}",
-            serde_json::to_string_pretty(&compare(&result, &reference)?)?
-        ),
+        Command::Compare {
+            result,
+            reference,
+            output,
+        } => {
+            let rendered = serde_json::to_string_pretty(&compare(&result, &reference)?)?;
+            if let Some(path) = output {
+                fs::write(path, rendered + "\n")?;
+            } else {
+                println!("{rendered}");
+            }
+        }
         Command::Bench {
             input,
             backend,
@@ -431,4 +799,59 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn comparison_enforces_schema_four_forces_without_breaking_legacy_references() {
+        let reference =
+            read_result(Path::new("results/qe-si2-displaced-force-reference.json")).unwrap();
+        let identical = compare_results(&reference, &reference).unwrap();
+        assert!(identical.accepted);
+        assert!(identical.force_comparison_performed);
+        assert_eq!(identical.maximum_force_error_ry_bohr, Some(0.0));
+
+        let mut perturbed = reference.clone();
+        perturbed.forces_ry_bohr.as_mut().unwrap()[0][0] += 2.0e-4;
+        let rejected = compare_results(&perturbed, &reference).unwrap();
+        assert!(!rejected.accepted);
+        assert!(rejected.force_comparison_performed);
+
+        let mut legacy = reference.clone();
+        legacy.schema_version = 3;
+        legacy.forces_ry_bohr = None;
+        legacy.validate().unwrap();
+        let compatible = compare_results(&reference, &legacy).unwrap();
+        assert!(compatible.accepted);
+        assert!(!compatible.force_comparison_performed);
+        assert_eq!(compatible.maximum_force_error_ry_bohr, None);
+        assert!(!compatible.spin_comparison_performed);
+    }
+
+    #[test]
+    fn comparison_supports_schema_five_spin_channels_and_extra_unoccupied_bands() {
+        let reference = read_result(Path::new("results/qe-si2-spin-reference.json")).unwrap();
+        let identical = compare_results(&reference, &reference).unwrap();
+        assert!(identical.accepted);
+        assert!(identical.spin_comparison_performed);
+        assert_eq!(identical.magnetization_error_electrons, Some(0.0));
+
+        let mut occupied_only = reference.clone();
+        let down = &mut occupied_only.spin.as_mut().unwrap().down.k_points[0];
+        down.eigenvalues_ry.truncate(3);
+        down.occupations.truncate(3);
+        occupied_only.validate().unwrap();
+        let compatible = compare_results(&occupied_only, &reference).unwrap();
+        assert!(compatible.accepted);
+        assert_eq!(compatible.maximum_occupation_error, 0.0);
+
+        occupied_only.spin.as_mut().unwrap().up.k_points[0].eigenvalues_ry[0] += 1.0e-3;
+        occupied_only.validate().unwrap();
+        let rejected = compare_results(&occupied_only, &reference).unwrap();
+        assert!(!rejected.accepted);
+        assert!(rejected.maximum_occupied_eigenvalue_error_mev > 5.0);
+    }
 }
