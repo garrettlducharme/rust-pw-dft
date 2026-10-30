@@ -143,6 +143,29 @@ clang tools/libxc_xc_reference.c -I/opt/homebrew/include \
 The generator is project code under MIT/Apache-2.0. The recorded Libxc-derived
 reference data is identified as MPL-2.0 in the manifest.
 
+## Independent Libxc collinear LDA-PZ point table
+
+`fixtures/xc/libxc-7.1.2-lda-pz-polarized.json` records spin-polarized Slater
+exchange plus Perdew-Zunger correlation from Libxc 7.1.2. Its seven points
+cover the unpolarized limit, several partial polarizations, and both fully
+polarized endpoints. Each point records energy per electron and independent
+up/down density derivatives.
+
+The native LSDA kernel is required to match this table, reduce to the existing
+unpolarized LDA-PZ implementation at equal spin densities, and pass separate
+finite differences in both spin channels. The grid boundary is also checked
+for unit conversion and variational potentials. This validates the XC
+foundation only: spin-polarized SCF input remains rejected until the orbital,
+occupation, density, result, checkpoint, and Metal paths all support it.
+
+Regenerate the independent table with:
+
+```sh
+clang tools/libxc_lsda_reference.c -I/opt/homebrew/include \
+  -L/opt/homebrew/lib -lxc -o /tmp/libxc_lsda_reference
+/tmp/libxc_lsda_reference
+```
+
 ## Multi-species MgO reference
 
 The first chemical-transfer fixture uses the ten-electron Mg and six-electron
