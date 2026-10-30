@@ -156,8 +156,9 @@ unpolarized LDA-PZ implementation at equal spin densities, and pass separate
 finite differences in both spin channels. The grid boundary is also checked
 for unit conversion and variational potentials. Version 0.14 integrates this
 kernel into the bounded CPU-FP64 spin SCF described in
-[`docs/spin.md`](spin.md); unsupported spin checkpoint, Metal, PBE, k-point,
-comparison, and relaxation paths remain fail-closed.
+[`docs/spin.md`](spin.md). Version 0.15 admits the matched resident-Metal path
+and schema-5 result comparison. Spin checkpoint/restart, PBE, k-point meshes,
+matched benchmarking, and relaxation remain fail-closed.
 
 Regenerate the independent table with:
 
@@ -190,6 +191,18 @@ python3 tools/normalize_qe_xml.py \
 The release-mode scientific test requires total energy within 2 meV/atom,
 occupied eigenvalues within 5 meV, charge and magnetization within `1e-8`
 electrons, and maximum Cartesian force difference within `1e-4 Ry/bohr`.
+
+Version 0.15 records the accepted native runs in
+`results/si2-spin-cpu-scf.json` and `results/si2-spin-metal-scf.json`.
+Schema-5 comparisons against QE and CPU are tracked in
+`results/si2-spin-cpu-vs-qe.json`, `results/si2-spin-metal-vs-qe.json`, and
+`results/si2-spin-metal-vs-cpu.json`. On the Apple M5 Pro validation host, the
+Metal result differs from CPU by `0.00876 meV/atom` in total energy and
+`0.00988 meV` at most across occupied eigenvalues; its direct QE errors are
+`0.00870 meV/atom` and `0.01170 meV`. The largest Metal/CPU force-component
+difference is `3.91e-5 Ry/bohr`. These are scientific accuracy and residency
+records, not a performance claim; this tiny fixture is substantially slower on
+the GPU.
 
 ## Multi-species MgO reference
 

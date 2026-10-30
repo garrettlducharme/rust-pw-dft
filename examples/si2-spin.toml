@@ -23,7 +23,7 @@ element = "Si"
 fractional = [0.25, 0.25, 0.25]
 
 [scf_options]
-max_iterations = 120
+max_iterations = 260
 energy_tolerance_ry = 1.0e-8
 density_tolerance = 1.0e-8
 orbital_residual_tolerance = 1.0e-8
