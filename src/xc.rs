@@ -1,6 +1,6 @@
 use crate::fft::Fft3d;
 use crate::lattice::Lattice;
-use anyhow::{Result, ensure};
+use anyhow::{Result, bail, ensure};
 use num_complex::Complex64;
 use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
@@ -44,6 +44,18 @@ impl XcFunctional {
             Self::Pbe => Pbe.evaluate_unpolarized(fft, lattice, density),
         }
     }
+
+    pub fn evaluate_collinear(
+        self,
+        fft: &Fft3d,
+        lattice: &Lattice,
+        density: [&[f64]; 2],
+    ) -> Result<SpinXcEvaluation> {
+        match self {
+            Self::LdaPz => LdaPz.evaluate_collinear(fft, lattice, density),
+            Self::Pbe => Pbe.evaluate_collinear(fft, lattice, density),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -51,6 +63,21 @@ pub struct XcEvaluation {
     pub potential_ry: Vec<f64>,
     pub energy_ry: f64,
     pub integral_rho_vxc_ry: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct SpinXcEvaluation {
+    pub potential_ry: [Vec<f64>; 2],
+    pub energy_ry: f64,
+    pub integral_rho_vxc_ry: f64,
+}
+
+/// Pointwise collinear-spin LDA result in Hartree atomic units.
+#[derive(Debug, Clone, Copy)]
+pub struct SpinLdaPoint {
+    pub epsilon_xc_ha: f64,
+    pub v_up_ha: f64,
+    pub v_down_ha: f64,
 }
 
 /// Pointwise unpolarized GGA result in Hartree atomic units. `sigma` denotes
@@ -66,32 +93,32 @@ pub struct GgaPoint {
 #[derive(Debug, Clone, Copy)]
 struct Dual2 {
     value: f64,
-    density_derivative: f64,
-    sigma_derivative: f64,
+    derivative_0: f64,
+    derivative_1: f64,
 }
 
 impl Dual2 {
     const fn constant(value: f64) -> Self {
         Self {
             value,
-            density_derivative: 0.0,
-            sigma_derivative: 0.0,
+            derivative_0: 0.0,
+            derivative_1: 0.0,
         }
     }
 
-    const fn density(value: f64) -> Self {
+    const fn variable_0(value: f64) -> Self {
         Self {
             value,
-            density_derivative: 1.0,
-            sigma_derivative: 0.0,
+            derivative_0: 1.0,
+            derivative_1: 0.0,
         }
     }
 
-    const fn sigma(value: f64) -> Self {
+    const fn variable_1(value: f64) -> Self {
         Self {
             value,
-            density_derivative: 0.0,
-            sigma_derivative: 1.0,
+            derivative_0: 0.0,
+            derivative_1: 1.0,
         }
     }
 
@@ -99,8 +126,8 @@ impl Dual2 {
         let scale = self.value.recip();
         Self {
             value: self.value.ln(),
-            density_derivative: self.density_derivative * scale,
-            sigma_derivative: self.sigma_derivative * scale,
+            derivative_0: self.derivative_0 * scale,
+            derivative_1: self.derivative_1 * scale,
         }
     }
 
@@ -108,8 +135,8 @@ impl Dual2 {
         let value = self.value.exp();
         Self {
             value,
-            density_derivative: self.density_derivative * value,
-            sigma_derivative: self.sigma_derivative * value,
+            derivative_0: self.derivative_0 * value,
+            derivative_1: self.derivative_1 * value,
         }
     }
 
@@ -118,8 +145,8 @@ impl Dual2 {
         let scale = exponent * self.value.powf(exponent - 1.0);
         Self {
             value,
-            density_derivative: self.density_derivative * scale,
-            sigma_derivative: self.sigma_derivative * scale,
+            derivative_0: self.derivative_0 * scale,
+            derivative_1: self.derivative_1 * scale,
         }
     }
 }
@@ -136,8 +163,8 @@ impl Add for Dual2 {
     fn add(self, rhs: Self) -> Self::Output {
         Self {
             value: self.value + rhs.value,
-            density_derivative: self.density_derivative + rhs.density_derivative,
-            sigma_derivative: self.sigma_derivative + rhs.sigma_derivative,
+            derivative_0: self.derivative_0 + rhs.derivative_0,
+            derivative_1: self.derivative_1 + rhs.derivative_1,
         }
     }
 }
@@ -164,8 +191,8 @@ impl Sub for Dual2 {
     fn sub(self, rhs: Self) -> Self::Output {
         Self {
             value: self.value - rhs.value,
-            density_derivative: self.density_derivative - rhs.density_derivative,
-            sigma_derivative: self.sigma_derivative - rhs.sigma_derivative,
+            derivative_0: self.derivative_0 - rhs.derivative_0,
+            derivative_1: self.derivative_1 - rhs.derivative_1,
         }
     }
 }
@@ -192,9 +219,8 @@ impl Mul for Dual2 {
     fn mul(self, rhs: Self) -> Self::Output {
         Self {
             value: self.value * rhs.value,
-            density_derivative: self.density_derivative * rhs.value
-                + self.value * rhs.density_derivative,
-            sigma_derivative: self.sigma_derivative * rhs.value + self.value * rhs.sigma_derivative,
+            derivative_0: self.derivative_0 * rhs.value + self.value * rhs.derivative_0,
+            derivative_1: self.derivative_1 * rhs.value + self.value * rhs.derivative_1,
         }
     }
 }
@@ -245,8 +271,8 @@ impl Neg for Dual2 {
     fn neg(self) -> Self::Output {
         Self {
             value: -self.value,
-            density_derivative: -self.density_derivative,
-            sigma_derivative: -self.sigma_derivative,
+            derivative_0: -self.derivative_0,
+            derivative_1: -self.derivative_1,
         }
     }
 }
@@ -275,8 +301,8 @@ pub fn pbe_unpolarized_point(density: f64, sigma: f64) -> Result<GgaPoint> {
         "PBE sigma must be nonnegative and finite"
     );
 
-    let density_dual = Dual2::density(density);
-    let sigma_dual = Dual2::sigma(sigma);
+    let density_dual = Dual2::variable_0(density);
+    let sigma_dual = Dual2::variable_1(sigma);
     let kf = (3.0 * PI * PI * density_dual).powf(1.0 / 3.0);
 
     const KAPPA: f64 = 0.804;
@@ -304,15 +330,82 @@ pub fn pbe_unpolarized_point(density: f64, sigma: f64) -> Result<GgaPoint> {
     let correlation_energy_density = density_dual * (correlation_lda + correlation_gradient);
     let total = exchange_energy_density + correlation_energy_density;
     ensure!(
-        total.value.is_finite()
-            && total.density_derivative.is_finite()
-            && total.sigma_derivative.is_finite(),
+        total.value.is_finite() && total.derivative_0.is_finite() && total.derivative_1.is_finite(),
         "PBE evaluation produced a non-finite value"
     );
     Ok(GgaPoint {
         epsilon_xc_ha: total.value / density,
-        vrho_ha: total.density_derivative,
-        vsigma_ha_bohr5: total.sigma_derivative,
+        vrho_ha: total.derivative_0,
+        vsigma_ha_bohr5: total.derivative_1,
+    })
+}
+
+fn pz_correlation(rs: Dual2, polarized: bool) -> Dual2 {
+    if rs.value < 1.0 {
+        let (a, b, c, d) = if polarized {
+            (0.01555, -0.0269, 0.0007, -0.0048)
+        } else {
+            (0.0311, -0.048, 0.0020, -0.0116)
+        };
+        a * rs.ln() + b + c * rs * rs.ln() + d * rs
+    } else {
+        let (gamma, beta1, beta2) = if polarized {
+            (-0.0843, 1.3981, 0.2611)
+        } else {
+            (-0.1423, 1.0529, 0.3334)
+        };
+        gamma / (1.0 + beta1 * rs.powf(0.5) + beta2 * rs)
+    }
+}
+
+/// Perdew-Zunger LSDA for one collinear spin-density point.
+///
+/// Returns the XC energy per electron and the two spin-channel potentials in
+/// Hartree for densities in electrons/bohr^3. The correlation uses the PZ81
+/// interpolation between the unpolarized and fully polarized limits; exchange
+/// uses exact spin scaling.
+pub fn lda_pz_collinear_point(density_up: f64, density_down: f64) -> Result<SpinLdaPoint> {
+    ensure!(
+        density_up.is_finite()
+            && density_down.is_finite()
+            && density_up >= 0.0
+            && density_down >= 0.0,
+        "collinear LDA densities must be finite and nonnegative"
+    );
+    let density = density_up + density_down;
+    if density == 0.0 {
+        return Ok(SpinLdaPoint {
+            epsilon_xc_ha: 0.0,
+            v_up_ha: 0.0,
+            v_down_ha: 0.0,
+        });
+    }
+
+    let up = Dual2::variable_0(density_up);
+    let down = Dual2::variable_1(density_down);
+    let total = up + down;
+    let polarization = (up - down) / total;
+    let rs = (3.0 / (4.0 * PI * total)).powf(1.0 / 3.0);
+    let spin_power = (1.0 + polarization).powf(4.0 / 3.0) + (1.0 - polarization).powf(4.0 / 3.0);
+    let exchange_unpolarized = -0.458_165_293_283_142_9 / rs;
+    let exchange = 0.5 * exchange_unpolarized * spin_power;
+    let correlation_unpolarized = pz_correlation(rs, false);
+    let correlation_polarized = pz_correlation(rs, true);
+    let interpolation = (spin_power - 2.0) / (2.0_f64.powf(4.0 / 3.0) - 2.0);
+    let correlation =
+        correlation_unpolarized + interpolation * (correlation_polarized - correlation_unpolarized);
+    let epsilon = exchange + correlation;
+    let energy_density = total * epsilon;
+    ensure!(
+        epsilon.value.is_finite()
+            && energy_density.derivative_0.is_finite()
+            && energy_density.derivative_1.is_finite(),
+        "collinear LDA evaluation produced a non-finite value"
+    );
+    Ok(SpinLdaPoint {
+        epsilon_xc_ha: epsilon.value,
+        v_up_ha: energy_density.derivative_0,
+        v_down_ha: energy_density.derivative_1,
     })
 }
 
@@ -327,6 +420,18 @@ pub trait ExchangeCorrelation {
         lattice: &Lattice,
         density: &[f64],
     ) -> Result<XcEvaluation>;
+
+    fn evaluate_collinear(
+        &self,
+        _fft: &Fft3d,
+        _lattice: &Lattice,
+        _density: [&[f64]; 2],
+    ) -> Result<SpinXcEvaluation> {
+        bail!(
+            "{} does not implement collinear spin polarization",
+            self.functional().identifier()
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -373,6 +478,52 @@ impl ExchangeCorrelation for LdaPz {
             "XC evaluation produced a non-finite value"
         );
         Ok(XcEvaluation {
+            potential_ry,
+            energy_ry,
+            integral_rho_vxc_ry,
+        })
+    }
+
+    fn evaluate_collinear(
+        &self,
+        fft: &Fft3d,
+        lattice: &Lattice,
+        density: [&[f64]; 2],
+    ) -> Result<SpinXcEvaluation> {
+        ensure!(
+            density.iter().all(|channel| channel.len() == fft.len()),
+            "spin XC density has the wrong grid size"
+        );
+        ensure!(
+            density
+                .iter()
+                .flat_map(|channel| channel.iter())
+                .all(|value| value.is_finite() && *value >= -1.0e-12),
+            "spin XC density is non-finite or materially negative"
+        );
+        let cell_weight = lattice.volume / fft.len() as f64;
+        let mut potential_ry: [Vec<f64>; 2] =
+            std::array::from_fn(|_| Vec::with_capacity(fft.len()));
+        let mut energy_ry = 0.0;
+        let mut integral_rho_vxc_ry = 0.0;
+        for (&up, &down) in density[0].iter().zip(density[1]) {
+            let up = up.max(0.0);
+            let down = down.max(0.0);
+            let point = lda_pz_collinear_point(up, down)?;
+            let v_up_ry = 2.0 * point.v_up_ha;
+            let v_down_ry = 2.0 * point.v_down_ha;
+            energy_ry += (up + down) * 2.0 * point.epsilon_xc_ha * cell_weight;
+            integral_rho_vxc_ry += (up * v_up_ry + down * v_down_ry) * cell_weight;
+            potential_ry[0].push(v_up_ry);
+            potential_ry[1].push(v_down_ry);
+        }
+        ensure!(
+            energy_ry.is_finite()
+                && integral_rho_vxc_ry.is_finite()
+                && potential_ry.iter().flatten().all(|value| value.is_finite()),
+            "spin XC evaluation produced a non-finite value"
+        );
+        Ok(SpinXcEvaluation {
             potential_ry,
             energy_ry,
             integral_rho_vxc_ry,
@@ -603,6 +754,25 @@ mod tests {
         vsigma_ha_bohr5: f64,
     }
 
+    #[derive(Deserialize)]
+    struct SpinLdaReference {
+        schema_version: u32,
+        generator: String,
+        exchange_functional: String,
+        correlation_functional: String,
+        spin: String,
+        points: Vec<SpinLdaReferencePoint>,
+    }
+
+    #[derive(Deserialize)]
+    struct SpinLdaReferencePoint {
+        density_up_bohr3: f64,
+        density_down_bohr3: f64,
+        epsilon_xc_ha: f64,
+        v_up_ha: f64,
+        v_down_ha: f64,
+    }
+
     #[test]
     fn known_rs_two_value_is_stable() {
         let density = 3.0 / (4.0 * PI * 8.0);
@@ -624,6 +794,115 @@ mod tests {
             let (_, potential) = lda_pz_unpolarized(density);
             assert_relative_eq!(finite_difference, potential, epsilon = 2.0e-9);
         }
+    }
+
+    #[test]
+    fn collinear_lda_points_match_libxc_7_1_2() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures/xc/libxc-7.1.2-lda-pz-polarized.json");
+        let reference: SpinLdaReference =
+            serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(reference.schema_version, 1);
+        assert_eq!(reference.generator, "Libxc 7.1.2");
+        assert_eq!(reference.exchange_functional, "LDA_X (1)");
+        assert_eq!(reference.correlation_functional, "LDA_C_PZ (9)");
+        assert_eq!(reference.spin, "polarized");
+        assert_eq!(reference.points.len(), 7);
+        for expected in reference.points {
+            let actual =
+                lda_pz_collinear_point(expected.density_up_bohr3, expected.density_down_bohr3)
+                    .unwrap();
+            assert_relative_eq!(
+                actual.epsilon_xc_ha,
+                expected.epsilon_xc_ha,
+                epsilon = 2.0e-14,
+                max_relative = 2.0e-13
+            );
+            assert_relative_eq!(
+                actual.v_up_ha,
+                expected.v_up_ha,
+                epsilon = 2.0e-14,
+                max_relative = 2.0e-13
+            );
+            assert_relative_eq!(
+                actual.v_down_ha,
+                expected.v_down_ha,
+                epsilon = 2.0e-14,
+                max_relative = 2.0e-13
+            );
+        }
+    }
+
+    #[test]
+    fn collinear_lda_potential_is_two_density_derivatives() {
+        for (up, down) in [(0.008, 0.002), (0.015, 0.015), (0.09, 0.01)] {
+            let energy_density = |density_up: f64, density_down: f64| {
+                let point = lda_pz_collinear_point(density_up, density_down).unwrap();
+                (density_up + density_down) * point.epsilon_xc_ha
+            };
+            let up_step = up * 1.0e-5;
+            let down_step = down * 1.0e-5;
+            let up_derivative = (energy_density(up + up_step, down)
+                - energy_density(up - up_step, down))
+                / (2.0 * up_step);
+            let down_derivative = (energy_density(up, down + down_step)
+                - energy_density(up, down - down_step))
+                / (2.0 * down_step);
+            let point = lda_pz_collinear_point(up, down).unwrap();
+            assert_relative_eq!(point.v_up_ha, up_derivative, epsilon = 3.0e-9);
+            assert_relative_eq!(point.v_down_ha, down_derivative, epsilon = 3.0e-9);
+        }
+    }
+
+    #[test]
+    fn collinear_lda_reduces_exactly_to_unpolarized_lda() {
+        for total in [1.0e-6, 1.0e-4, 1.0e-2, 0.1, 1.0] {
+            let spin = lda_pz_collinear_point(0.5 * total, 0.5 * total).unwrap();
+            let (epsilon, potential) = lda_pz_unpolarized(total);
+            assert_relative_eq!(spin.epsilon_xc_ha, epsilon, epsilon = 2.0e-15);
+            assert_relative_eq!(spin.v_up_ha, potential, epsilon = 2.0e-15);
+            assert_relative_eq!(spin.v_down_ha, potential, epsilon = 2.0e-15);
+        }
+        let vacuum = lda_pz_collinear_point(0.0, 0.0).unwrap();
+        assert_eq!(vacuum.epsilon_xc_ha, 0.0);
+        assert_eq!(vacuum.v_up_ha, 0.0);
+        assert_eq!(vacuum.v_down_ha, 0.0);
+        assert!(lda_pz_collinear_point(-1.0e-9, 0.0).is_err());
+        assert!(lda_pz_collinear_point(f64::NAN, 0.0).is_err());
+    }
+
+    #[test]
+    fn collinear_lda_grid_is_variational_and_pbe_fails_closed() {
+        let fft = Fft3d::new([3, 3, 3]).unwrap();
+        let lattice = Lattice::new([[TAU, 0.0, 0.0], [0.0, TAU, 0.0], [0.0, 0.0, TAU]]).unwrap();
+        let up = vec![0.015; fft.len()];
+        let down = vec![0.005; fft.len()];
+        let result = XcFunctional::LdaPz
+            .evaluate_collinear(&fft, &lattice, [&up, &down])
+            .unwrap();
+        let point = lda_pz_collinear_point(up[0], down[0]).unwrap();
+        assert_relative_eq!(
+            result.energy_ry,
+            lattice.volume * (up[0] + down[0]) * 2.0 * point.epsilon_xc_ha,
+            epsilon = 1.0e-13
+        );
+        assert_relative_eq!(
+            result.potential_ry[0][0],
+            2.0 * point.v_up_ha,
+            epsilon = 1.0e-14
+        );
+        assert_relative_eq!(
+            result.potential_ry[1][0],
+            2.0 * point.v_down_ha,
+            epsilon = 1.0e-14
+        );
+        assert!(
+            XcFunctional::Pbe
+                .evaluate_collinear(&fft, &lattice, [&up, &down])
+                .unwrap_err()
+                .to_string()
+                .contains("does not implement collinear spin polarization")
+        );
     }
 
     #[test]
