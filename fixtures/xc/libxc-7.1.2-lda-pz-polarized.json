@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "generator": "Libxc 7.1.2",
+  "exchange_functional": "LDA_X (1)",
+  "correlation_functional": "LDA_C_PZ (9)",
+  "spin": "polarized",
+  "points": [
+    {"density_up_bohr3": 4.9999999999999998e-07, "density_down_bohr3": 4.9999999999999998e-07, "epsilon_xc_ha": -0.012132818270814335, "v_up_ha": -0.015905408526650813, "v_down_ha": -0.015905408526650813},
+    {"density_up_bohr3": 8.0000000000000007e-05, "density_down_bohr3": 2.0000000000000002e-05, "epsilon_xc_ha": -0.050339746227762223, "v_up_ha": -0.066747940982142304, "v_down_ha": -0.061423615969717973},
+    {"density_up_bohr3": 0.0060000000000000001, "density_down_bohr3": 0.0040000000000000001, "epsilon_xc_ha": -0.19791589916396266, "v_up_ha": -0.26415122389037138, "v_down_ha": -0.24773766845150258},
+    {"density_up_bohr3": 0.089999999999999997, "density_down_bohr3": 0.01, "epsilon_xc_ha": -0.43404399761543855, "v_up_ha": -0.59166953775456654, "v_down_ha": -0.38399966208838354},
+    {"density_up_bohr3": 0.69999999999999996, "density_down_bohr3": 0.29999999999999999, "epsilon_xc_ha": -0.83126480055973417, "v_up_ha": -1.1612652396345344, "v_down_ha": -0.93698486436650807},
+    {"density_up_bohr3": 0.10000000000000001, "density_down_bohr3": 0, "epsilon_xc_ha": -0.46034093065250931, "v_up_ha": -0.6080094242854478, "v_down_ha": -0.1937719598767873},
+    {"density_up_bohr3": 0, "density_down_bohr3": 0.10000000000000001, "epsilon_xc_ha": -0.46034093065250931, "v_up_ha": -0.1937719598767873, "v_down_ha": -0.6080094242854478}
+  ]
+}

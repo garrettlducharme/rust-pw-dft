@@ -4,7 +4,10 @@ An educational, fail-closed plane-wave DFT prototype aimed at Apple Silicon.
 It is dual-licensed under MIT or Apache-2.0 and contains no code copied from
 GPL DFT implementations.
 
-Version 0.12 adds atomic, checksummed fixed-cell relaxation checkpoints,
+Version 0.13 adds an independently Libxc-validated collinear-spin LDA-PZ
+point and grid boundary while keeping production spin input fail-closed until
+the complete CPU and Metal SCF state is spin-resolved. Version 0.12 added
+atomic, checksummed fixed-cell relaxation checkpoints,
 strict source/input/pseudopotential/backend/optimizer compatibility checks,
 compact inspection, and bit-exact CPU/Metal interruption-equivalence gates.
 Version 0.11 added fail-closed fixed-cell ionic relaxation with conjugate-gradient
@@ -44,6 +47,9 @@ machine-readable evidence rather than feature presence alone.
 - LDA-PZ exchange-correlation energy and potential;
 - a typed, fail-closed grid-level exchange-correlation boundary with analytic
   potential-versus-energy-derivative tests, ready for semilocal gradient terms;
+- an independently Libxc-validated collinear-spin LDA-PZ point and grid
+  boundary with two variational spin potentials; production spin input remains
+  rejected until the complete CPU and Metal SCF state is spin-resolved;
 - a native unpolarized PBE functional whose point energy and derivatives match
   a pinned Libxc 7.1.2 oracle and whose spectral grid potential passes a
   whole-functional finite-difference test; a pinned ONCV UPF and independent
@@ -387,9 +393,11 @@ milestones are accepted. The LDA Si16 transfer and matched-performance
 milestones are also accepted. The stateful driver is integrated into
 production SCF, and its normal-iteration
 zero-full-vector-transfer contract is checked at runtime and in portable and
-Apple-GPU tests. The next physics frontier is relaxation restart and broader
-force/relaxation transfer tests, followed by collinear spin and stress only
-after the fixed-cell boundary matures, with the same CPU-reference-first acceptance policy. The
+Apple-GPU tests. The next physics frontier is the complete collinear-spin CPU
+vertical slice, building on the independently validated LSDA boundary in
+[`docs/spin.md`](docs/spin.md), followed by resident Metal parity and broader
+force/relaxation transfer tests. Stress follows only after those fixed-cell
+boundaries mature, with the same CPU-reference-first acceptance policy. The
 resident buffer contract, dataflow, transfer
 accounting, and fail-closed gates are specified in
 [`docs/resident-davidson.md`](docs/resident-davidson.md).
