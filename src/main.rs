@@ -8,14 +8,14 @@ use rust_pw_dft::relax::{
     RelaxationControl, RelaxationOptions, RelaxationResult, relax_with_control,
 };
 use rust_pw_dft::relax_checkpoint;
-use rust_pw_dft::result::{Provenance, ScfResult};
+use rust_pw_dft::result::{Provenance, ScfResult, SpinChannelResult};
 use rust_pw_dft::scf::{ScfRunControl, run_matched_benchmark, run_with_control};
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-const COMPARISON_SCHEMA_VERSION: u32 = 4;
+const COMPARISON_SCHEMA_VERSION: u32 = 5;
 const BENCHMARK_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Parser)]
@@ -151,6 +151,9 @@ struct Comparison {
     occupation_tolerance: f64,
     electron_count_error: f64,
     electron_count_tolerance: f64,
+    spin_comparison_performed: bool,
+    magnetization_error_electrons: Option<f64>,
+    magnetization_tolerance_electrons: Option<f64>,
     force_comparison_performed: bool,
     maximum_force_error_ry_bohr: Option<f64>,
     force_tolerance_ry_bohr: Option<f64>,
@@ -276,14 +279,60 @@ fn compare(result_path: &Path, reference_path: &Path) -> Result<Comparison> {
     compare_results(&result, &reference)
 }
 
+fn compare_spin_channel(
+    actual: &SpinChannelResult,
+    expected: &SpinChannelResult,
+) -> Result<(f64, f64)> {
+    ensure!(
+        actual.k_points.len() == expected.k_points.len(),
+        "spin-channel k-point counts differ"
+    );
+    let mut maximum_eigenvalue_error = 0.0_f64;
+    let mut maximum_occupation_error = 0.0_f64;
+    for (actual_point, expected_point) in actual.k_points.iter().zip(&expected.k_points) {
+        ensure!(
+            actual_point
+                .reduced
+                .iter()
+                .zip(expected_point.reduced)
+                .all(|(&left, right)| (left - right).abs() <= 1.0e-10)
+                && (actual_point.weight - expected_point.weight).abs() <= 1.0e-12,
+            "spin-channel k-point coordinates or weights differ"
+        );
+        let bands = actual_point
+            .occupations
+            .len()
+            .max(expected_point.occupations.len());
+        for band in 0..bands {
+            let actual_occupation = actual_point.occupations.get(band).copied().unwrap_or(0.0);
+            let expected_occupation = expected_point.occupations.get(band).copied().unwrap_or(0.0);
+            maximum_occupation_error =
+                maximum_occupation_error.max((actual_occupation - expected_occupation).abs());
+            if actual_occupation > 1.0e-8 || expected_occupation > 1.0e-8 {
+                let actual_eigenvalue = actual_point
+                    .eigenvalues_ry
+                    .get(band)
+                    .context("actual spin result omits an occupied band")?;
+                let expected_eigenvalue = expected_point
+                    .eigenvalues_ry
+                    .get(band)
+                    .context("reference spin result omits an occupied band")?;
+                maximum_eigenvalue_error =
+                    maximum_eigenvalue_error.max((actual_eigenvalue - expected_eigenvalue).abs());
+            }
+        }
+    }
+    Ok((maximum_eigenvalue_error, maximum_occupation_error))
+}
+
 fn compare_results(result: &ScfResult, reference: &ScfResult) -> Result<Comparison> {
     ensure!(
         result.converged && reference.converged,
         "comparison requires two converged SCF results"
     );
     ensure!(
-        result.spin.is_none() && reference.spin.is_none(),
-        "spin-resolved result comparison is not yet implemented"
+        result.spin.is_some() == reference.spin.is_some(),
+        "comparison requires either two spin-resolved or two spin-unpolarized results"
     );
     let energy = result
         .total_energy_ry
@@ -295,8 +344,26 @@ fn compare_results(result: &ScfResult, reference: &ScfResult) -> Result<Comparis
         result.atom_count > 0 && result.atom_count == reference.atom_count,
         "comparison requires matching nonzero atom counts"
     );
-    let (max_eigen_ry, maximum_occupation_error, k_point_count) =
-        if !result.k_points.is_empty() && !reference.k_points.is_empty() {
+    let (max_eigen_ry, maximum_occupation_error, k_point_count, magnetization_error) =
+        if let (Some(actual_spin), Some(expected_spin)) = (&result.spin, &reference.spin) {
+            ensure!(
+                actual_spin.up.k_points.len() == actual_spin.down.k_points.len(),
+                "spin channels use different k-point counts"
+            );
+            let (up_eigenvalue_error, up_occupation_error) =
+                compare_spin_channel(&actual_spin.up, &expected_spin.up)?;
+            let (down_eigenvalue_error, down_occupation_error) =
+                compare_spin_channel(&actual_spin.down, &expected_spin.down)?;
+            (
+                up_eigenvalue_error.max(down_eigenvalue_error),
+                up_occupation_error.max(down_occupation_error),
+                actual_spin.up.k_points.len(),
+                Some(
+                    (actual_spin.magnetization_electrons - expected_spin.magnetization_electrons)
+                        .abs(),
+                ),
+            )
+        } else if !result.k_points.is_empty() && !reference.k_points.is_empty() {
             ensure!(
                 result.k_points.len() == reference.k_points.len(),
                 "k-point counts differ"
@@ -340,6 +407,7 @@ fn compare_results(result: &ScfResult, reference: &ScfResult) -> Result<Comparis
                 maximum_eigenvalue_error,
                 maximum_occupation_error,
                 result.k_points.len(),
+                None,
             )
         } else {
             ensure!(
@@ -355,6 +423,7 @@ fn compare_results(result: &ScfResult, reference: &ScfResult) -> Result<Comparis
                     .fold(0.0_f64, f64::max),
                 0.0,
                 1,
+                None,
             )
         };
     let electron_error = (result
@@ -392,6 +461,7 @@ fn compare_results(result: &ScfResult, reference: &ScfResult) -> Result<Comparis
             (2.0, 1.0e-6, 1.0e-8)
         };
     let occupied_eigenvalue_tolerance_mev = 5.0;
+    let magnetization_tolerance = magnetization_error.map(|_| electron_tolerance);
     let force_tolerance_ry_bohr = maximum_force_error_ry_bohr.map(|_| {
         if result.provenance.actual_backend == BackendKind::MetalMixed {
             5.0e-4
@@ -405,6 +475,9 @@ fn compare_results(result: &ScfResult, reference: &ScfResult) -> Result<Comparis
             && eigen_mev <= occupied_eigenvalue_tolerance_mev
             && maximum_occupation_error <= occupation_tolerance
             && electron_error <= electron_tolerance
+            && magnetization_error
+                .zip(magnetization_tolerance)
+                .is_none_or(|(error, tolerance)| error <= tolerance)
             && maximum_force_error_ry_bohr
                 .zip(force_tolerance_ry_bohr)
                 .is_none_or(|(error, tolerance)| error <= tolerance),
@@ -416,6 +489,9 @@ fn compare_results(result: &ScfResult, reference: &ScfResult) -> Result<Comparis
         occupation_tolerance,
         electron_count_error: electron_error,
         electron_count_tolerance: electron_tolerance,
+        spin_comparison_performed: magnetization_error.is_some(),
+        magnetization_error_electrons: magnetization_error,
+        magnetization_tolerance_electrons: magnetization_tolerance,
         force_comparison_performed: maximum_force_error_ry_bohr.is_some(),
         maximum_force_error_ry_bohr,
         force_tolerance_ry_bohr,
@@ -744,5 +820,30 @@ mod tests {
         assert!(compatible.accepted);
         assert!(!compatible.force_comparison_performed);
         assert_eq!(compatible.maximum_force_error_ry_bohr, None);
+        assert!(!compatible.spin_comparison_performed);
+    }
+
+    #[test]
+    fn comparison_supports_schema_five_spin_channels_and_extra_unoccupied_bands() {
+        let reference = read_result(Path::new("results/qe-si2-spin-reference.json")).unwrap();
+        let identical = compare_results(&reference, &reference).unwrap();
+        assert!(identical.accepted);
+        assert!(identical.spin_comparison_performed);
+        assert_eq!(identical.magnetization_error_electrons, Some(0.0));
+
+        let mut occupied_only = reference.clone();
+        let down = &mut occupied_only.spin.as_mut().unwrap().down.k_points[0];
+        down.eigenvalues_ry.truncate(3);
+        down.occupations.truncate(3);
+        occupied_only.validate().unwrap();
+        let compatible = compare_results(&occupied_only, &reference).unwrap();
+        assert!(compatible.accepted);
+        assert_eq!(compatible.maximum_occupation_error, 0.0);
+
+        occupied_only.spin.as_mut().unwrap().up.k_points[0].eigenvalues_ry[0] += 1.0e-3;
+        occupied_only.validate().unwrap();
+        let rejected = compare_results(&occupied_only, &reference).unwrap();
+        assert!(!rejected.accepted);
+        assert!(rejected.maximum_occupied_eigenvalue_error_mev > 5.0);
     }
 }

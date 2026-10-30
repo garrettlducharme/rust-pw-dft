@@ -161,6 +161,43 @@ fn relative_spin_density_residual(input: &[Vec<f64>; 2], output: &[Vec<f64>; 2])
     (difference / reference.max(f64::MIN_POSITIVE)).sqrt()
 }
 
+fn mix_collinear_density(
+    current: &mut [Vec<f64>; 2],
+    output: &[Vec<f64>; 2],
+    charge_beta: f64,
+    magnetization_beta: f64,
+) -> Result<()> {
+    ensure!(
+        current[0].len() == current[1].len()
+            && current[0].len() == output[0].len()
+            && current[0].len() == output[1].len()
+            && charge_beta.is_finite()
+            && magnetization_beta.is_finite()
+            && (0.0..=1.0).contains(&charge_beta)
+            && (0.0..=1.0).contains(&magnetization_beta),
+        "collinear density mixing dimensions or coefficients are invalid"
+    );
+    for index in 0..current[0].len() {
+        let input_charge = current[0][index] + current[1][index];
+        let output_charge = output[0][index] + output[1][index];
+        let input_magnetization = current[0][index] - current[1][index];
+        let output_magnetization = output[0][index] - output[1][index];
+        let mixed_charge = (1.0 - charge_beta) * input_charge + charge_beta * output_charge;
+        let mixed_magnetization = (1.0 - magnetization_beta) * input_magnetization
+            + magnetization_beta * output_magnetization;
+        current[0][index] = 0.5 * (mixed_charge + mixed_magnetization);
+        current[1][index] = 0.5 * (mixed_charge - mixed_magnetization);
+    }
+    ensure!(
+        current
+            .iter()
+            .flatten()
+            .all(|value| value.is_finite() && *value >= -1.0e-12),
+        "collinear density mixing produced a non-finite or materially negative density"
+    );
+    Ok(())
+}
+
 fn accumulate_forces(target: &mut [[f64; 3]], source: &[[f64; 3]], scale: f64) -> Result<()> {
     ensure!(
         target.len() == source.len() && scale.is_finite(),
@@ -308,13 +345,13 @@ fn accumulated_metrics(
     accumulated
 }
 
-fn current_kpoint_metal_metrics(states: &[KPointState]) -> BTreeMap<String, f64> {
+fn aggregate_current_metal_metrics<'a>(
+    contexts: impl IntoIterator<Item = &'a crate::metal::HamiltonianContext>,
+    context_count_key: &str,
+) -> BTreeMap<String, f64> {
     let mut aggregate = BTreeMap::new();
     let mut context_count = 0_usize;
-    for context in states
-        .iter()
-        .filter_map(|state| state.metal_context.as_ref())
-    {
+    for context in contexts {
         context_count += 1;
         for (name, value) in metal_metrics(context) {
             if name == "metal_peak_device_allocated_bytes" {
@@ -328,9 +365,27 @@ fn current_kpoint_metal_metrics(states: &[KPointState]) -> BTreeMap<String, f64>
         }
     }
     if context_count > 0 {
-        aggregate.insert("metal_k_point_context_count".into(), context_count as f64);
+        aggregate.insert(context_count_key.into(), context_count as f64);
     }
     aggregate
+}
+
+fn current_kpoint_metal_metrics(states: &[KPointState]) -> BTreeMap<String, f64> {
+    aggregate_current_metal_metrics(
+        states
+            .iter()
+            .filter_map(|state| state.metal_context.as_ref()),
+        "metal_k_point_context_count",
+    )
+}
+
+fn current_spin_metal_metrics(
+    contexts: &[Option<crate::metal::HamiltonianContext>; 2],
+) -> BTreeMap<String, f64> {
+    aggregate_current_metal_metrics(
+        contexts.iter().filter_map(Option::as_ref),
+        "metal_spin_channel_context_count",
+    )
 }
 
 fn accumulated_kpoint_metrics(
@@ -1075,10 +1130,6 @@ fn run_collinear_gamma_scf(
     total_started: Instant,
 ) -> Result<ScfResult> {
     ensure!(
-        requested_backend == BackendKind::CpuF64,
-        "collinear spin is not yet implemented by the Metal backend"
-    );
-    ensure!(
         profile == ScfRunProfile::Scientific,
         "collinear spin is not yet admitted to matched performance benchmarks"
     );
@@ -1113,10 +1164,63 @@ fn run_collinear_gamma_scf(
             .all(|&count| count > 0 && count <= g_vectors.len()),
         "invalid collinear spin band count"
     );
+    let maximum_subspace =
+        channel_bands.map(|roots| (roots * 8).max(roots + 4).min(g_vectors.len()));
 
     let setup_started = Instant::now();
     let hamiltonian =
         CpuHamiltonian::new(lattice, &g_vectors, &input.atoms, pseudos, input.cutoff_ry)?;
+    let (
+        actual_device,
+        precision_policy,
+        eigensolver_tolerance,
+        scf_orbital_tolerance,
+        scf_energy_tolerance,
+        scf_density_tolerance,
+    ) = match requested_backend {
+        BackendKind::CpuF64 => (
+            "Apple CPU (rustfft/f64 + two-channel block-Davidson/faer-f64)".into(),
+            PrecisionPolicy::cpu_f64(),
+            input.scf_options.orbital_residual_tolerance.min(1.0e-10),
+            input.scf_options.orbital_residual_tolerance,
+            input.scf_options.energy_tolerance_ry,
+            input.scf_options.density_tolerance,
+        ),
+        BackendKind::MetalMixed => {
+            let device = crate::metal::device_name()
+                .context("Metal backend unavailable (no CPU Hamiltonian fallback)")?;
+            (
+                format!(
+                    "{device} (two persistent MPSGraph Hamiltonian and resident GPU Davidson spin-channel contexts)"
+                ),
+                PrecisionPolicy::metal_mixed(),
+                1.0e-5,
+                1.0e-5,
+                input.scf_options.energy_tolerance_ry.max(5.0e-7),
+                input.scf_options.density_tolerance.max(2.0e-4),
+            )
+        }
+    };
+    let mut metal_contexts = match requested_backend {
+        BackendKind::CpuF64 => [None, None],
+        BackendKind::MetalMixed => [
+            Some(
+                hamiltonian
+                    .create_metal_hamiltonian_context(maximum_subspace[0])
+                    .context("failed to initialize persistent Metal spin-up Hamiltonian")?,
+            ),
+            Some(
+                hamiltonian
+                    .create_metal_hamiltonian_context(maximum_subspace[1])
+                    .context("failed to initialize persistent Metal spin-down Hamiltonian")?,
+            ),
+        ],
+    };
+    let charge_mixing_beta = input.scf_options.mixing_beta;
+    let magnetization_mixing_beta = match requested_backend {
+        BackendKind::CpuF64 => charge_mixing_beta,
+        BackendKind::MetalMixed => charge_mixing_beta.min(0.1),
+    };
     let initial_total_density = atomic_starting_density(
         hamiltonian.fft(),
         lattice,
@@ -1138,10 +1242,6 @@ fn run_collinear_gamma_scf(
         .map(|atom| pseudos[&atom.element].valence_charge)
         .collect();
     let ewald_ry = ewald_energy_ry(lattice, &input.atoms, &ionic_charges, 0.7)?;
-    let eigensolver_tolerance = input.scf_options.orbital_residual_tolerance.min(1.0e-10);
-    let scf_orbital_tolerance = input.scf_options.orbital_residual_tolerance;
-    let scf_energy_tolerance = input.scf_options.energy_tolerance_ry;
-    let scf_density_tolerance = input.scf_options.density_tolerance;
     let mut timings = BTreeMap::new();
     add_timing(
         &mut timings,
@@ -1189,19 +1289,40 @@ fn run_collinear_gamma_scf(
                 roots,
                 residual_tolerance: eigensolver_tolerance,
                 max_iterations: 80,
-                max_subspace: (roots * 8).max(roots + 4).min(g_vectors.len()),
+                max_subspace: maximum_subspace[channel],
             };
-            channel_results.push(block_davidson_batched(
-                hamiltonian.kinetic_ry(),
-                previous_orbitals[channel].as_deref(),
-                &options,
-                |orbitals| {
-                    orbitals
-                        .iter()
-                        .map(|orbital| hamiltonian.apply_fft(orbital, &potential.real_ry[channel]))
-                        .collect()
-                },
-            )?);
+            let result = match requested_backend {
+                BackendKind::CpuF64 => block_davidson_batched(
+                    hamiltonian.kinetic_ry(),
+                    previous_orbitals[channel].as_deref(),
+                    &options,
+                    |orbitals| {
+                        orbitals
+                            .iter()
+                            .map(|orbital| {
+                                hamiltonian.apply_fft(orbital, &potential.real_ry[channel])
+                            })
+                            .collect()
+                    },
+                ),
+                BackendKind::MetalMixed => {
+                    let context = metal_contexts[channel]
+                        .as_mut()
+                        .context("persistent Metal spin-channel context is missing")?;
+                    let mut backend = MetalResidentDavidson {
+                        hamiltonian: &hamiltonian,
+                        context,
+                        potential_ry: &potential.real_ry[channel],
+                    };
+                    block_davidson_resident(
+                        hamiltonian.kinetic_ry(),
+                        previous_orbitals[channel].as_deref(),
+                        &options,
+                        &mut backend,
+                    )
+                }
+            }?;
+            channel_results.push(result);
         }
         add_timing(
             &mut timings,
@@ -1311,6 +1432,11 @@ fn run_collinear_gamma_scf(
             ("electron_count_up".into(), final_channel_charges[0]),
             ("electron_count_down".into(), final_channel_charges[1]),
             ("magnetization_electrons".into(), actual_magnetization),
+            ("charge_mixing_beta".into(), charge_mixing_beta),
+            (
+                "magnetization_mixing_beta".into(),
+                magnetization_mixing_beta,
+            ),
         ]);
         if iteration_energy_change.is_none() {
             final_terms.remove("energy_change_ry");
@@ -1344,12 +1470,12 @@ fn run_collinear_gamma_scf(
             converged = true;
             break;
         }
-        let beta = input.scf_options.mixing_beta;
-        for channel in 0..2 {
-            for (current, output) in density[channel].iter_mut().zip(&output_density[channel]) {
-                *current = (1.0 - beta) * *current + beta * output;
-            }
-        }
+        mix_collinear_density(
+            &mut density,
+            &output_density,
+            charge_mixing_beta,
+            magnetization_mixing_beta,
+        )?;
     }
 
     let forces_ry_bohr = if converged {
@@ -1395,8 +1521,11 @@ fn run_collinear_gamma_scf(
         ))
     } else {
         Some(format!(
-            "CPU collinear-spin SCF did not converge in {} iterations (density residual {:.3e}, energy change {:.3e} Ry); no scientific acceptance claim is allowed",
-            input.scf_options.max_iterations, final_density_residual, final_energy_change
+            "{:?} collinear-spin SCF did not converge in {} iterations (density residual {:.3e}, energy change {:.3e} Ry); no scientific acceptance claim is allowed",
+            requested_backend,
+            input.scf_options.max_iterations,
+            final_density_residual,
+            final_energy_change
         ))
     };
     final_terms.insert("davidson_iterations".into(), davidson_iterations as f64);
@@ -1412,6 +1541,9 @@ fn run_collinear_gamma_scf(
             .copied()
             .fold(0.0_f64, f64::max),
     );
+    for (name, value) in current_spin_metal_metrics(&metal_contexts) {
+        final_terms.insert(name, value);
+    }
     let spin = CollinearSpinResult {
         magnetization_electrons: final_channel_charges[0] - final_channel_charges[1],
         up: SpinChannelResult {
@@ -1453,9 +1585,9 @@ fn run_collinear_gamma_scf(
         timings,
         provenance: Provenance {
             requested_backend,
-            actual_backend: BackendKind::CpuF64,
-            actual_device: "Apple CPU (rustfft/f64 + two-channel block-Davidson/faer-f64)".into(),
-            precision_policy: PrecisionPolicy::cpu_f64(),
+            actual_backend: requested_backend,
+            actual_device,
+            precision_policy,
             input_sha256: input_hash.into(),
             pseudopotential_sha256: pseudo_hashes.clone(),
             git_revision: current_git_revision.into(),
@@ -2220,6 +2352,39 @@ mod checkpoint_tests {
     }
 
     #[test]
+    fn collinear_charge_magnetization_mixing_preserves_scalar_limit_and_counts() {
+        let current = [vec![0.8, 0.4, 0.2], vec![0.3, 0.2, 0.1]];
+        let output = [vec![0.6, 0.5, 0.3], vec![0.5, 0.1, 0.1]];
+        let beta = 0.25;
+        let mut scalar = current.clone();
+        mix_collinear_density(&mut scalar, &output, beta, beta).unwrap();
+        for channel in 0..2 {
+            for index in 0..current[channel].len() {
+                let expected =
+                    (1.0 - beta) * current[channel][index] + beta * output[channel][index];
+                assert!((scalar[channel][index] - expected).abs() <= 1.0e-15);
+            }
+        }
+
+        let mut separated = current.clone();
+        mix_collinear_density(&mut separated, &output, 0.3, 0.1).unwrap();
+        let input_charge: f64 = current.iter().flatten().sum();
+        let output_charge: f64 = output.iter().flatten().sum();
+        let mixed_charge: f64 = separated.iter().flatten().sum();
+        assert!((mixed_charge - (0.7 * input_charge + 0.3 * output_charge)).abs() <= 1.0e-15);
+        let input_magnetization: f64 =
+            current[0].iter().sum::<f64>() - current[1].iter().sum::<f64>();
+        let output_magnetization: f64 =
+            output[0].iter().sum::<f64>() - output[1].iter().sum::<f64>();
+        let mixed_magnetization: f64 =
+            separated[0].iter().sum::<f64>() - separated[1].iter().sum::<f64>();
+        assert!(
+            (mixed_magnetization - (0.9 * input_magnetization + 0.1 * output_magnetization)).abs()
+                <= 1.0e-15
+        );
+    }
+
+    #[test]
     #[ignore = "five converged CPU SCFs; run explicitly in release mode"]
     fn analytic_scf_force_matches_total_energy_finite_difference() {
         let input_path = Path::new("examples/si2.toml");
@@ -2764,6 +2929,139 @@ mod tests {
             .zip(right.forces_ry_bohr.as_ref().unwrap().iter().flatten())
             .map(|(&actual, &expected)| (actual - expected).abs())
             .fold(0.0_f64, f64::max)
+    }
+
+    fn maximum_occupied_spin_eigenvalue_error_mev(left: &ScfResult, right: &ScfResult) -> f64 {
+        let left = left.spin.as_ref().unwrap();
+        let right = right.spin.as_ref().unwrap();
+        let mut maximum = 0.0_f64;
+        for (left_channel, right_channel) in [(&left.up, &right.up), (&left.down, &right.down)] {
+            assert_eq!(left_channel.k_points.len(), right_channel.k_points.len());
+            for (left_point, right_point) in
+                left_channel.k_points.iter().zip(&right_channel.k_points)
+            {
+                for (((left_value, right_value), left_occupation), right_occupation) in left_point
+                    .eigenvalues_ry
+                    .iter()
+                    .zip(&right_point.eigenvalues_ry)
+                    .zip(&left_point.occupations)
+                    .zip(&right_point.occupations)
+                {
+                    if *left_occupation > 1.0e-8 || *right_occupation > 1.0e-8 {
+                        maximum = maximum.max((left_value - right_value).abs() * RY_TO_EV * 1.0e3);
+                    }
+                }
+            }
+        }
+        maximum
+    }
+
+    #[test]
+    #[ignore = "two complete Metal spin SCFs; run explicitly in release mode"]
+    fn resident_metal_collinear_spin_matches_cpu_qe_and_is_deterministic() {
+        let _device_guard = crate::metal::test_device_lock();
+        let input_path = Path::new("examples/si2-spin.toml");
+        if !Path::new("pseudopotentials/Si.pz-vbc.UPF").exists() {
+            return;
+        }
+        let input = SimulationInput::from_path(input_path).unwrap();
+        let lattice = Lattice::new(input.cell.lattice_bohr).unwrap();
+        let g_vectors = lattice.enumerate_g_vectors(input.cutoff_ry);
+        let grid_points = Lattice::density_fft_grid(&g_vectors)
+            .iter()
+            .product::<usize>();
+
+        let cpu = run(input_path, BackendKind::CpuF64).unwrap();
+        let metal = run(input_path, BackendKind::MetalMixed).unwrap();
+        let repeated = run(input_path, BackendKind::MetalMixed).unwrap();
+        let qe: ScfResult = serde_json::from_str(
+            &std::fs::read_to_string("results/qe-si2-spin-reference.json").unwrap(),
+        )
+        .unwrap();
+        for result in [&cpu, &metal, &repeated, &qe] {
+            result.validate().unwrap();
+            assert!(result.converged);
+        }
+
+        let energy_error_mev_atom = (metal.total_energy_ry.unwrap() - cpu.total_energy_ry.unwrap())
+            .abs()
+            * RY_TO_EV
+            * 1.0e3
+            / metal.atom_count as f64;
+        let qe_energy_error_mev_atom =
+            (metal.total_energy_ry.unwrap() - qe.total_energy_ry.unwrap()).abs() * RY_TO_EV * 1.0e3
+                / metal.atom_count as f64;
+        let eigenvalue_error_mev = maximum_occupied_spin_eigenvalue_error_mev(&metal, &cpu);
+        assert!(energy_error_mev_atom <= 1.0, "{energy_error_mev_atom:e}");
+        assert!(
+            qe_energy_error_mev_atom <= 2.0,
+            "{qe_energy_error_mev_atom:e}"
+        );
+        assert!(eigenvalue_error_mev <= 5.0, "{eigenvalue_error_mev:e}");
+        assert!((metal.electron_count.unwrap() - cpu.electron_count.unwrap()).abs() <= 1.0e-5);
+        assert!(
+            (metal.spin.as_ref().unwrap().magnetization_electrons
+                - cpu.spin.as_ref().unwrap().magnetization_electrons)
+                .abs()
+                <= 1.0e-5
+        );
+        let force_error = maximum_force_difference(&metal, &cpu);
+        let qe_force_error = maximum_force_difference(&metal, &qe);
+        assert!(force_error <= 5.0e-4, "{force_error:e}");
+        assert!(qe_force_error <= 5.0e-4, "{qe_force_error:e}");
+
+        assert_eq!(metal.iterations, repeated.iterations);
+        assert_eq!(metal.total_energy_ry, repeated.total_energy_ry);
+        let mut metal_terms = metal.energy_terms.clone();
+        let mut repeated_terms = repeated.energy_terms.clone();
+        metal_terms.remove("metal_peak_device_allocated_bytes");
+        repeated_terms.remove("metal_peak_device_allocated_bytes");
+        assert_eq!(metal_terms, repeated_terms);
+        assert_eq!(metal.history, repeated.history);
+        assert_eq!(metal.spin, repeated.spin);
+        assert_eq!(metal.forces_ry_bohr, repeated.forces_ry_bohr);
+
+        let terms = &metal.energy_terms;
+        assert_eq!(terms["metal_spin_channel_context_count"], 2.0);
+        assert_eq!(terms["metal_resident_projection_resyncs"], 0.0);
+        assert_eq!(
+            terms["metal_resident_driver_iterations"],
+            terms["davidson_iterations"]
+        );
+        assert_eq!(
+            terms["metal_resident_transfer_invariant_checks"],
+            terms["davidson_iterations"]
+        );
+        assert_eq!(terms["charge_mixing_beta"], input.scf_options.mixing_beta);
+        assert_eq!(terms["magnetization_mixing_beta"], 0.1);
+        assert!(terms["density_residual"] <= terms["density_tolerance"]);
+        assert!(terms["metal_peak_device_allocated_bytes"] < 10.0 * 1024.0_f64.powi(2));
+        assert!(
+            repeated.energy_terms["metal_peak_device_allocated_bytes"] < 10.0 * 1024.0_f64.powi(2)
+        );
+
+        let roots = metal.spin.as_ref().unwrap().up.k_points[0]
+            .occupations
+            .len()
+            + metal.spin.as_ref().unwrap().down.k_points[0]
+                .occupations
+                .len();
+        let complex_bytes = std::mem::size_of::<num_complex::Complex32>();
+        let expected_upload_bytes =
+            metal.iterations * roots * (grid_points + g_vectors.len()) * complex_bytes;
+        let expected_download_bytes = metal.iterations * roots * g_vectors.len() * complex_bytes;
+        assert_eq!(
+            terms["metal_full_vector_upload_bytes"] as usize,
+            expected_upload_bytes
+        );
+        assert_eq!(
+            terms["metal_full_vector_download_bytes"] as usize,
+            expected_download_bytes
+        );
+        assert_eq!(
+            terms["metal_resident_vector_download_bytes"] as usize,
+            expected_download_bytes
+        );
     }
 
     fn assert_kpoint_metal_matches_cpu(

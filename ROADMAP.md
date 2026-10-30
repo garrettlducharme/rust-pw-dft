@@ -115,9 +115,14 @@ validation and independent fixtures.
    magnetization. It uses separate Davidson solves and density mixing, a common
    Hartree potential, channel-specific XC potentials, schema-5 spin results,
    and analytic forces. The pinned two-atom silicon calculation agrees with QE
-   7.6 within the 2 meV/atom energy and 5 meV occupied-eigenvalue gates.
-   Polarized PBE, k-point meshes, spin checkpoints, result comparison,
-   relaxation, and Metal remain fail-closed pending dedicated validation.**
+   7.6 within the 2 meV/atom energy and 5 meV occupied-eigenvalue gates. Two
+   persistent Metal spin-channel contexts now pass fixed-density operator,
+   full-SCF CPU/QE, force, exact repeat-determinism, memory, and transfer-audit
+   gates. The Metal path damps magnetization mixing separately and reports its
+   measured FP32 density floor instead of claiming the CPU threshold. The
+   schema-5 CLI comparison is spin aware. Polarized PBE, spin k-point meshes,
+   spin checkpoints, matched performance claims, and relaxation remain
+   fail-closed pending dedicated validation.**
 5. Analytic norm-conserving forces, finite-difference verification, and fixed-
    cell ionic relaxation. **Local, separable-nonlocal, and Ewald derivatives
    are implemented for Gamma and weighted multi-k-point SCFs. A displaced-Si2

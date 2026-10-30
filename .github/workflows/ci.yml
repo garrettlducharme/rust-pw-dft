@@ -99,11 +99,21 @@ jobs:
           components: clippy
       - run: cargo clippy --all-targets --features metal -- -D warnings
       - run: cargo test --locked --features metal --no-run
+      - name: Run fixed-density Metal operator and spin-channel parity gate
+        run: >-
+          cargo test --locked --features metal
+          operator::tests::silicon_reference_hamiltonian_is_hermitian_when_available
+          -- --exact
       - name: Run nonzero displaced-silicon Metal force parity gate
         run: >-
           cargo test --locked --features metal
           scf::tests::resident_metal_displaced_lda_forces_match_cpu
           -- --exact
+      - name: Run collinear-spin Metal accuracy, determinism, and transfer gate
+        run: >-
+          cargo test --locked --release --features metal
+          scf::tests::resident_metal_collinear_spin_matches_cpu_qe_and_is_deterministic
+          -- --ignored --exact
       - name: Run fixed-cell Metal relaxation parity gate in release mode
         run: >-
           cargo test --locked --release --features metal

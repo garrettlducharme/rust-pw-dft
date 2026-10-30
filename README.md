@@ -4,12 +4,18 @@ An educational, fail-closed plane-wave DFT prototype aimed at Apple Silicon.
 It is dual-licensed under MIT or Apache-2.0 and contains no code copied from
 GPL DFT implementations.
 
-Version 0.14 adds a bounded CPU-FP64 collinear-spin SCF: Gamma-only LDA-PZ,
+Version 0.15 adds two persistent resident Metal Davidson contexts to the
+bounded collinear-spin SCF, separates charge and magnetization mixing for a
+stable mixed-precision trajectory, validates both spin-channel Hamiltonians at
+fixed density, and enforces CPU/QE energy, occupied-eigenvalue, charge,
+magnetization, force, determinism, memory, and transfer gates. Schema-5 spin
+results are now supported by the public `compare` command. Version 0.14 added a
+bounded CPU-FP64 collinear-spin SCF: Gamma-only LDA-PZ,
 fixed integer occupations, fixed total magnetization, separate spin-channel
 Davidson solves and density mixing, schema-5 results, analytic forces, and an
-independent QE 7.6 silicon acceptance gate. Metal, PBE, k-point meshes,
-checkpoint/restart, result comparison, and relaxation remain fail-closed for
-spin. Version 0.13 added the independently Libxc-validated collinear-spin
+independent QE 7.6 silicon acceptance gate. PBE, spin k-point meshes,
+checkpoint/restart, matched benchmarking, and relaxation remain fail-closed.
+Version 0.13 added the independently Libxc-validated collinear-spin
 LDA-PZ point and grid boundary. Version 0.12 added
 atomic, checksummed fixed-cell relaxation checkpoints,
 strict source/input/pseudopotential/backend/optimizer compatibility checks,
@@ -39,7 +45,7 @@ machine-readable evidence rather than feature presence alone.
 ## Implemented
 
 - strict fixed-cell, spin-unpolarized LDA-PZ or PBE multi-species input
-  contract, plus a schema-3 CPU-only Gamma-point LDA-PZ collinear-spin
+  contract, plus a schema-3 CPU/Metal Gamma-point LDA-PZ collinear-spin
   contract with fixed integer channel occupations and magnetization;
 - versioned Gamma, Monkhorst-Pack, and explicit weighted k-point inputs with
   deterministic reciprocal-cell canonicalization and optional time-reversal
@@ -54,9 +60,10 @@ machine-readable evidence rather than feature presence alone.
 - a typed, fail-closed grid-level exchange-correlation boundary with analytic
   potential-versus-energy-derivative tests, ready for semilocal gradient terms;
 - an independently Libxc-validated collinear-spin LDA-PZ point and grid
-  boundary with two variational spin potentials, integrated into a CPU-FP64
-  two-channel SCF with a common Hartree potential, separate Davidson solves and
-  density mixing, schema-5 spin results, and a matched QE 7.6 Si2 reference;
+  boundary with two variational spin potentials, integrated into CPU-FP64 and
+  resident mixed-precision Metal two-channel SCFs with a common Hartree
+  potential, separate Davidson contexts, charge/magnetization mixing,
+  schema-5 spin results, and a matched QE 7.6 Si2 reference;
 - a native unpolarized PBE functional whose point energy and derivatives match
   a pinned Libxc 7.1.2 oracle and whose spectral grid potential passes a
   whole-functional finite-difference test; a pinned ONCV UPF and independent
@@ -68,8 +75,9 @@ machine-readable evidence rather than feature presence alone.
   starting densities, valence counts, and mixed-charge Ewald sums;
 - analytic Cartesian local-pseudopotential, separable-nonlocal, and Ewald
   forces in Ry/bohr; converged Gamma and weighted multi-k-point CPU/Metal SCFs
-  aggregate them into a fail-closed schema-4 result, while unconverged results
-  are forbidden from carrying scientific forces;
+  aggregate them into fail-closed schema-4 unpolarized or schema-5 spin
+  results, while unconverged results are forbidden from carrying scientific
+  forces;
 - fixed-cell ionic relaxation with Cartesian displacement limits, reciprocal-
   lattice coordinate updates, rigid-translation projection of search
   directions, raw-force convergence checks, conjugate-gradient updates,
@@ -366,6 +374,8 @@ cargo run --release -- compare result-force.json results/qe-si2-displaced-force-
 cargo run --release -- relax examples/si2-displaced.toml --backend cpu --output relaxation.json --max-steps 12 --force-tolerance-ry-bohr 1e-4 --initial-step-bohr 0.05 --maximum-step-bohr 0.15
 cargo run --release -- run examples/si2-pbe.toml --backend cpu --output result-pbe.json
 cargo run --release -- run examples/si2-spin.toml --backend cpu --output result-spin.json
+cargo run --release --features metal -- run examples/si2-spin.toml --backend metal --output result-spin-metal.json
+cargo run --release -- compare result-spin-metal.json results/qe-si2-spin-reference.json
 cargo run --release -- compare result-pbe.json results/qe-pbe-reference.json
 cargo run --release -- run examples/si2-pbe-2x2x2.toml --backend cpu --output result-kmesh.json
 cargo run --release --features metal -- run examples/si2-pbe-2x2x2.toml --backend metal --output result-kmesh-metal.json
@@ -402,9 +412,10 @@ milestones are accepted. The LDA Si16 transfer and matched-performance
 milestones are also accepted. The stateful driver is integrated into
 production SCF, and its normal-iteration
 zero-full-vector-transfer contract is checked at runtime and in portable and
-Apple-GPU tests. The next spin frontier is resident Metal parity for the
-bounded CPU vertical slice documented in [`docs/spin.md`](docs/spin.md),
-followed by spin checkpoint/restart and broader magnetic validation. Stress
+Apple-GPU tests. The bounded collinear-spin CPU/Metal vertical slice and its
+precision-specific convergence policy are documented in
+[`docs/spin.md`](docs/spin.md). The next spin frontiers are checkpoint/restart,
+a compute-bound performance fixture, and broader magnetic validation. Stress
 follows only after those fixed-cell
 boundaries mature, with the same CPU-reference-first acceptance policy. The
 resident buffer contract, dataflow, transfer

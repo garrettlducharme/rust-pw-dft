@@ -1746,6 +1746,17 @@ mod tests {
 
         #[cfg(all(feature = "metal", target_os = "macos"))]
         {
+            let spin_up_density: Vec<_> =
+                starting_density.iter().map(|value| 0.625 * value).collect();
+            let spin_down_density: Vec<_> =
+                starting_density.iter().map(|value| 0.375 * value).collect();
+            let spin_electronic = hartree_spin_xc_potential(
+                hamiltonian.fft(),
+                &lattice,
+                [&spin_up_density, &spin_down_density],
+                XcFunctional::LdaPz,
+            )
+            .unwrap();
             let mut wavefunctions: Vec<Vec<Complex64>> = Vec::new();
             for state in 0..3 {
                 let mut values: Vec<_> = (0..hamiltonian.dimension())
@@ -1817,6 +1828,32 @@ mod tests {
             let full_relative_l2 = (full_error / full_reference_norm).sqrt();
             eprintln!("silicon complete Metal fixed-density error: {full_relative_l2:e}");
             assert!(full_relative_l2 < 1.0e-5);
+
+            for (channel, potential_ry) in spin_electronic.real_ry.iter().enumerate() {
+                let cpu_spin: Vec<_> = wavefunctions
+                    .iter()
+                    .map(|orbital| hamiltonian.apply_fft(orbital, potential_ry).unwrap())
+                    .collect();
+                let metal_spin = hamiltonian
+                    .apply_hamiltonian_metal_validation(&wavefunctions, potential_ry)
+                    .unwrap();
+                let spin_reference_norm = cpu_spin
+                    .iter()
+                    .flatten()
+                    .map(Complex64::norm_sqr)
+                    .sum::<f64>();
+                let spin_error = cpu_spin
+                    .iter()
+                    .flatten()
+                    .zip(metal_spin.iter().flatten())
+                    .map(|(cpu, metal)| (*cpu - *metal).norm_sqr())
+                    .sum::<f64>();
+                let spin_relative_l2 = (spin_error / spin_reference_norm).sqrt();
+                eprintln!(
+                    "silicon Metal fixed-density spin-channel {channel} Hamiltonian error: {spin_relative_l2:e}"
+                );
+                assert!(spin_relative_l2 < 1.0e-5);
+            }
 
             let mut persistent_context = hamiltonian
                 .create_metal_hamiltonian_context(32.min(hamiltonian.dimension()))
