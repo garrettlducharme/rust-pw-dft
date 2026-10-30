@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub const INPUT_SCHEMA_VERSION: u32 = 2;
+pub const INPUT_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -25,6 +25,8 @@ pub struct SimulationInput {
     pub occupations: OccupationScheme,
     #[serde(default = "one")]
     pub spin_components: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub magnetization_electrons: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,9 +133,33 @@ impl SimulationInput {
             );
         }
         ensure!(
-            self.spin_components == 1,
-            "spin-polarized calculations are unsupported"
+            matches!(self.spin_components, 1 | 2),
+            "spin_components must be 1 or 2"
         );
+        if self.spin_components == 1 {
+            ensure!(
+                self.magnetization_electrons.is_none(),
+                "magnetization_electrons requires spin_components = 2"
+            );
+        } else {
+            ensure!(
+                self.schema_version >= 3,
+                "collinear spin requires input schema 3"
+            );
+            ensure!(
+                self.xc == XcFunctional::LdaPz,
+                "collinear spin currently supports only lda-pz"
+            );
+            ensure!(
+                self.k_points.is_legacy_gamma() && self.occupations == OccupationScheme::Fixed,
+                "collinear spin currently requires Gamma-point fixed occupations"
+            );
+            ensure!(
+                self.magnetization_electrons
+                    .is_some_and(|value| value.is_finite()),
+                "collinear spin requires a finite magnetization_electrons"
+            );
+        }
         ensure!(
             self.cutoff_ry.is_finite() && self.cutoff_ry > 0.0,
             "cutoff_ry must be positive and finite"
@@ -208,16 +234,43 @@ lattice_bohr = [[1.0,0.0,0.0],[0.0,1.0,0.0],[0.0,0.0,1.0]]
 "#;
         assert!(toml::from_str::<SimulationInput>(missing).is_err());
 
-        let mut unsupported = missing.replacen("cutoff_ry", "schema_version = 3\ncutoff_ry", 1);
+        let mut unsupported = missing.replacen("cutoff_ry", "schema_version = 4\ncutoff_ry", 1);
         let parsed: SimulationInput = toml::from_str(&unsupported).unwrap();
         assert!(parsed.validate().is_err());
-        unsupported = unsupported.replacen("schema_version = 3", "schema_version = 2", 1);
+        unsupported = unsupported.replacen("schema_version = 4", "schema_version = 3", 1);
         assert!(
             toml::from_str::<SimulationInput>(&unsupported)
                 .unwrap()
                 .validate()
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn schema_three_admits_only_bounded_collinear_lda_contract() {
+        let source = r#"
+cutoff_ry = 20.0
+schema_version = 3
+xc = "lda-pz"
+spin_components = 2
+magnetization_electrons = 1.0
+pseudopotentials = { Al = "Al.UPF" }
+atoms = [{ element = "Al", fractional = [0.0, 0.0, 0.0] }]
+[cell]
+lattice_bohr = [[15.0,0.0,0.0],[0.0,15.0,0.0],[0.0,0.0,15.0]]
+"#;
+        let input: SimulationInput = toml::from_str(source).unwrap();
+        input.validate().unwrap();
+
+        let mut missing_magnetization = input.clone();
+        missing_magnetization.magnetization_electrons = None;
+        assert!(missing_magnetization.validate().is_err());
+        let mut pbe = input.clone();
+        pbe.xc = XcFunctional::Pbe;
+        assert!(pbe.validate().is_err());
+        let mut unpolarized = input;
+        unpolarized.spin_components = 1;
+        assert!(unpolarized.validate().is_err());
     }
 
     #[test]

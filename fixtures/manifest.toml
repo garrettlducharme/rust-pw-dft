@@ -34,6 +34,43 @@ redistribution = "project-tracked"
 description = "Sixteen-atom Gamma-point silicon matched-performance input."
 
 [[fixtures]]
+id = "rust-pw-dft-si2-collinear-spin-input"
+kind = "input"
+path = "examples/si2-spin.toml"
+sha256 = "eef247ad78b969987ebd77b9317c491adeef728724b13c1a571e87af9fdfecba"
+source = "repository adaptation of the accepted two-atom silicon workload"
+source_revision = "input-schema-3"
+license = "MIT OR Apache-2.0"
+redistribution = "project-tracked"
+description = "Two-atom Gamma-point silicon LDA-PZ collinear-spin scientific acceptance input with fixed two-electron magnetization."
+
+[[fixtures]]
+id = "qe-7.6-si2-collinear-spin-portable-input"
+kind = "input"
+path = "fixtures/qe/si2-spin-reference.in"
+sha256 = "9a02bb763c9b50a6e66188a9e7a3c34ba927f6a37ccb8dfcfaf95c46211bbbf1"
+source = "repository input used for the accepted QE 7.6 reference run"
+source_revision = "Quantum ESPRESSO qe-7.6"
+license = "MIT OR Apache-2.0"
+redistribution = "project-tracked"
+description = "Matched QE input for the two-atom silicon LDA-PZ collinear-spin scientific reference."
+reference_command = "pw.x -in fixtures/qe/si2-spin-reference.in"
+reference_input_sha256 = "9a02bb763c9b50a6e66188a9e7a3c34ba927f6a37ccb8dfcfaf95c46211bbbf1"
+
+[[fixtures]]
+id = "qe-7.6-si2-collinear-spin-normalized-result"
+kind = "reference-result"
+path = "results/qe-si2-spin-reference.json"
+sha256 = "e7b34dc4c145d2affd1947d8cb6f9794d7d08cb1bbb6df22badff76feb7e4e1d"
+source = "Quantum ESPRESSO 7.6 pw.x XML normalized into rust-pw-dft result schema"
+source_revision = "QE source commit 9f93ddec427d2b9a45bb72d828c6d324f62fcabd"
+license = "NOASSERTION"
+redistribution = "project-tracked"
+description = "Independent CPU-FP64 Si2 collinear-spin total-energy, spin-channel eigenvalue, electron-count, magnetization, energy-component, and Cartesian-force reference."
+reference_command = "pw.x -in fixtures/qe/si2-spin-reference.in"
+reference_input_sha256 = "9a02bb763c9b50a6e66188a9e7a3c34ba927f6a37ccb8dfcfaf95c46211bbbf1"
+
+[[fixtures]]
 id = "rust-pw-dft-si16-lda-2x2x2-input"
 kind = "input"
 path = "examples/si16-lda-2x2x2.toml"

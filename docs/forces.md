@@ -1,10 +1,10 @@
 # Analytic forces
 
-Schema-4 converged results contain `forces_ry_bohr`, one Cartesian vector per
-input atom in input order. The unit is Rydberg per bohr. Unconverged results
-must omit the field, and schema-2/3 records cannot contain it. This prevents a
-partially converged calculation from being consumed as a scientific force
-result.
+Schema-4 and schema-5 converged results contain `forces_ry_bohr`, one Cartesian
+vector per input atom in input order. The unit is Rydberg per bohr.
+Unconverged results must omit the field, and schema-2/3 records cannot contain
+it. This prevents a partially converged calculation from being consumed as a
+scientific force result.
 
 ## Implemented terms
 
@@ -19,8 +19,11 @@ The fixed-cell norm-conserving force is assembled from:
 For a weighted k-point calculation, each nonlocal band contribution is
 multiplied by its irreducible Brillouin-zone weight. The local-density and
 Ewald terms are included once. A fixed plane-wave basis has no ionic-position
-Pulay term. Stress, variable-cell Pulay terms, ultrasoft augmentation, PAW,
-spin, and constrained-coordinate forces are not implemented.
+Pulay term. The bounded CPU collinear-spin path sums nonlocal contributions
+from both occupied channel blocks and uses their total local density; its Si2
+force agrees with QE within `1e-4 Ry/bohr`. Spin forces on Metal and in ionic
+relaxation remain rejected. Stress, variable-cell Pulay terms, ultrasoft
+augmentation, PAW, and constrained-coordinate forces are not implemented.
 
 Metal SCFs retain mixed-precision resident eigensolves. Once a converged state
 has crossed the existing final-output boundary, force reductions and assembly

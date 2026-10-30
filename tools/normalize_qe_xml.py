@@ -168,6 +168,24 @@ def reduce_time_reversal(
     return reduced, maximum_eigenvalue_error, maximum_occupation_error
 
 
+def normalize_k_points(
+    raw_points: list[dict[str, object]], reduce_pairs: bool
+) -> tuple[list[dict[str, object]], float, float]:
+    if not raw_points:
+        raise ValueError("QE XML contains no k-point eigenvalues")
+    raw_weight_sum = sum(float(point["weight"]) for point in raw_points)
+    if raw_weight_sum <= 0.0:
+        raise ValueError("QE k-point weights have a nonpositive sum")
+    for point in raw_points:
+        point["weight"] = float(point["weight"]) / raw_weight_sum
+        point["occupations"] = [
+            raw_weight_sum * value for value in point["occupations"]  # type: ignore[union-attr]
+        ]
+    if reduce_pairs:
+        return reduce_time_reversal(raw_points)
+    return sorted(raw_points, key=lambda point: tuple(point["reduced"])), 0.0, 0.0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("xml", type=Path)
@@ -219,7 +237,21 @@ def main() -> None:
     basis_set = descendant(output, "basis_set")
     reciprocal_element = child(basis_set, "reciprocal_lattice")
     reciprocal = [vector(child(reciprocal_element, f"b{axis}")) for axis in range(1, 4)]
+    lsda_text = child(band_structure, "lsda").text
+    if lsda_text is None:
+        raise ValueError("QE XML band_structure/lsda is empty")
+    is_collinear_spin = lsda_text.strip().lower() == "true"
+    channel_band_counts: list[int] | None = None
+    if is_collinear_spin:
+        channel_band_counts = [
+            int(scalar(band_structure, "nbnd_up")),
+            int(scalar(band_structure, "nbnd_dw")),
+        ]
+        if any(count <= 0 for count in channel_band_counts):
+            raise ValueError("QE XML has an invalid collinear-spin band count")
+
     raw_k_points: list[dict[str, object]] = []
+    raw_spin_k_points: list[list[dict[str, object]]] = [[], []]
     for ks_energies in band_structure:
         if local_name(ks_energies.tag) != "ks_energies":
             continue
@@ -228,46 +260,75 @@ def main() -> None:
         occupations_text = child(ks_energies, "occupations").text
         if eigenvalues_text is None or occupations_text is None:
             raise ValueError("QE XML eigenvalues or occupations are empty")
-        raw_k_points.append(
-            {
-                "reduced": solve_reduced(reciprocal, vector(k_point)),
-                "weight": float(k_point.attrib["weight"]),
-                "eigenvalues_ry": [
-                    2.0 * float(value.replace("D", "E"))
-                    for value in eigenvalues_text.split()
-                ],
-                "occupations": [
-                    float(value.replace("D", "E"))
-                    for value in occupations_text.split()
-                ],
-                "residuals": [],
-            }
-        )
-    if not raw_k_points:
-        raise ValueError("QE XML contains no k-point eigenvalues")
-    raw_weight_sum = sum(float(point["weight"]) for point in raw_k_points)
-    if raw_weight_sum <= 0.0:
-        raise ValueError("QE k-point weights have a nonpositive sum")
-    for point in raw_k_points:
-        point["weight"] = float(point["weight"]) / raw_weight_sum
-        point["occupations"] = [
-            raw_weight_sum * value for value in point["occupations"]  # type: ignore[union-attr]
+        eigenvalues = [
+            2.0 * float(value.replace("D", "E"))
+            for value in eigenvalues_text.split()
         ]
-    maximum_time_reversal_eigenvalue_error_ry = 0.0
-    maximum_time_reversal_occupation_error = 0.0
-    if args.reduce_time_reversal:
+        occupations = [
+            float(value.replace("D", "E"))
+            for value in occupations_text.split()
+        ]
+        base = {
+            "reduced": solve_reduced(reciprocal, vector(k_point)),
+            "weight": float(k_point.attrib["weight"]),
+            "residuals": [],
+        }
+        if is_collinear_spin:
+            assert channel_band_counts is not None
+            if len(eigenvalues) != sum(channel_band_counts) or len(occupations) != sum(
+                channel_band_counts
+            ):
+                raise ValueError(
+                    "QE collinear-spin eigenvalue dimensions disagree with nbnd_up/nbnd_dw"
+                )
+            offset = 0
+            for channel, count in enumerate(channel_band_counts):
+                raw_spin_k_points[channel].append(
+                    base
+                    | {
+                        "eigenvalues_ry": eigenvalues[offset : offset + count],
+                        "occupations": occupations[offset : offset + count],
+                    }
+                )
+                offset += count
+        else:
+            raw_k_points.append(
+                base
+                | {
+                    "eigenvalues_ry": eigenvalues,
+                    "occupations": occupations,
+                }
+            )
+
+    if is_collinear_spin:
+        normalized_spin = [
+            normalize_k_points(points, args.reduce_time_reversal)
+            for points in raw_spin_k_points
+        ]
+        spin_k_points = [entry[0] for entry in normalized_spin]
+        if [point["reduced"] for point in spin_k_points[0]] != [
+            point["reduced"] for point in spin_k_points[1]
+        ]:
+            raise ValueError("QE collinear-spin channels use different k-point sets")
+        k_points: list[dict[str, object]] = []
+        eigenvalues_ry: list[float] = []
+        maximum_time_reversal_eigenvalue_error_ry = max(
+            entry[1] for entry in normalized_spin
+        )
+        maximum_time_reversal_occupation_error = max(
+            entry[2] for entry in normalized_spin
+        )
+    else:
         (
             k_points,
             maximum_time_reversal_eigenvalue_error_ry,
             maximum_time_reversal_occupation_error,
-        ) = reduce_time_reversal(raw_k_points)
-    else:
-        k_points = sorted(raw_k_points, key=lambda point: tuple(point["reduced"]))
-    eigenvalues_ry = [
-        value
-        for point in k_points
-        for value in point["eigenvalues_ry"]  # type: ignore[union-attr]
-    ]
+        ) = normalize_k_points(raw_k_points, args.reduce_time_reversal)
+        eigenvalues_ry = [
+            value
+            for point in k_points
+            for value in point["eigenvalues_ry"]  # type: ignore[union-attr]
+        ]
 
     stdout = args.stdout.read_text()
     iterations = re.findall(r"convergence has been achieved in\s+(\d+) iterations", stdout)
@@ -322,7 +383,7 @@ def main() -> None:
         )
 
     result = {
-        "schema_version": 4 if forces_ry_bohr is not None else 3,
+        "schema_version": 5 if is_collinear_spin else (4 if forces_ry_bohr is not None else 3),
         "converged": True,
         "iterations": int(iterations[-1]),
         "atom_count": atom_count,
@@ -353,6 +414,26 @@ def main() -> None:
             "git_revision": args.qe_revision,
         },
     }
+    if is_collinear_spin:
+        channel_electrons = [
+            sum(
+                float(point["weight"])
+                * sum(float(value) for value in point["occupations"])  # type: ignore[union-attr]
+                for point in points
+            )
+            for points in spin_k_points
+        ]
+        result["spin"] = {
+            "magnetization_electrons": channel_electrons[0] - channel_electrons[1],
+            "up": {
+                "electron_count": channel_electrons[0],
+                "k_points": spin_k_points[0],
+            },
+            "down": {
+                "electron_count": channel_electrons[1],
+                "k_points": spin_k_points[1],
+            },
+        }
     if forces_ry_bohr is not None:
         result["forces_ry_bohr"] = forces_ry_bohr
     args.output.write_text(json.dumps(result, indent=2) + "\n")
